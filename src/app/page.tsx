@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/current-user";
 import { isBootstrapped } from "@/lib/auth/bootstrap";
+import { SignOutButton } from "@/components/sign-out-button";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -35,10 +36,13 @@ export default async function Home() {
         </CardHeader>
         <CardContent className="space-y-3">
           {user ? (
-            <p className="text-sm text-muted-foreground">
-              Phase 2 in progress. The dashboard, projects, and calendar arrive
-              in upcoming slices.
-            </p>
+            <>
+              <p className="text-sm text-muted-foreground">
+                Phase 2 in progress. The dashboard, projects, and calendar
+                arrive in upcoming slices.
+              </p>
+              <SignOutButton />
+            </>
           ) : (
             <Button asChild className="w-full">
               <Link href="/login">Sign in</Link>
