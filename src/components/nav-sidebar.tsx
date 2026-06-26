@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FolderOpen, ListChecks, Users } from "lucide-react";
+import { CalendarDays, FolderOpen, HardHat, ListChecks, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 
 const NAV = [
+  { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/projects", label: "Projects", icon: FolderOpen },
+  { href: "/settings/technicians", label: "Technicians", icon: HardHat },
   { href: "/settings/members", label: "Members", icon: Users },
 ] as const;
 

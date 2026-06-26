@@ -1,8 +1,19 @@
-# Reverse proxy + TLS termination.
-# For local dev, planner.localhost gets an automatic internal cert.
-# In production, replace with your real domain and Caddy will fetch a Let's Encrypt cert.
+# Reverse proxy + TLS termination (internal/self-signed CA).
+#
+# List every hostname/IP you want to reach the app at. Caddy issues an internal
+# cert for each (including IP SANs) and auto-redirects HTTP→HTTPS.
+#
+#   • On this machine:        https://planner.localhost
+#   • From other LAN devices: https://<this-machine-ip>  (add the IP below)
+#
+# To add LAN access, append your machine's IPv4 (from `ipconfig`) to the address
+# line, e.g.:  planner.localhost, 192.168.1.42 {
+#
+# For a real public domain, replace the names with your domain and drop
+# `tls internal` so Caddy fetches a trusted Let's Encrypt cert.
 
-{$APP_DOMAIN:planner.localhost} {
+planner.localhost, 192.168.10.71 {
 	encode gzip
 	reverse_proxy app:3000
+	tls internal
 }

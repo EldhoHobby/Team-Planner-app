@@ -28,6 +28,8 @@ model Organization {
   events      CalendarEvent[]
   timeOff     TimeOff[]
   attachments Attachment[]
+  technicians Technician[]
+  techTimeOff TechnicianTimeOff[]
 }
 
 model User {
@@ -47,6 +49,7 @@ model User {
   timeOff         TimeOff[]
   uploads         Attachment[]
   invitesSent     Invitation[]         @relation("InvitedBy")
+  technician      Technician?
 }
 
 enum OrgRole {
@@ -227,12 +230,72 @@ enum TaskPriority {
   URGENT
 }
 
+// Distinguishes a generic task from a field-service job. FIELD_SERVICE tasks use
+// the job* fields + technician/start/end below and appear on the schedule board.
+enum TaskKind {
+  GENERAL
+  FIELD_SERVICE
+}
+
+enum JobType {
+  COMMISSIONING
+  TRAINING
+  ANNUAL_MAINTENANCE
+  EMERGENCY_SUPPORT
+}
+
+// Field-service lifecycle, distinct from the generic TaskStatus.
+enum JobStatus {
+  UNCONFIRMED
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+}
+
+// A schedulable field engineer. Org-scoped resource with a fixed display colour;
+// optionally linked to a real User account (hybrid model — login can come later).
+model Technician {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  color     String   @default("#64748b") // free-form hex colour
+  active    Boolean  @default(true)
+  userId    String?  @unique
+  createdAt DateTime @default(now())
+
+  org     Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user    User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tasks   Task[]
+  timeOff TechnicianTimeOff[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+}
+
+// Technician unavailability (PTO, training, sick) — blocks scheduling on the board.
+model TechnicianTimeOff {
+  id           String   @id @default(cuid())
+  orgId        String
+  technicianId String
+  startDate    DateTime
+  endDate      DateTime
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  technician Technician   @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([technicianId, startDate])
+  @@index([orgId])
+}
+
 model Task {
   id          String       @id @default(cuid())
   orgId       String
   teamId      String
   projectId   String
   columnId    String?
+  kind        TaskKind     @default(GENERAL)
   title       String
   description String?
   status      TaskStatus   @default(TODO)
@@ -243,15 +306,29 @@ model Task {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
+  // ── Field-service (kind = FIELD_SERVICE) ──
+  soNumber       String?
+  customerName   String?
+  jobType        JobType?
+  jobStatus      JobStatus? @default(UNCONFIRMED)
+  hardwareTarget String?
+  startDate      DateTime? // null → sits in the unscheduled backlog
+  endDate        DateTime?
+  durationDays   Int?
+  technicianId   String?
+
   org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   column      BoardColumn?     @relation(fields: [columnId], references: [id], onDelete: SetNull)
+  technician  Technician?      @relation(fields: [technicianId], references: [id], onDelete: SetNull)
   assignments TaskAssignment[]
   attachments Attachment[]
 
   @@index([orgId, teamId, status])
   @@index([projectId, columnId, position])
   @@index([dueDate])
+  @@index([orgId, kind, startDate])
+  @@index([technicianId, startDate])
 }
 
 model TaskAssignment {

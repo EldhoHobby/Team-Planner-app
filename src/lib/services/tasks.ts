@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
-import type { TaskStatus, TaskPriority } from "@prisma/client";
+import type { TaskStatus, TaskPriority, TaskKind } from "@prisma/client";
 
 export type { TaskStatus, TaskPriority };
 
@@ -39,6 +39,7 @@ export async function listTasks(
 ) {
   return prisma.task.findMany({
     where: scope.whereTeam({
+      kind: "GENERAL" as TaskKind, // field-service jobs live on the schedule board, not here
       ...(filters.projectId ? { projectId: filters.projectId } : {}),
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.assigneeId
