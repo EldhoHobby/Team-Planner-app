@@ -5,6 +5,15 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
+import {
+  clientIp,
+  isRateLimited,
+  registerFailure,
+  clearRateLimit,
+  WINDOW_MS,
+  LOGIN_IP_LIMIT,
+  LOGIN_EMAIL_LIMIT,
+} from "@/lib/auth/rate-limit";
 import type { LoginState } from "./types";
 
 const LoginSchema = z.object({
@@ -24,6 +33,15 @@ export async function signIn(
   _prev: LoginState,
   formData: FormData,
 ): Promise<LoginState> {
+  const ip = await clientIp();
+  const ipKey = `login:ip:${ip}`;
+
+  // Throttle brute-force by IP before doing any work.
+  const ipLimit = isRateLimited(ipKey, LOGIN_IP_LIMIT, WINDOW_MS);
+  if (ipLimit.limited) {
+    return { error: `Too many attempts. Try again in ${Math.ceil(ipLimit.retryAfterSec / 60)} minute(s).` };
+  }
+
   const parsed = LoginSchema.safeParse({
     email: formData.get("email"),
     password: formData.get("password"),
@@ -33,6 +51,12 @@ export async function signIn(
   }
 
   const { email, password } = parsed.data;
+  const emailKey = `login:email:${email.toLowerCase()}`;
+  const emailLimit = isRateLimited(emailKey, LOGIN_EMAIL_LIMIT, WINDOW_MS);
+  if (emailLimit.limited) {
+    return { error: "Too many attempts for this account. Try again later." };
+  }
+
   const user = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
   });
@@ -42,9 +66,14 @@ export async function signIn(
 
   // Single generic message for every failure mode — no user enumeration.
   if (!user || !user.isActive || !passwordOk) {
+    // Count failures only, so normal logins never trip the limit.
+    registerFailure(ipKey, WINDOW_MS);
+    registerFailure(emailKey, WINDOW_MS);
     return { error: "Invalid email or password." };
   }
 
+  // Success — reset this account's counter.
+  clearRateLimit(emailKey);
   await createSession(user.id);
   redirect("/tasks");
 }

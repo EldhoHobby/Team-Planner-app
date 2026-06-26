@@ -40,6 +40,17 @@ only export async functions from those files (shared types go in a sibling
 **Pages that touch the DB or cookies** must set `export const dynamic =
 "force-dynamic"` or the build fails trying to prerender them.
 
+**Admin data export/import (keep in sync!).** The admin Excel round-trip lives in
+`src/lib/services/data-io.ts` (one sheet per entity: Technicians, Time Off, Teams,
+Projects, Jobs; Members/Organization are export-only). It's the SINGLE SOURCE OF
+TRUTH for that workbook. **Whenever you add a field to an exported entity
+(Technician, field-service Task/job, Project, Team, TechnicianTimeOff), you MUST
+also add it to that entity's column list + export row builder + (if editable) its
+importer in `data-io.ts`**, so it always round-trips. Import is upsert-by-`id`
+(blank id = create, known id = update, never deletes) and admin-only. Never export
+secrets (password hashes, tokens). Export route: `src/app/api/admin/export`; UI:
+`src/app/(app)/settings/data`.
+
 ### Key directories
 
 ```

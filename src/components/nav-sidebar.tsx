@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, FolderOpen, HardHat, ListChecks, Users } from "lucide-react";
+import { CalendarDays, Database, FolderOpen, HardHat, ListChecks, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 
@@ -12,6 +12,7 @@ const NAV = [
   { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/settings/technicians", label: "Technicians", icon: HardHat },
   { href: "/settings/members", label: "Members", icon: Users },
+  { href: "/settings/data", label: "Data", icon: Database },
 ] as const;
 
 export function NavSidebar({
