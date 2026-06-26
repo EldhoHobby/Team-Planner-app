@@ -1,7 +1,20 @@
 # Team Planner — Architecture & Planning Document
 
-*Planning phase. No application code yet — this document is the contract we build against.*
-*Last updated: 2026-06-25*
+*Original planning document (written 2026-06-25, before any code). Kept as the
+record of the architecture rationale and decisions. It is **historical** — the
+app has since been built and pivoted to a **field-service scheduling** focus.*
+
+> **Current status (2026-06-26).** The foundation, auth/tenancy, and generic
+> tasks/projects described below are built. The product then became a
+> **field-service scheduling dashboard**: "jobs" are `Task` rows with
+> `kind=FIELD_SERVICE` carrying SO#, customer, start/end/duration, job type,
+> status, and a technician; `/schedule` renders a timeline + month calendar with
+> drag-and-drop, a triage backlog, technician colour-coding, conflict + capacity
+> warnings, and time-off blocking. **Technicians** are their own org-scoped model
+> (not the `User`/`TaskAssignment` path sketched in §3). Added since: technician
+> management, admin **Excel export/import** (`data-io.ts`), login/reset
+> rate-limiting, and remote access via Caddy + Let's Encrypt.
+> **For the up-to-date brief and conventions, read `CLAUDE.md`; for setup, `README.md`.**
 
 ---
 

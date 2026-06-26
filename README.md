@@ -1,82 +1,85 @@
-# Team Planner
+# Team Planner — Field Service Scheduling
 
-Self-hosted team planning — tasks, projects/boards, calendar, and time-off/capacity.
-Built with Next.js + PostgreSQL, deployed via Docker Compose. See `PLANNING.md` for the full architecture.
+A self-hosted scheduling app for a field-service team: plan multi-day jobs across
+technicians on a timeline/calendar, track time-off and capacity, and round-trip
+the whole configuration through Excel. Built on a multi-tenant team-planner
+foundation (tasks, projects, calendar). Runs entirely on-prem via Docker Compose.
 
-> **Status:** Phase 1 — foundation scaffold (repo, Compose, Prisma schema, health check). Auth and features land in later phases.
+See `PLANNING.md` for the original architecture rationale and `CLAUDE.md` for the
+quick brief + conventions.
 
 ## Stack
 
-- **App:** Next.js 15 (App Router) + TypeScript
+- **App:** Next.js 15 (App Router, React 19, standalone) + TypeScript
 - **DB:** PostgreSQL 16 via Prisma ORM
-- **Auth (Phase 2):** local email + password, server-side sessions
-- **Proxy:** Caddy (TLS termination)
-- **Deploy:** Docker Compose — `proxy`, `app`, `db` on a private network
+- **UI:** Tailwind CSS v3 + shadcn/ui
+- **Auth:** local email + password (Argon2id), server-side sessions
+- **Proxy:** Caddy (TLS termination, automatic certs)
+- **Deploy:** Docker Compose — `proxy` + one-shot `migrate` + `app` + `db`
 
-## Project layout
+## What's built
 
+- **Schedule dashboard** (`/schedule`) — weekly **timeline** (technician lanes,
+  multi-day spanning bars, drag-and-drop with optimistic UI) and a **month
+  calendar**, Sunday-first, with a triage/unscheduled backlog, conflict +
+  overload warnings, view-aware capacity, technician colour-coding, time-off
+  blocking, filters, and CSV export.
+- **Technicians** (`/settings/technicians`) — crew CRUD with a free-form colour
+  wheel (unique name + colour) and per-technician time-off.
+- **Tasks & projects** (`/tasks`, `/projects`) — generic task/project CRUD.
+- **Members** (`/settings/members`) — invite-only onboarding + admin-issued
+  password-reset links.
+- **Data** (`/settings/data`) — admin **Excel export/import** (one sheet per
+  table, upsert-by-id, preview-then-confirm). See `src/lib/services/data-io.ts`.
+- **Auth** — first-run setup wizard, login/logout, route guard, and
+  **rate-limiting** on login + reset.
+
+## Run the full stack (Docker)
+
+```powershell
+copy .env.example .env          # set DB_PASSWORD, SESSION_SECRET (and APP_DOMAIN)
+docker compose up -d --build
 ```
-.
-├─ docker-compose.yml        # proxy + migrate (one-shot) + app + db
-├─ Dockerfile                # multi-stage: deps → builder → migrator → runner
-├─ Caddyfile                 # reverse proxy / TLS
-├─ .env.example              # copy to .env
-├─ prisma/
-│  └─ schema.prisma          # full multi-tenant data model
-└─ src/
-   ├─ app/
-   │  ├─ api/health/route.ts # liveness + DB readiness probe
-   │  ├─ layout.tsx
-   │  └─ page.tsx
-   └─ lib/db/
-      ├─ client.ts           # Prisma singleton
-      └─ scope.ts            # tenancy-scoped data access (the isolation chokepoint)
-```
 
-## First-time setup (local development)
+- `proxy` is the only service published to the host (80/443); `app` and `db`
+  stay on the internal Docker network.
+- The one-shot `migrate` service runs `prisma db push --accept-data-loss` to sync
+  the schema from `prisma/schema.prisma`, then exits; `app` waits for it. There
+  are **no migration files yet** (see TODO in `CLAUDE.md`).
+- App: `https://planner.localhost` (self-signed — click through). Health:
+  `/api/health`.
+
+## Access from other devices
+
+`Caddyfile` lists the hostnames the app answers on. Out of the box:
+
+- **This machine:** `https://planner.localhost`
+- **Same LAN:** `https://<this-machine-ip>` (the IP is listed in the Caddyfile;
+  update it if your DHCP lease changes, then `docker compose restart proxy`).
+- **Public (optional):** a real domain (e.g. a free DuckDNS hostname) added to
+  the Caddyfile gets an automatic trusted Let's Encrypt cert — requires ports 80
+  + 443 forwarded to this host and DNS pointing at your public IP.
+
+> Going public? The app has login/reset rate-limiting but is otherwise a personal
+> self-hosted tool — keep it updated, and prefer a VPN/tunnel over exposing ports
+> where you can.
+
+## Local (non-Docker) dev
 
 ```bash
-cp .env.example .env          # then edit secrets
 npm install
-
-# Generate the initial migration against a running Postgres.
-# (Spin up just the db service, or point DATABASE_URL at a local Postgres.)
-npm run db:migrate -- --name init
-
-npm run dev                   # http://localhost:3000
+cp .env.example .env            # point DATABASE_URL at a local Postgres
+npx prisma db push              # create tables from the schema
+npm run dev                     # http://localhost:3000
 ```
-
-> The Docker entrypoint runs `prisma migrate deploy`, which **applies committed
-> migrations**. So the `prisma/migrations/` folder must be generated and
-> committed once (the `db:migrate -- --name init` step above) before the first
-> container deploy.
-
-## Running the full stack (Docker)
-
-```bash
-cp .env.example .env          # set DB_PASSWORD, SESSION_SECRET, APP_DOMAIN
-docker compose up --build
-```
-
-- `proxy` is the only service published to the host (80/443).
-- `app` and `db` are reachable only on the internal Docker network.
-- The one-shot `migrate` service runs `prisma db push` (creating all tables from
-  `schema.prisma`) and exits; `app` only starts after it completes successfully.
-- App: `https://${APP_DOMAIN:-planner.localhost}` · Health: `/api/health`
-
-> **Schema sync — Phase 1 vs. later.** We currently use `prisma db push` for a
-> frictionless first run (great when you only have Docker). Before any real
-> deployment we'll switch the entrypoint to `prisma migrate deploy` and commit a
-> generated initial migration, so schema changes are versioned and reviewable.
 
 ## Tenancy rule (read before adding features)
 
 Every domain row carries `orgId`; team-scoped rows also carry `teamId`. **All
-reads and writes go through `TenantScope` in `src/lib/db/scope.ts`** — never call
-`prisma.<model>.findMany` with a raw, unscoped `where` on a domain table. This is
-the single chokepoint that enforces multi-tenant isolation. Phase 2 wires
-`buildScope()` to the authenticated session; Postgres Row-Level Security is a
-planned defense-in-depth layer on top.
+data access goes through `TenantScope` in `src/lib/db/scope.ts`** — never call
+`prisma.<model>.findMany/update/delete` with a raw, unscoped `where` on a domain
+table. `requireScope()` in `src/lib/auth/current-user.ts` is the standard entry
+point.
 
 ## Useful scripts
 
@@ -84,14 +87,16 @@ planned defense-in-depth layer on top.
 |---------|--------------|
 | `npm run dev` | Next.js dev server |
 | `npm run build` | Production build (standalone) |
-| `npm run db:migrate` | Create/apply a dev migration |
-| `npm run db:migrate:deploy` | Apply committed migrations (prod) |
+| `npm run db:push` ( `npx prisma db push` ) | Sync schema → DB |
 | `npm run db:studio` | Prisma Studio (DB browser) |
 | `npm run typecheck` | TypeScript check |
 
 ## Backups
 
-Persisted state lives in two Docker volumes — back up both:
+Persisted state lives in Docker volumes — back these up:
 
 - `db_data` — PostgreSQL data
 - `uploads` — task attachments
+- `caddy_data` — issued TLS certificates
+
+`docker compose down` is safe (keeps volumes); only `down -v` deletes data.
