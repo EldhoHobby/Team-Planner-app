@@ -43,17 +43,22 @@ only export async functions from those files (shared types go in a sibling
 ### Key directories
 
 ```
-prisma/schema.prisma          # data model (source of truth for the DB)
-src/lib/db/                    # prisma client + TenantScope
-src/lib/auth/                  # password, tokens, session, current-user, guard,
-                               #   bootstrap, password-reset, auth-actions (logout)
-src/lib/invitations/           # invitation service
-src/components/ui/             # shadcn components
-src/app/(auth)/setup|login/    # first-run wizard + sign in
-src/app/(app)/settings/members/# admin: invites + member reset links
-src/app/invite/[token]/        # public accept-invite
-src/app/reset/[token]/         # public set-new-password
-src/app/api/health/            # DB readiness probe
+prisma/schema.prisma               # data model (source of truth for the DB)
+src/lib/db/                        # prisma client + TenantScope
+src/lib/auth/                      # password, tokens, session, current-user, guard,
+                                   #   bootstrap, password-reset, auth-actions (logout)
+src/lib/invitations/               # invitation service
+src/lib/services/                  # business logic — projects.ts, tasks.ts
+src/components/ui/                 # shadcn components
+src/components/nav-sidebar.tsx     # authenticated app sidebar (client component)
+src/app/(auth)/setup|login/        # first-run wizard + sign in
+src/app/(app)/layout.tsx           # authenticated shell (sidebar + content area)
+src/app/(app)/tasks/               # task list + create/edit/delete + assignments
+src/app/(app)/projects/            # project list + create/archive
+src/app/(app)/settings/members/    # admin: invites + member reset links
+src/app/invite/[token]/            # public accept-invite
+src/app/reset/[token]/             # public set-new-password
+src/app/api/health/                # DB readiness probe
 ```
 
 ## Build & run (the user runs these; on Windows PowerShell)
@@ -93,8 +98,11 @@ Local (non-Docker) dev: `npm install`, set `.env` from `.env.example`, point
 - **Phase 1 (foundation):** done, committed.
 - **Phase 2 (auth + tenancy):** done — bootstrap wizard, login/logout/guard,
   invite flow, admin-issued password reset. Owner account: `admin@q.com`.
-- **Phase 3 (next):** features in order — tasks & assignments → projects + Kanban
-  boards → team calendar → time-off + derived capacity view.
+- **Phase 3 (tasks & assignments):** done — app shell with sidebar nav,
+  project CRUD, task CRUD with status/priority/due date/estimate, multi-assignee
+  selection. Login now lands on `/tasks`.
+- **Phase 3 (next slices):** projects + Kanban boards → team calendar →
+  time-off + derived capacity view.
 
 ## TODO before production
 

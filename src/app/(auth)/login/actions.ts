@@ -46,5 +46,5 @@ export async function signIn(
   }
 
   await createSession(user.id);
-  redirect("/");
+  redirect("/tasks");
 }

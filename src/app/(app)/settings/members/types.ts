@@ -11,3 +11,8 @@ export interface ResetLinkState {
   /** Set on success — the one-time password-reset link to copy and hand off. */
   link?: string;
 }
+
+export interface CreateTeamState {
+  error?: string;
+  success?: boolean;
+}

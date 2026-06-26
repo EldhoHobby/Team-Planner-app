@@ -21,6 +21,7 @@ export default async function MembersPage() {
     prisma.team.findMany({
       where: { orgId: scope.ctx.orgId },
       orderBy: { name: "asc" },
+      include: { _count: { select: { members: true } } },
     }),
     listPendingInvitations(scope),
     prisma.membership.findMany({
@@ -32,7 +33,7 @@ export default async function MembersPage() {
 
   return (
     <MembersClient
-      teams={teams.map((t) => ({ id: t.id, name: t.name }))}
+      teams={teams.map((t) => ({ id: t.id, name: t.name, memberCount: t._count.members }))}
       invites={invites.map((i) => ({
         id: i.id,
         email: i.email,

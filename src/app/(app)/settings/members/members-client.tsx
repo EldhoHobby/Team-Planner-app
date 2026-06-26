@@ -1,9 +1,9 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
-import { inviteAction, revokeAction, generateResetAction } from "./actions";
-import type { InviteState, ResetLinkState } from "./types";
+import { inviteAction, revokeAction, generateResetAction, createTeamAction } from "./actions";
+import type { InviteState, ResetLinkState, CreateTeamState } from "./types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,6 +18,7 @@ import {
 interface TeamOption {
   id: string;
   name: string;
+  memberCount: number;
 }
 interface InviteRow {
   id: string;
@@ -34,6 +35,83 @@ interface MemberRowData {
 }
 
 const resetInitial: ResetLinkState = {};
+const teamInitial: CreateTeamState = {};
+
+function CreateTeamSubmit() {
+  const { pending } = useFormStatus();
+  return (
+    <Button type="submit" size="sm" disabled={pending}>
+      {pending ? "Creating…" : "Create team"}
+    </Button>
+  );
+}
+
+function TeamsCard({ teams }: { teams: TeamOption[] }) {
+  const [state, formAction] = useActionState(createTeamAction, teamInitial);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (state.success) setOpen(false);
+  }, [state.success]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-lg">Teams</CardTitle>
+            <CardDescription>
+              Organise members into teams. Projects and tasks belong to a team.
+            </CardDescription>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setOpen((v) => !v)}>
+            {open ? "Cancel" : "New team"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {open && (
+          <form action={formAction} className="flex items-end gap-2">
+            <div className="flex-1 space-y-1">
+              <label htmlFor="team-name" className="text-sm font-medium">
+                Team name
+              </label>
+              <input
+                id="team-name"
+                name="name"
+                required
+                className={selectClass}
+                placeholder="e.g. Engineering"
+              />
+            </div>
+            <CreateTeamSubmit />
+          </form>
+        )}
+        {state.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {state.error}
+          </p>
+        )}
+        {teams.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No teams yet. Create one above to start adding projects.
+          </p>
+        ) : (
+          <ul className="divide-y">
+            {teams.map((t) => (
+              <li key={t.id} className="flex items-center justify-between py-2.5 text-sm">
+                <span className="font-medium">{t.name}</span>
+                <span className="text-muted-foreground">
+                  {t.memberCount} member{t.memberCount !== 1 ? "s" : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function ResetSubmit() {
   const { pending } = useFormStatus();
@@ -136,6 +214,8 @@ export function MembersClient({
           channel they trust — it works without email.
         </p>
       </div>
+
+      <TeamsCard teams={teams} />
 
       <Card>
         <CardHeader>

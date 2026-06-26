@@ -5,7 +5,8 @@ import { z } from "zod";
 import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
 import { createInvitation, revokeInvitation } from "@/lib/invitations/service";
 import { createAdminResetLink } from "@/lib/auth/password-reset";
-import type { InviteState, ResetLinkState } from "./types";
+import { prisma } from "@/lib/db/client";
+import type { InviteState, ResetLinkState, CreateTeamState } from "./types";
 
 const InviteSchema = z.object({
   email: z.string().email("Enter a valid email"),
@@ -59,6 +60,34 @@ export async function generateResetAction(
   } catch (e) {
     if (e instanceof ForbiddenError) return { error: e.message };
     return { error: "Could not generate a reset link." };
+  }
+}
+
+const TeamSchema = z.object({
+  name: z.string().min(1, "Name is required").max(60, "Name too long"),
+});
+
+export async function createTeamAction(
+  _prev: CreateTeamState,
+  formData: FormData,
+): Promise<CreateTeamState> {
+  const { scope } = await requireScope();
+  if (!scope.ctx.isOrgAdmin) return { error: "Only admins can create teams." };
+
+  const parsed = TeamSchema.safeParse({ name: formData.get("name") });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  try {
+    await prisma.team.create({
+      data: { orgId: scope.ctx.orgId, name: parsed.data.name.trim() },
+    });
+    revalidatePath("/settings/members");
+    revalidatePath("/projects");
+    revalidatePath("/tasks");
+    return { success: true };
+  } catch {
+    return { error: "Could not create the team (name may already exist)." };
   }
 }
 
