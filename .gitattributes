@@ -1,0 +1,14 @@
+# Normalize line endings: store text as LF in the repo.
+* text=auto
+
+# Files executed inside Linux containers MUST stay LF, even on Windows checkouts.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Caddyfile   text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Treat lockfiles/binaries sanely
+*.png binary
+*.jpg binary
+*.ico binary
