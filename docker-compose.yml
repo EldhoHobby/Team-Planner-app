@@ -1,0 +1,85 @@
+# Self-hosted Team Planner — three services on a private network.
+# Only the proxy is published to the host; app and db stay internal.
+
+services:
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-planner.localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - web
+
+  # One-shot: syncs the DB schema, then exits. Runs before app starts.
+  migrate:
+    build:
+      context: .
+      target: migrator
+    environment:
+      DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: "no"
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
+      SESSION_SECRET: ${SESSION_SECRET}
+      APP_URL: ${APP_URL:-https://planner.localhost}
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      NODE_ENV: production
+    volumes:
+      - uploads:/app/uploads          # task attachments, persisted on the host
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - web          # reachable by proxy
+      - internal     # reaches db
+    # No host ports — only the proxy talks to it.
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: planner
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: planner
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planner -d planner"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+    # No host ports — internal network only.
+
+volumes:
+  db_data:
+  uploads:
+  caddy_data:
+  caddy_config:
+
+networks:
+  web:
+  internal:

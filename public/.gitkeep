@@ -1,0 +1,2 @@
+# Keeps the public/ directory in version control.
+# Next.js serves static assets (favicon, images, robots.txt) from here.

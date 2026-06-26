@@ -1,0 +1,347 @@
+// Team Planner — data model
+// Tenancy rule: every domain row carries orgId; team-scoped rows also carry teamId.
+// All access goes through the scoped helpers in src/lib/db — never query unscoped.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Identity & tenancy ───────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  teams       Team[]
+  invitations Invitation[]
+  projects    Project[]
+  tasks       Task[]
+  events      CalendarEvent[]
+  timeOff     TimeOff[]
+  attachments Attachment[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships     Membership[]
+  teamMemberships TeamMembership[]
+  sessions        Session[]
+  resetTokens     PasswordResetToken[]
+  taskAssignments TaskAssignment[]
+  timeOff         TimeOff[]
+  uploads         Attachment[]
+  invitesSent     Invitation[]         @relation("InvitedBy")
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+// User's membership in an organization.
+model Membership {
+  id     String  @id @default(cuid())
+  role   OrgRole @default(MEMBER)
+  userId String
+  orgId  String
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members     TeamMembership[]
+  projects    Project[]
+  events      CalendarEvent[]
+  timeOff     TimeOff[]
+  invitations Invitation[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+}
+
+enum TeamRole {
+  MANAGER
+  MEMBER
+}
+
+model TeamMembership {
+  id     String   @id @default(cuid())
+  role   TeamRole @default(MEMBER)
+  userId String
+  teamId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, teamId])
+  @@index([teamId])
+}
+
+// ─────────────────────────── Auth tokens & sessions ───────────────────────────
+
+// Server-side sessions so we can revoke. Cookie stores only the session id.
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// Single-use, time-boxed. issuedByUserId set when an admin generates the link.
+model PasswordResetToken {
+  id             String    @id @default(cuid())
+  userId         String
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  usedAt         DateTime?
+  issuedByUserId String? // null = self-service; set = admin-issued
+  createdAt      DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+// Invite-only registration. Org-scoped; optional team for direct team placement.
+model Invitation {
+  id              String       @id @default(cuid())
+  orgId           String
+  teamId          String?
+  email           String
+  orgRole         OrgRole      @default(MEMBER)
+  teamRole        TeamRole?
+  tokenHash       String       @unique
+  status          InviteStatus @default(PENDING)
+  expiresAt       DateTime
+  invitedByUserId String
+  createdAt       DateTime     @default(now())
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team      Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  invitedBy User         @relation("InvitedBy", fields: [invitedByUserId], references: [id])
+
+  @@index([orgId])
+  @@index([email])
+}
+
+// ─────────────────────────── Projects, boards, tasks ───────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  orgId       String
+  teamId      String
+  name        String
+  description String?
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team   Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  boards Board[]
+  tasks  Task[]
+
+  @@index([orgId, teamId])
+}
+
+model Board {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String   @default("Board")
+  createdAt DateTime @default(now())
+
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  columns BoardColumn[]
+
+  @@index([projectId])
+}
+
+model BoardColumn {
+  id       String @id @default(cuid())
+  boardId  String
+  name     String
+  position Int    @default(0)
+
+  board Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@index([boardId])
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  orgId       String
+  teamId      String
+  projectId   String
+  columnId    String?
+  title       String
+  description String?
+  status      TaskStatus   @default(TODO)
+  priority    TaskPriority @default(MEDIUM)
+  dueDate     DateTime?
+  estimateHrs Float? // used for derived capacity calculations
+  position    Int          @default(0) // ordering within a column
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  column      BoardColumn?     @relation(fields: [columnId], references: [id], onDelete: SetNull)
+  assignments TaskAssignment[]
+  attachments Attachment[]
+
+  @@index([orgId, teamId, status])
+  @@index([projectId, columnId, position])
+  @@index([dueDate])
+}
+
+model TaskAssignment {
+  id         String   @id @default(cuid())
+  taskId     String
+  userId     String
+  assignedAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@index([userId])
+}
+
+// ─────────────────────────── Calendar & time-off ───────────────────────────
+
+enum EventType {
+  EVENT
+  MEETING
+  MILESTONE
+}
+
+model CalendarEvent {
+  id        String    @id @default(cuid())
+  orgId     String
+  teamId    String
+  title     String
+  type      EventType @default(EVENT)
+  startsAt  DateTime
+  endsAt    DateTime
+  allDay    Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, startsAt])
+}
+
+enum TimeOffType {
+  PTO
+  SICK
+  OTHER
+}
+
+enum TimeOffStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model TimeOff {
+  id        String        @id @default(cuid())
+  orgId     String
+  teamId    String
+  userId    String
+  type      TimeOffType   @default(PTO)
+  status    TimeOffStatus @default(PENDING)
+  startDate DateTime
+  endDate   DateTime
+  note      String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startDate])
+  @@index([teamId, status])
+}
+
+// ─────────────────────────── Attachments ───────────────────────────
+
+// Metadata in Postgres; bytes on the local uploads volume. Downloads are
+// served through the app so RBAC/tenancy is enforced.
+model Attachment {
+  id           String   @id @default(cuid())
+  orgId        String
+  taskId       String
+  filename     String
+  contentType  String
+  sizeBytes    Int
+  storagePath  String // path within the uploads volume
+  uploadedById String
+  createdAt    DateTime @default(now())
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  task       Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploadedBy User         @relation(fields: [uploadedById], references: [id])
+
+  @@index([taskId])
+  @@index([orgId])
+}

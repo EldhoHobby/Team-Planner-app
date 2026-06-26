@@ -1,0 +1,59 @@
+# ─── Multi-stage build: slim Next.js standalone app + a migrator image ───
+
+# 1. Install dependencies (full tree, incl. Prisma CLI + its deps)
+FROM node:22-alpine AS deps
+WORKDIR /app
+# libc6-compat/openssl for Prisma engines; toolchain for native modules (argon2).
+RUN apk add --no-cache libc6-compat openssl python3 make g++
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+# 2. Build the app (also generates the Prisma client)
+FROM node:22-alpine AS builder
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npx prisma generate
+RUN npm run build
+
+# 3. Migrator image — keeps the FULL node_modules so the Prisma CLI (and all of
+#    its transitive deps) work. Used by the one-shot `migrate` compose service to
+#    run `prisma db push` before the app starts. Kept separate so the app image
+#    stays slim.
+FROM node:22-alpine AS migrator
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
+# Sync schema -> database. Swap to `migrate deploy` once migrations are committed.
+CMD ["npx", "prisma", "db", "push", "--skip-generate"]
+
+# 4. Runtime image — slim standalone server. No Prisma CLI here; the migrator
+#    service owns schema sync. Only the generated client + query engine are
+#    needed at runtime.
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apk add --no-cache libc6-compat openssl \
+ && addgroup --system --gid 1001 nodejs \
+ && adduser --system --uid 1001 nextjs
+
+# Standalone output + static assets
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Prisma generated client + query engine, which Next's tracer doesn't bundle.
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
+
+# Attachment storage (mounted as a volume in compose)
+RUN mkdir -p /app/uploads && chown nextjs:nodejs /app/uploads
+
+USER nextjs
+EXPOSE 3000
+ENV PORT=3000 HOSTNAME=0.0.0.0
+
+CMD ["node", "server.js"]

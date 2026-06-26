@@ -1,0 +1,8 @@
+# Reverse proxy + TLS termination.
+# For local dev, planner.localhost gets an automatic internal cert.
+# In production, replace with your real domain and Caddy will fetch a Let's Encrypt cert.
+
+{$APP_DOMAIN:planner.localhost} {
+	encode gzip
+	reverse_proxy app:3000
+}
