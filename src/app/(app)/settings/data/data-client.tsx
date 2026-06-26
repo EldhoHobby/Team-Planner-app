@@ -107,6 +107,7 @@ export function DataClient() {
                   </>
                 ) : (
                   <>Preview: {summary.totalCreated} to create, {summary.totalUpdated} to update
+                    {summary.totalUnchanged ? `, ${summary.totalUnchanged} unchanged` : ""}
                     {summary.totalErrors ? `, ${summary.totalErrors} issue(s)` : ""}.</>
                 )}
               </div>
@@ -117,6 +118,7 @@ export function DataClient() {
                     <span className="font-medium">{r.sheet}</span>{" "}
                     <span className="text-muted-foreground">
                       {r.created} created · {r.updated} updated
+                      {r.unchanged ? ` · ${r.unchanged} unchanged` : ""}
                       {r.skipped ? ` · ${r.skipped} skipped` : ""}
                     </span>
                     {r.errors.length ? (

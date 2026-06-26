@@ -20,6 +20,7 @@ export interface SheetResult {
   sheet: string;
   created: number;
   updated: number;
+  unchanged: number;
   skipped: number;
   errors: string[];
 }
@@ -27,6 +28,7 @@ export interface ImportSummary {
   results: SheetResult[];
   totalCreated: number;
   totalUpdated: number;
+  totalUnchanged: number;
   totalErrors: number;
 }
 
@@ -235,7 +237,7 @@ async function uniqueTechViolation(
 }
 
 async function importTechnicians(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
-  const res: SheetResult = { sheet: SHEET.technicians, created: 0, updated: 0, skipped: 0, errors: [] };
+  const res: SheetResult = { sheet: SHEET.technicians, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
     const name = (r.name ?? "").trim();
@@ -245,9 +247,15 @@ async function importTechnicians(scope: TenantScope, rows: Record<string, string
     const id = (r.id ?? "").trim();
     try {
       if (id) {
-        const ex = await prisma.technician.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true } });
+        const ex = await prisma.technician.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, color: true, active: true } });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: id not found`); continue; }
-        const v = await uniqueTechViolation(scope, { name, color, excludeId: id });
+        if (ex.name === name && toHex(ex.color) === color && ex.active === active) { res.unchanged++; continue; }
+        // Only enforce uniqueness on a field that's actually changing.
+        const v = await uniqueTechViolation(scope, {
+          name: ex.name.toLowerCase() === name.toLowerCase() ? undefined : name,
+          color: toHex(ex.color) === color ? undefined : color,
+          excludeId: id,
+        });
         if (v) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: ${v}`); continue; }
         if (apply) await prisma.technician.update({ where: { id }, data: { name, color, active } });
         res.updated++;
@@ -273,7 +281,7 @@ async function techMap(scope: TenantScope) {
 }
 
 async function importTimeOff(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
-  const res: SheetResult = { sheet: SHEET.timeOff, created: 0, updated: 0, skipped: 0, errors: [] };
+  const res: SheetResult = { sheet: SHEET.timeOff, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   const techs = await techMap(scope);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
@@ -288,8 +296,9 @@ async function importTimeOff(scope: TenantScope, rows: Record<string, string>[],
     const id = (r.id ?? "").trim();
     try {
       if (id) {
-        const ex = await prisma.technicianTimeOff.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true } });
+        const ex = await prisma.technicianTimeOff.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, technicianId: true, startDate: true, endDate: true, reason: true } });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.timeOff} row ${line}: id not found`); continue; }
+        if (ex.technicianId === data.technicianId && ymd(ex.startDate) === ymd(data.startDate) && ymd(ex.endDate) === ymd(data.endDate) && (ex.reason ?? "") === (data.reason ?? "")) { res.unchanged++; continue; }
         if (apply) await prisma.technicianTimeOff.update({ where: { id }, data });
         res.updated++;
       } else {
@@ -304,7 +313,7 @@ async function importTimeOff(scope: TenantScope, rows: Record<string, string>[],
 }
 
 async function importTeams(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
-  const res: SheetResult = { sheet: SHEET.teams, created: 0, updated: 0, skipped: 0, errors: [] };
+  const res: SheetResult = { sheet: SHEET.teams, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
     const name = (r.name ?? "").trim();
@@ -312,8 +321,9 @@ async function importTeams(scope: TenantScope, rows: Record<string, string>[], a
     const id = (r.id ?? "").trim();
     try {
       if (id) {
-        const ex = await prisma.team.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true } });
+        const ex = await prisma.team.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true } });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.teams} row ${line}: id not found`); continue; }
+        if (ex.name === name) { res.unchanged++; continue; }
         if (apply) await prisma.team.update({ where: { id }, data: { name } });
         res.updated++;
       } else {
@@ -328,7 +338,7 @@ async function importTeams(scope: TenantScope, rows: Record<string, string>[], a
 }
 
 async function importProjects(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
-  const res: SheetResult = { sheet: SHEET.projects, created: 0, updated: 0, skipped: 0, errors: [] };
+  const res: SheetResult = { sheet: SHEET.projects, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   const teams = await prisma.team.findMany({ where: { orgId: scope.ctx.orgId }, select: { id: true, name: true } });
   const teamById = new Set(teams.map((t) => t.id));
   const teamByName = new Map(teams.map((t) => [t.name.trim().toLowerCase(), t.id]));
@@ -343,8 +353,9 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
     const id = (r.id ?? "").trim();
     try {
       if (id) {
-        const ex = await prisma.project.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true } });
+        const ex = await prisma.project.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, description: true, archived: true } });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: id not found`); continue; }
+        if (ex.name === name && (ex.description ?? "") === (description ?? "") && ex.archived === archived) { res.unchanged++; continue; }
         if (apply) await prisma.project.update({ where: { id }, data: { name, description, archived } });
         res.updated++;
       } else {
@@ -360,7 +371,7 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
 }
 
 async function importJobs(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
-  const res: SheetResult = { sheet: SHEET.jobs, created: 0, updated: 0, skipped: 0, errors: [] };
+  const res: SheetResult = { sheet: SHEET.jobs, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   const techs = await techMap(scope);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
@@ -381,21 +392,45 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
 
     try {
       if (id) {
-        const ex = await prisma.task.findFirst({ where: { id, kind: "FIELD_SERVICE", ...scope.team() }, select: { id: true, durationDays: true } });
+        const ex = await prisma.task.findFirst({
+          where: { id, kind: "FIELD_SERVICE", ...scope.team() },
+          select: {
+            id: true, title: true, soNumber: true, customerName: true, description: true,
+            jobType: true, jobStatus: true, hardwareTarget: true, priority: true,
+            technicianId: true, startDate: true, durationDays: true,
+          },
+        });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: id not found`); continue; }
         const dur = durationDays ?? ex.durationDays ?? 1;
         const end = start ? endFromDuration(start, dur) : null;
-        if (apply) {
-          await prisma.task.update({
-            where: { id },
-            data: {
-              title, soNumber: (r.soNumber ?? "").trim() || null, customerName: (r.customer ?? "").trim() || null,
-              description: (r.scope ?? "").trim() || null, jobType, hardwareTarget: (r.hardware ?? "").trim() || null,
-              priority, technicianId, startDate: start, endDate: end, durationDays: start ? dur : durationDays,
-              jobStatus: jobStatus ?? (start ? "SCHEDULED" : "UNCONFIRMED"),
-            },
-          });
-        }
+        const data = {
+          title,
+          soNumber: (r.soNumber ?? "").trim() || null,
+          customerName: (r.customer ?? "").trim() || null,
+          description: (r.scope ?? "").trim() || null,
+          jobType,
+          hardwareTarget: (r.hardware ?? "").trim() || null,
+          priority,
+          technicianId,
+          startDate: start,
+          endDate: end,
+          durationDays: start ? dur : durationDays,
+          jobStatus: jobStatus ?? (start ? "SCHEDULED" : "UNCONFIRMED"),
+        };
+        const same =
+          ex.title === data.title &&
+          (ex.soNumber ?? "") === (data.soNumber ?? "") &&
+          (ex.customerName ?? "") === (data.customerName ?? "") &&
+          (ex.description ?? "") === (data.description ?? "") &&
+          (ex.jobType ?? null) === (data.jobType ?? null) &&
+          (ex.hardwareTarget ?? "") === (data.hardwareTarget ?? "") &&
+          ex.priority === data.priority &&
+          (ex.technicianId ?? null) === (data.technicianId ?? null) &&
+          ymd(ex.startDate) === ymd(data.startDate) &&
+          (ex.durationDays ?? null) === (data.durationDays ?? null) &&
+          (ex.jobStatus ?? null) === (data.jobStatus ?? null);
+        if (same) { res.unchanged++; continue; }
+        if (apply) await prisma.task.update({ where: { id }, data });
         res.updated++;
       } else {
         if (apply) {
@@ -447,6 +482,7 @@ export async function runImport(
     results,
     totalCreated: results.reduce((a, r) => a + r.created, 0),
     totalUpdated: results.reduce((a, r) => a + r.updated, 0),
+    totalUnchanged: results.reduce((a, r) => a + r.unchanged, 0),
     totalErrors: results.reduce((a, r) => a + r.errors.length, 0),
   };
 }
