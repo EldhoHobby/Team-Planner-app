@@ -27,8 +27,10 @@ RUN apk add --no-cache libc6-compat openssl
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package.json ./package.json
-# Sync schema -> database. Swap to `migrate deploy` once migrations are committed.
-CMD ["npx", "prisma", "db", "push", "--skip-generate"]
+# Sync schema -> database. `--accept-data-loss` is required by `db push` to apply
+# schema changes non-interactively (dev workflow). Swap to `migrate deploy` once
+# versioned migrations are committed — that removes this flag and adds review.
+CMD ["npx", "prisma", "db", "push", "--skip-generate", "--accept-data-loss"]
 
 # 4. Runtime image — slim standalone server. No Prisma CLI here; the migrator
 #    service owns schema sync. Only the generated client + query engine are

@@ -1,11 +1,51 @@
-export default function Home() {
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/current-user";
+import { isBootstrapped } from "@/lib/auth/bootstrap";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+
+// DB- and cookie-driven: render per request, never prerender at build time.
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  // Fresh instance → send the first admin straight to setup.
+  if (!(await isBootstrapped())) {
+    redirect("/setup");
+  }
+
+  const user = await getCurrentUser();
+
   return (
-    <main style={{ fontFamily: "system-ui", padding: "2rem", maxWidth: 640 }}>
-      <h1>Team Planner</h1>
-      <p>Phase 1 scaffold is running. Phase 2 adds the setup wizard and auth.</p>
-      <p>
-        Health check: <a href="/api/health">/api/health</a>
-      </p>
+    <main className="flex min-h-screen items-center justify-center p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader>
+          <CardTitle className="text-xl">Team Planner</CardTitle>
+          <CardDescription>
+            {user
+              ? `Signed in as ${user.email}`
+              : "Self-hosted team planning"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {user ? (
+            <p className="text-sm text-muted-foreground">
+              Phase 2 in progress. The dashboard, projects, and calendar arrive
+              in upcoming slices.
+            </p>
+          ) : (
+            <Button asChild className="w-full">
+              <Link href="/login">Sign in</Link>
+            </Button>
+          )}
+        </CardContent>
+      </Card>
     </main>
   );
 }

@@ -111,10 +111,12 @@ model TeamMembership {
 
 // ─────────────────────────── Auth tokens & sessions ───────────────────────────
 
-// Server-side sessions so we can revoke. Cookie stores only the session id.
+// Server-side sessions so we can revoke. The cookie holds a random token;
+// only its SHA-256 hash is stored here, so a DB leak can't be used to log in.
 model Session {
   id        String   @id @default(cuid())
   userId    String
+  tokenHash String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
 
