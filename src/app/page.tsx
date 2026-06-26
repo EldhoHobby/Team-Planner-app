@@ -41,6 +41,9 @@ export default async function Home() {
                 Phase 2 in progress. The dashboard, projects, and calendar
                 arrive in upcoming slices.
               </p>
+              <Button asChild variant="outline" className="w-full">
+                <Link href="/settings/members">Manage team members</Link>
+              </Button>
               <SignOutButton />
             </>
           ) : (
