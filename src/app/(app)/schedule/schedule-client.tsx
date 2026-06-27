@@ -335,8 +335,8 @@ export function ScheduleClient({
           </div>
           <span className="text-sm text-muted-foreground">
             {view === "calendar"
-              ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })
-              : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`}
+              ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
+              : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
           </span>
           <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
             <Upload className="mr-1.5 h-4 w-4" /> Import

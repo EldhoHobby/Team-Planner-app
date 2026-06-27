@@ -475,6 +475,7 @@ function TaskRow({
           {new Date(task.dueDate).toLocaleDateString(undefined, {
             month: "short",
             day: "numeric",
+            timeZone: "UTC",
           })}
         </span>
       ) : (

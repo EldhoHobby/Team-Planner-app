@@ -69,7 +69,7 @@ export function DatePicker({
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <span className="text-sm font-medium">
-                {cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+                {cursor.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })}
               </span>
               <button type="button" aria-label="Next month" className="rounded p-1 hover:bg-muted" onClick={() => shiftMonth(1)}>
                 <ChevronRight className="h-4 w-4" />
