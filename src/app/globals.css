@@ -4,6 +4,10 @@
 
 @layer base {
   :root {
+    /* Tells the browser to render native controls (incl. <select> option
+       popups) with the matching light/dark palette — fixes white dropdown
+       lists in dark mode. */
+    color-scheme: light;
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
@@ -25,6 +29,7 @@
   }
 
   .dark {
+    color-scheme: dark;
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
     --card: 222.2 84% 4.9%;
@@ -51,5 +56,14 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* Native <select> dropdown lists are OS-drawn and ignore most styling. Set the
+     option background/text explicitly (in addition to `color-scheme` above) so
+     the popup follows the theme instead of defaulting to white in dark mode. */
+  select option,
+  select optgroup {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
   }
 }

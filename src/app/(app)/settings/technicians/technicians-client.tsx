@@ -7,6 +7,7 @@ import { Trash2 } from "lucide-react";
 import {
   createTechnicianAction,
   updateTechnicianAction,
+  archiveTechnicianAction,
   addTimeOffAction,
   deleteTimeOffAction,
 } from "./actions";
@@ -78,6 +79,21 @@ function TechRow({ tech }: { tech: TechnicianRow }) {
         onClick={() => run(() => updateTechnicianAction({ id: tech.id, active: !tech.active }))}
       >
         {tech.active ? "Active" : "Inactive"}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled={pending}
+        aria-label={`Delete ${tech.name}`}
+        className="text-destructive hover:text-destructive"
+        onClick={() => {
+          if (confirm(`Delete ${tech.name}? They'll be removed from the board and dropdowns; existing jobs keep their history.`)) {
+            run(() => archiveTechnicianAction({ id: tech.id }));
+          }
+        }}
+      >
+        <Trash2 className="h-4 w-4" />
       </Button>
     </li>
   );

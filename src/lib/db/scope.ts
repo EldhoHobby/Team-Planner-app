@@ -61,8 +61,15 @@ export class TenantScope {
 }
 
 /**
- * Build a TenantScope from a user + org by loading their memberships.
- * Phase 2 will call this from the session middleware.
+ * Build a TenantScope from a user + org.
+ *
+ * Tenancy model: the ORG boundary is load-bearing and always enforced — a scope
+ * only ever sees rows for its own `orgId`. Within the org, the schedule and its
+ * data are shared: every member can view and edit all team-scoped data (jobs,
+ * tasks, projects, events, time-off), so `teamIds` is populated with ALL teams
+ * in the org rather than just the caller's own memberships. Org-admin-only
+ * features (holiday/technician management, the admin data import) remain gated on
+ * `isOrgAdmin`. Edits are still recorded to the audit log with the actor.
  */
 export async function buildScope(userId: string, orgId: string): Promise<TenantScope> {
   const membership = await prisma.membership.findUnique({
@@ -72,18 +79,17 @@ export async function buildScope(userId: string, orgId: string): Promise<TenantS
     throw new Error("Forbidden: no membership in organization");
   }
 
-  const teamMemberships = await prisma.teamMembership.findMany({
-    where: {
-      userId,
-      team: { orgId },
-    },
-    select: { teamId: true },
+  // All teams in the org — every member gets org-wide visibility + edit on
+  // team-scoped data (the org boundary is still enforced via orgId).
+  const orgTeams = await prisma.team.findMany({
+    where: { orgId },
+    select: { id: true },
   });
 
   return new TenantScope({
     userId,
     orgId,
-    teamIds: teamMemberships.map((t) => t.teamId),
+    teamIds: orgTeams.map((t) => t.id),
     isOrgAdmin: membership.role === "OWNER" || membership.role === "ADMIN",
   });
 }

@@ -25,6 +25,7 @@ export type JobRow = {
   startDate: string | null; // ISO date (YYYY-MM-DD) or null = unscheduled
   endDate: string | null;
   durationDays: number | null;
+  tentative: boolean;
 };
 
 export type TechTimeOff = {
@@ -32,6 +33,11 @@ export type TechTimeOff = {
   startDate: string; // YYYY-MM-DD
   endDate: string;
   reason: string | null;
+};
+
+export type HolidayLite = {
+  date: string; // YYYY-MM-DD
+  name: string;
 };
 
 export type JobFormState = {
@@ -42,4 +48,11 @@ export type JobFormState = {
 export type ImportState = {
   error?: string;
   message?: string;
+};
+
+export type AuditEntry = {
+  action: string;
+  summary: string;
+  actorEmail: string | null;
+  createdAt: string; // ISO timestamp
 };

@@ -3,7 +3,7 @@
 import { useActionState, useEffect } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { importCsvAction } from "../tasks/actions";
+import { importScheduleXlsxAction } from "../tasks/actions";
 import type { ImportState } from "./types";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,7 @@ function ImportButton() {
 }
 
 export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [state, formAction] = useActionState(importCsvAction, initial);
+  const [state, formAction] = useActionState(importScheduleXlsxAction, initial);
   const router = useRouter();
 
   useEffect(() => {
@@ -33,25 +33,24 @@ export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => 
     <Modal
       open={open}
       onClose={onClose}
-      title="Import schedule (CSV)"
-      description="Columns: SO Number, Customer, Title, Scope of Work, Job Type, Hardware, Technician, Start Date, Duration Days, Status. A header row is optional; Title is required."
+      title="Import schedule (Excel)"
+      description="Upload the exported .xlsx workbook. Rows with an id are updated; blank-id rows are created (nothing is deleted). Tip: use Export first to get a template with the right columns."
     >
       <form action={formAction} className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="file">CSV file</Label>
-          <Input id="file" name="file" type="file" accept=".csv,text/csv" />
-        </div>
-        <p className="text-center text-xs text-muted-foreground">or paste rows below</p>
-        <div className="space-y-2">
-          <Label htmlFor="csv">Paste CSV</Label>
-          <textarea
-            id="csv"
-            name="csv"
-            rows={5}
-            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            placeholder="SO-1001,Acme,Commission RTU,Full commissioning,COMMISSIONING,RTU,Charles,2026-07-01,3,SCHEDULED"
+          <Label htmlFor="file">Excel file (.xlsx)</Label>
+          <Input
+            id="file"
+            name="file"
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           />
         </div>
+        <p className="text-xs text-muted-foreground">
+          Columns on the <span className="font-medium">Jobs</span> sheet: id, soNumber, customer, title, scope,
+          jobType, jobStatus, hardware, priority, technician, project, startDate, durationDays, tentative.
+          Title is required; set the technician by name. The end date is computed from startDate + durationDays.
+        </p>
 
         {state.error ? (
           <p role="alert" className="text-sm text-destructive">{state.error}</p>

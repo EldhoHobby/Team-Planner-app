@@ -30,6 +30,8 @@ model Organization {
   attachments Attachment[]
   technicians Technician[]
   techTimeOff TechnicianTimeOff[]
+  holidays    Holiday[]
+  auditLogs   AuditLog[]
 }
 
 model User {
@@ -38,6 +40,7 @@ model User {
   name         String?
   passwordHash String
   isActive     Boolean  @default(true)
+  theme        String? // "light" | "dark" — per-user UI theme (null = follow system)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -260,6 +263,7 @@ model Technician {
   name      String
   color     String   @default("#64748b") // free-form hex colour
   active    Boolean  @default(true)
+  archived  Boolean  @default(false) // soft-delete: hidden everywhere, history kept
   userId    String?  @unique
   createdAt DateTime @default(now())
 
@@ -315,6 +319,7 @@ model Task {
   startDate      DateTime? // null → sits in the unscheduled backlog
   endDate        DateTime?
   durationDays   Int?
+  tentative      Boolean    @default(false) // pencilled-in date → hatched on the board
   technicianId   String?
 
   org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -403,6 +408,37 @@ model TimeOff {
 }
 
 // ─────────────────────────── Attachments ───────────────────────────
+
+// Company/public holidays — surfaced on the calendar; scheduling on one warns.
+model Holiday {
+  id        String   @id @default(cuid())
+  orgId     String
+  date      DateTime
+  name      String
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, date])
+  @@index([orgId])
+}
+
+// Change-history trail for jobs, technicians, etc. (what / when / who).
+model AuditLog {
+  id         String   @id @default(cuid())
+  orgId      String
+  actorId    String?
+  actorEmail String?
+  entity     String // "job" | "technician" | "timeoff" | ...
+  entityId   String
+  action     String // "created" | "updated" | "rescheduled" | "deleted" | ...
+  summary    String // human-readable description of the change
+  createdAt  DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, entity, entityId])
+}
 
 // Metadata in Postgres; bytes on the local uploads volume. Downloads are
 // served through the app so RBAC/tenancy is enforced.

@@ -1,0 +1,91 @@
+# Production stack for the HOST machine — pulls prebuilt images from GHCR instead
+# of building locally. Use this on the always-on computer that serves the app.
+#
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Pin a specific release for rollback by setting IMAGE_TAG (e.g. IMAGE_TAG=sha-abc1234
+# or IMAGE_TAG=v1.2.0) in your .env; it defaults to "latest".
+#
+# Image names are the lowercase of your GitHub repo (EldhoHobby/Team-Planner-app):
+#   app      -> ghcr.io/eldhohobby/team-planner-app
+#   migrator -> ghcr.io/eldhohobby/team-planner-app-migrator
+
+services:
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-planner.localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - web
+
+  # One-shot: syncs the DB schema, then exits. Runs before app starts.
+  migrate:
+    image: ghcr.io/eldhohobby/team-planner-app-migrator:${IMAGE_TAG:-latest}
+    environment:
+      DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: "no"
+
+  app:
+    image: ghcr.io/eldhohobby/team-planner-app:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
+      SESSION_SECRET: ${SESSION_SECRET}
+      APP_URL: ${APP_URL:-https://planner.localhost}
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      NODE_ENV: production
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - web
+      - internal
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: planner
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: planner
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planner -d planner"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+volumes:
+  db_data:
+  uploads:
+  caddy_data:
+  caddy_config:
+
+networks:
+  web:
+  internal:

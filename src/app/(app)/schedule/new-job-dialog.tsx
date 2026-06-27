@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createJobAction } from "../tasks/actions";
@@ -9,6 +9,7 @@ import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DatePicker } from "@/components/ui/date-picker";
 
 const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -35,6 +36,19 @@ export function NewJobDialog({
 }) {
   const [state, formAction] = useActionState(createJobAction, initial);
   const router = useRouter();
+
+  // Track the date so the Tentative checkbox can require one (a tentative job
+  // must have a pencilled-in date to be tentative about).
+  const [startDate, setStartDate] = useState("");
+  const [tentative, setTentative] = useState(false);
+
+  // Reset the controlled fields each time the dialog opens.
+  useEffect(() => {
+    if (open) {
+      setStartDate("");
+      setTentative(false);
+    }
+  }, [open]);
 
   useEffect(() => {
     if (state.success) {
@@ -101,8 +115,15 @@ export function NewJobDialog({
             </select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="startDate">Start date</Label>
-            <Input id="startDate" name="startDate" type="date" />
+            <Label>Start date</Label>
+            <DatePicker
+              name="startDate"
+              value={startDate}
+              onChange={(v) => {
+                setStartDate(v);
+                if (!v) setTentative(false);
+              }}
+            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="durationDays">Days</Label>
@@ -110,15 +131,18 @@ export function NewJobDialog({
           </div>
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="priority">Priority</Label>
-          <select id="priority" name="priority" className={selectClass} defaultValue="MEDIUM">
-            <option value="LOW">Low</option>
-            <option value="MEDIUM">Medium</option>
-            <option value="HIGH">High</option>
-            <option value="URGENT">Urgent</option>
-          </select>
-        </div>
+        <label className={`flex items-center gap-2 text-sm ${!startDate ? "opacity-50" : ""}`}>
+          <input
+            type="checkbox"
+            name="tentative"
+            className="h-4 w-4 rounded border-input"
+            checked={tentative}
+            disabled={!startDate}
+            onChange={(e) => setTentative(e.target.checked)}
+          />
+          Tentative date (pencilled-in — shows hatched on the board)
+          {!startDate ? <span className="text-xs text-muted-foreground">— needs a date</span> : null}
+        </label>
 
         {state.error ? (
           <p role="alert" className="text-sm text-destructive">{state.error}</p>

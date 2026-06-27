@@ -1,0 +1,80 @@
+# Builds the two Docker images (app runtime + one-shot DB migrator) from the
+# multi-stage Dockerfile and pushes them to the GitHub Container Registry (GHCR).
+#
+# Triggers:
+#   - push to main           -> updates the ":latest" tag (+ a :sha-<commit> tag)
+#   - push of a v* git tag   -> also publishes that version tag (e.g. :v1.2.0)
+#   - manual "Run workflow"  -> on demand
+#
+# The host then just `docker compose -f docker-compose.prod.yml pull` + `up -d`.
+name: Build and push images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # lets GITHUB_TOKEN push packages to GHCR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── App (runtime) image: ghcr.io/<owner>/<repo> ──
+      - name: App image tags
+        id: meta-app
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=tag
+
+      - name: Build & push app
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runner
+          push: true
+          tags: ${{ steps.meta-app.outputs.tags }}
+          labels: ${{ steps.meta-app.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Migrator (one-shot schema sync) image: ghcr.io/<owner>/<repo>-migrator ──
+      - name: Migrator image tags
+        id: meta-migrator
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-migrator
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=tag
+
+      - name: Build & push migrator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: migrator
+          push: true
+          tags: ${{ steps.meta-migrator.outputs.tags }}
+          labels: ${{ steps.meta-migrator.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

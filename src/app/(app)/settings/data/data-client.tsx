@@ -54,7 +54,7 @@ export function DataClient() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Export</CardTitle>
-          <CardDescription>Technicians, time off, teams, projects, jobs, and reference sheets.</CardDescription>
+          <CardDescription>Technicians, time off, teams, projects, jobs, holidays, and reference sheets.</CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={() => { window.location.href = "/api/admin/export"; }}>

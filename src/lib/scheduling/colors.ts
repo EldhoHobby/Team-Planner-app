@@ -49,10 +49,31 @@ export function dotStyle(color: string | null | undefined): CSSProperties {
   return { backgroundColor: toHex(color) };
 }
 
-/** Soft tinted card (backlog). */
+/** Soft tinted card (backlog). Text inherits the theme foreground so it stays
+ *  readable in both light and dark mode. */
 export function softStyle(color: string | null | undefined): CSSProperties {
   const h = toHex(color);
-  return { backgroundColor: `${h}22`, borderColor: `${h}66`, color: "#1f2937" };
+  return { backgroundColor: `${h}22`, borderColor: `${h}66` };
+}
+
+/**
+ * Tentative (pencilled-in) jobs: a SOLID technician-colour bar (so the text is as
+ * readable as a normal bar) with a subtle diagonal overlay for the "tentative"
+ * texture. Text uses the contrast colour + a faint shadow so it stays legible
+ * over the stripes.
+ */
+export function hatchStyle(color: string | null | undefined): CSSProperties {
+  const h = toHex(color);
+  const text = contrastText(h);
+  const stripe = text === "#ffffff" ? "rgba(255,255,255,0.40)" : "rgba(0,0,0,0.28)";
+  const shadow = text === "#ffffff" ? "0 1px 1px rgba(0,0,0,0.5)" : "0 1px 1px rgba(255,255,255,0.5)";
+  return {
+    backgroundColor: h,
+    backgroundImage: `repeating-linear-gradient(45deg, ${stripe} 0, ${stripe} 4px, transparent 4px, transparent 9px)`,
+    borderColor: h,
+    color: text,
+    textShadow: shadow,
+  };
 }
 
 // Seeded on first load so the board is immediately usable with the named crew.

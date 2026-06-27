@@ -2,15 +2,17 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, Database, FolderOpen, HardHat, ListChecks, Users } from "lucide-react";
+import { CalendarDays, CalendarX, Database, FolderOpen, HardHat, ListChecks, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV = [
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/settings/technicians", label: "Technicians", icon: HardHat },
+  { href: "/settings/holidays", label: "Holidays", icon: CalendarX },
   { href: "/settings/members", label: "Members", icon: Users },
   { href: "/settings/data", label: "Data", icon: Database },
 ] as const;
@@ -51,6 +53,7 @@ export function NavSidebar({
         <p className="truncate text-xs text-muted-foreground">
           {user.name ?? user.email}
         </p>
+        <ThemeToggle />
         <SignOutButton />
       </div>
     </aside>

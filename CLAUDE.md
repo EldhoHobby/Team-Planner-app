@@ -46,14 +46,20 @@ only export async functions from those files (shared types go in a sibling
 
 **Admin data export/import (keep in sync!).** The admin Excel round-trip lives in
 `src/lib/services/data-io.ts` (one sheet per entity: Technicians, Time Off, Teams,
-Projects, Jobs; Members/Organization are export-only). It's the SINGLE SOURCE OF
-TRUTH for that workbook. **Whenever you add a field to an exported entity
-(Technician, field-service Task/job, Project, Team, TechnicianTimeOff), you MUST
-also add it to that entity's column list + export row builder + (if editable) its
+Projects, Jobs, Holidays; Members/Organization are export-only). It's the SINGLE
+SOURCE OF TRUTH for that workbook. **Whenever you add a field to an exported entity
+(Technician, field-service Task/job, Project, Team, TechnicianTimeOff, Holiday), you
+MUST also add it to that entity's column list + export row builder + (if editable) its
 importer in `data-io.ts`**, so it always round-trips. Import is upsert-by-`id`
 (blank id = create, known id = update, never deletes) and admin-only. Never export
 secrets (password hashes, tokens). Export route: `src/app/api/admin/export`; UI:
-`src/app/(app)/settings/data`.
+`src/app/(app)/settings/data`. Technician is referenced by **name** on the Time Off
+and Jobs sheets (no `technicianId` column).
+
+The **schedule window** has its own Jobs-only Excel round-trip (Import button +
+`src/app/api/schedule/export` → `.xlsx`), built on the SAME shared Jobs columns /
+importer in `data-io.ts` (`buildJobsWorkbook` / `runJobsImport`) — so it stays in
+lock-step with the admin Jobs sheet. Unlike the admin import, it is NOT admin-gated.
 
 ### Key directories
 
@@ -78,7 +84,7 @@ src/app/(app)/settings/technicians/# crew CRUD (colour wheel) + technician time-
 src/app/(app)/settings/members/    # admin: invites + member reset links
 src/app/(app)/settings/data/       # admin Excel export/import UI
 src/app/api/admin/export/          # scoped .xlsx config export
-src/app/api/schedule/export/       # scoped schedule CSV export
+src/app/api/schedule/export/       # scoped schedule Excel (.xlsx) export (Jobs sheet)
 src/app/invite/[token]/            # public accept-invite
 src/app/reset/[token]/             # public set-new-password
 src/app/api/health/                # DB readiness probe
@@ -130,9 +136,10 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   multi-assignee.
 - **Field-service scheduling (primary):** done — jobs are `Task` rows with
   `kind=FIELD_SERVICE`; `/schedule` timeline + month calendar (Sunday-first),
-  drag-and-drop with optimistic UI, triage backlog, technician colour-coding,
+  drag-and-drop with optimistic UI, grouped job panel (Scheduled / Tentative /
+  Unscheduled, with sort + type filter, collapsible), technician colour-coding,
   conflict + view-aware capacity, technician management + time-off blocking,
-  filters, CSV export.
+  filters, full-height calendar, Excel (.xlsx) import/export.
 - **Admin data round-trip:** done — Excel export/import at `/settings/data`
   (`data-io.ts`), upsert-by-id with change detection + preview.
 - **Remote access:** done — Caddy serves localhost + LAN IP + public DuckDNS

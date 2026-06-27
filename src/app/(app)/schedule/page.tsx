@@ -6,8 +6,9 @@ import {
   listTechnicians,
 } from "@/lib/services/field-service";
 import { listTechTimeOff } from "@/lib/services/technicians";
+import { listHolidays } from "@/lib/services/holidays";
 import { ScheduleClient } from "./schedule-client";
-import type { JobRow, TechnicianOption, TechTimeOff } from "./types";
+import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 
 export const dynamic = "force-dynamic";
 
@@ -18,10 +19,11 @@ export default async function SchedulePage() {
   // Seed the named crew on first visit so the board is immediately usable.
   await ensureDefaultTechnicians(scope);
 
-  const [jobs, techs, timeOff] = await Promise.all([
+  const [jobs, techs, timeOff, holidays] = await Promise.all([
     listFieldJobs(scope),
     listTechnicians(scope),
     listTechTimeOff(scope),
+    listHolidays(scope),
   ]);
 
   const jobRows: JobRow[] = jobs.map((j) => ({
@@ -40,6 +42,7 @@ export default async function SchedulePage() {
     startDate: j.startDate ? j.startDate.toISOString().slice(0, 10) : null,
     endDate: j.endDate ? j.endDate.toISOString().slice(0, 10) : null,
     durationDays: j.durationDays,
+    tentative: j.tentative,
   }));
 
   const technicians: TechnicianOption[] = techs.map((t) => ({
@@ -56,11 +59,17 @@ export default async function SchedulePage() {
     reason: e.reason,
   }));
 
+  const holidayRows: HolidayLite[] = holidays.map((h) => ({
+    date: h.date.toISOString().slice(0, 10),
+    name: h.name,
+  }));
+
   return (
     <ScheduleClient
       jobs={jobRows}
       technicians={technicians}
       timeOff={timeOffRows}
+      holidays={holidayRows}
     />
   );
 }

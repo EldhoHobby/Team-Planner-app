@@ -19,6 +19,7 @@ async function assertUnique(
     const dupName = await prisma.technician.findFirst({
       where: {
         orgId: scope.ctx.orgId,
+        archived: false,
         name: { equals: opts.name, mode: "insensitive" },
         ...(opts.excludeId ? { NOT: { id: opts.excludeId } } : {}),
       },
@@ -31,6 +32,7 @@ async function assertUnique(
     const others = await prisma.technician.findMany({
       where: {
         orgId: scope.ctx.orgId,
+        archived: false,
         ...(opts.excludeId ? { NOT: { id: opts.excludeId } } : {}),
       },
       select: { color: true },
@@ -81,6 +83,20 @@ export async function updateTechnician(
       ...(color ? { color } : {}),
       ...(input.active !== undefined ? { active: input.active } : {}),
     },
+  });
+}
+
+/** Soft-delete: hide the technician everywhere but keep historical jobs intact. */
+export async function archiveTechnician(scope: TenantScope, id: string) {
+  assertAdmin(scope);
+  const tech = await prisma.technician.findFirst({
+    where: { id, orgId: scope.ctx.orgId },
+    select: { id: true },
+  });
+  if (!tech) throw new ForbiddenError("Technician not found");
+  return prisma.technician.update({
+    where: { id },
+    data: { archived: true, active: false },
   });
 }
 

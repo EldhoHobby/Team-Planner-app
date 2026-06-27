@@ -8,11 +8,13 @@ import {
   createJob,
   rescheduleJob,
   setJobStatus,
+  setJobTentative,
   deleteJob,
-  importJobsCsv,
 } from "@/lib/services/field-service";
+import { runJobsImport } from "@/lib/services/data-io";
+import { listAudit } from "@/lib/services/audit";
 import type { TaskFormState } from "./types";
-import type { JobFormState, ImportState } from "../schedule/types";
+import type { JobFormState, ImportState, AuditEntry } from "../schedule/types";
 
 const STATUSES = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"] as const;
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -133,7 +135,6 @@ const CreateJobSchema = z.object({
   description: z.string().max(4000).optional(),
   jobType: z.enum(JOB_TYPES).optional(),
   hardwareTarget: z.string().max(120).optional(),
-  priority: z.enum(PRIORITIES).default("MEDIUM"),
   technicianId: z.string().optional(),
   startDate: z.string().optional(),
   durationDays: z.coerce.number().int().positive().max(60).optional(),
@@ -144,6 +145,7 @@ export async function createJobAction(
   formData: FormData,
 ): Promise<JobFormState> {
   const { scope } = await requireScope();
+  const tentative = formData.get("tentative") != null;
   const parsed = CreateJobSchema.safeParse({
     title: formData.get("title"),
     soNumber: formData.get("soNumber") || undefined,
@@ -151,7 +153,6 @@ export async function createJobAction(
     description: formData.get("description") || undefined,
     jobType: formData.get("jobType") || undefined,
     hardwareTarget: formData.get("hardwareTarget") || undefined,
-    priority: formData.get("priority") || "MEDIUM",
     technicianId: formData.get("technicianId") || undefined,
     startDate: formData.get("startDate") || undefined,
     durationDays: formData.get("durationDays") || undefined,
@@ -165,6 +166,7 @@ export async function createJobAction(
       ...rest,
       technicianId: rest.technicianId || null,
       startDate: startDate ? new Date(startDate) : null,
+      tentative,
     });
     revalidatePath("/schedule");
     return { success: true };
@@ -215,6 +217,32 @@ export async function setJobStatusAction(input: {
   }
 }
 
+export async function setJobTentativeAction(input: {
+  jobId: string;
+  tentative: boolean;
+}): Promise<JobFormState> {
+  const { scope } = await requireScope();
+  try {
+    await setJobTentative(scope, input.jobId, input.tentative);
+    revalidatePath("/schedule");
+    return { success: true };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not update the job." };
+  }
+}
+
+export async function listJobHistoryAction(input: { jobId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "job", input.jobId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
 export async function deleteJobAction(input: { jobId: string }): Promise<JobFormState> {
   const { scope } = await requireScope();
   try {
@@ -227,30 +255,31 @@ export async function deleteJobAction(input: { jobId: string }): Promise<JobForm
   }
 }
 
-export async function importCsvAction(
+// Excel import for the schedule window. Upserts jobs by id using the shared Jobs
+// sheet definition in data-io.ts (round-trips with the schedule Export and the
+// admin Data round-trip). Not gated on org-admin — any scheduler may import.
+export async function importScheduleXlsxAction(
   _prev: ImportState,
   formData: FormData,
 ): Promise<ImportState> {
   const { scope } = await requireScope();
   const file = formData.get("file");
-  let text = "";
-  if (file && typeof file === "object" && "size" in file && (file as File).size > 0) {
-    text = await (file as File).text();
+  if (!file || typeof file !== "object" || !("arrayBuffer" in file) || (file as File).size === 0) {
+    return { error: "Choose an .xlsx file first." };
   }
-  if (!text.trim()) {
-    text = String(formData.get("csv") ?? "");
-  }
-  if (!text.trim()) return { error: "Paste CSV or choose a file first." };
-
   try {
-    const res = await importJobsCsv(scope, text);
+    const buf = await (file as File).arrayBuffer();
+    const summary = await runJobsImport(scope, buf, true);
     revalidatePath("/schedule");
-    const note = res.errors.length
-      ? ` (${res.errors.slice(0, 3).join("; ")}${res.errors.length > 3 ? "…" : ""})`
+    const r = summary.results[0];
+    const note = r && r.errors.length
+      ? ` (${r.errors.slice(0, 3).join("; ")}${r.errors.length > 3 ? "…" : ""})`
       : "";
-    return { message: `Imported ${res.created}, skipped ${res.skipped}.${note}` };
+    return {
+      message: `Imported ${summary.totalCreated} created, ${summary.totalUpdated} updated, ${r?.skipped ?? 0} skipped.${note}`,
+    };
   } catch (e) {
     if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not import the file." };
+    return { error: "Could not read that file — is it the exported .xlsx workbook?" };
   }
 }

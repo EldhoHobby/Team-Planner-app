@@ -38,9 +38,43 @@ const SHEET = {
   teams: "Teams",
   projects: "Projects",
   jobs: "Jobs",
+  holidays: "Holidays",
   members: "Members",
   organization: "Organization",
 } as const;
+
+// Shared Jobs column list + row builder — the SINGLE definition used by BOTH the
+// full admin workbook (buildWorkbook) and the schedule-window workbook
+// (buildJobsWorkbook), so the two can never drift. Technician is referenced by
+// name only (no technicianId column); project is export-only (informational).
+// endDate is intentionally NOT a column: it's always derived internally from
+// startDate + durationDays (endFromDuration), so it never needs to round-trip.
+const JOBS_COLUMNS = [
+  "id", "soNumber", "customer", "title", "scope", "jobType", "jobStatus",
+  "hardware", "priority", "technician", "project", "startDate",
+  "durationDays", "tentative",
+] as const;
+
+async function jobsExportRows(scope: TenantScope): Promise<Record<string, unknown>[]> {
+  const orgId = scope.ctx.orgId;
+  const techs = await prisma.technician.findMany({ where: { orgId }, select: { id: true, name: true } });
+  const techName = new Map(techs.map((t) => [t.id, t.name]));
+  const projects = await prisma.project.findMany({ where: { orgId }, select: { id: true, name: true } });
+  const projName = new Map(projects.map((p) => [p.id, p.name]));
+  const jobs = await prisma.task.findMany({
+    where: scope.whereTeam({ kind: "FIELD_SERVICE" as const }),
+    orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
+  });
+  return jobs.map((j) => ({
+    id: j.id, soNumber: j.soNumber ?? "", customer: j.customerName ?? "", title: j.title,
+    scope: j.description ?? "", jobType: j.jobType ?? "", jobStatus: j.jobStatus ?? "",
+    hardware: j.hardwareTarget ?? "", priority: j.priority,
+    technician: j.technicianId ? techName.get(j.technicianId) ?? "" : "",
+    project: projName.get(j.projectId) ?? "",
+    startDate: ymd(j.startDate), durationDays: j.durationDays ?? "",
+    tentative: j.tentative ? "true" : "false",
+  }));
+}
 
 // ─────────────────────────── helpers ───────────────────────────
 
@@ -125,21 +159,22 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
     "Removing a row from a sheet does NOT delete it from the system.",
     "Members and Organization sheets are read-only (export only) and ignored on import.",
     "Dates use YYYY-MM-DD. Colours are hex like #3b82f6. active/archived accept true/false.",
-    "For Time Off and Jobs you may set the Technician by name (the technicianId is optional).",
+    "For Time Off and Jobs, set the Technician by name (it must match a technician exactly).",
+    "Holidays round-trip by date: one holiday per date; re-importing the same date renames it.",
   ].forEach((t) => info.addRow({ t }));
 
   // Technicians
   const techs = await prisma.technician.findMany({ where: { orgId }, orderBy: { name: "asc" } });
-  addSheet(wb, SHEET.technicians, ["id", "name", "color", "active"],
-    techs.map((t) => ({ id: t.id, name: t.name, color: toHex(t.color), active: t.active })));
+  addSheet(wb, SHEET.technicians, ["id", "name", "color", "active", "archived"],
+    techs.map((t) => ({ id: t.id, name: t.name, color: toHex(t.color), active: t.active, archived: t.archived })));
 
   const techName = new Map(techs.map((t) => [t.id, t.name]));
 
   // Time off
   const off = await prisma.technicianTimeOff.findMany({ where: { orgId }, orderBy: { startDate: "asc" } });
-  addSheet(wb, SHEET.timeOff, ["id", "technicianId", "technician", "startDate", "endDate", "reason"],
+  addSheet(wb, SHEET.timeOff, ["id", "technician", "startDate", "endDate", "reason"],
     off.map((o) => ({
-      id: o.id, technicianId: o.technicianId, technician: techName.get(o.technicianId) ?? "",
+      id: o.id, technician: techName.get(o.technicianId) ?? "",
       startDate: ymd(o.startDate), endDate: ymd(o.endDate), reason: o.reason ?? "",
     })));
 
@@ -155,23 +190,14 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
       id: p.id, name: p.name, team: teamName.get(p.teamId) ?? "", teamId: p.teamId,
       description: p.description ?? "", archived: p.archived,
     })));
-  const projName = new Map(projects.map((p) => [p.id, p.name]));
 
-  // Jobs (field-service tasks)
-  const jobs = await prisma.task.findMany({
-    where: scope.whereTeam({ kind: "FIELD_SERVICE" as const }),
-    orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
-  });
-  addSheet(wb, SHEET.jobs,
-    ["id", "soNumber", "customer", "title", "scope", "jobType", "jobStatus", "hardware", "priority", "technician", "technicianId", "project", "startDate", "endDate", "durationDays"],
-    jobs.map((j) => ({
-      id: j.id, soNumber: j.soNumber ?? "", customer: j.customerName ?? "", title: j.title,
-      scope: j.description ?? "", jobType: j.jobType ?? "", jobStatus: j.jobStatus ?? "",
-      hardware: j.hardwareTarget ?? "", priority: j.priority,
-      technician: j.technicianId ? techName.get(j.technicianId) ?? "" : "",
-      technicianId: j.technicianId ?? "", project: projName.get(j.projectId) ?? "",
-      startDate: ymd(j.startDate), endDate: ymd(j.endDate), durationDays: j.durationDays ?? "",
-    })));
+  // Jobs (field-service tasks) — uses the shared column list + row builder.
+  addSheet(wb, SHEET.jobs, [...JOBS_COLUMNS], await jobsExportRows(scope));
+
+  // Holidays
+  const holidays = await prisma.holiday.findMany({ where: { orgId }, orderBy: { date: "asc" } });
+  addSheet(wb, SHEET.holidays, ["id", "date", "name"],
+    holidays.map((h) => ({ id: h.id, date: ymd(h.date), name: h.name })));
 
   // Members (export only — no secrets)
   const memberships = await prisma.membership.findMany({ where: { orgId }, include: { user: true }, orderBy: { createdAt: "asc" } });
@@ -244,12 +270,13 @@ async function importTechnicians(scope: TenantScope, rows: Record<string, string
     if (!name) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: name is required`); continue; }
     const color = isValidColor(r.color ?? "") ? toHex(r.color) : DEFAULT_HEX;
     const active = parseBool(r.active, true);
+    const archived = parseBool(r.archived, false);
     const id = (r.id ?? "").trim();
     try {
       if (id) {
-        const ex = await prisma.technician.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, color: true, active: true } });
+        const ex = await prisma.technician.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, color: true, active: true, archived: true } });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: id not found`); continue; }
-        if (ex.name === name && toHex(ex.color) === color && ex.active === active) { res.unchanged++; continue; }
+        if (ex.name === name && toHex(ex.color) === color && ex.active === active && ex.archived === archived) { res.unchanged++; continue; }
         // Only enforce uniqueness on a field that's actually changing.
         const v = await uniqueTechViolation(scope, {
           name: ex.name.toLowerCase() === name.toLowerCase() ? undefined : name,
@@ -257,12 +284,12 @@ async function importTechnicians(scope: TenantScope, rows: Record<string, string
           excludeId: id,
         });
         if (v) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: ${v}`); continue; }
-        if (apply) await prisma.technician.update({ where: { id }, data: { name, color, active } });
+        if (apply) await prisma.technician.update({ where: { id }, data: { name, color, active, archived } });
         res.updated++;
       } else {
         const v = await uniqueTechViolation(scope, { name, color });
         if (v) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: ${v}`); continue; }
-        if (apply) await prisma.technician.create({ data: { orgId: scope.ctx.orgId, name, color, active } });
+        if (apply) await prisma.technician.create({ data: { orgId: scope.ctx.orgId, name, color, active, archived } });
         res.created++;
       }
     } catch {
@@ -285,8 +312,7 @@ async function importTimeOff(scope: TenantScope, rows: Record<string, string>[],
   const techs = await techMap(scope);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
-    let technicianId = (r.technicianId ?? "").trim();
-    if (!technicianId && r.technician) technicianId = techs.byName.get(r.technician.trim().toLowerCase()) ?? "";
+    const technicianId = r.technician ? techs.byName.get(r.technician.trim().toLowerCase()) ?? "" : "";
     if (!technicianId || !techs.byId.has(technicianId)) {
       res.skipped++; res.errors.push(`${SHEET.timeOff} row ${line}: unknown technician`); continue;
     }
@@ -378,8 +404,10 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
     const title = (r.title ?? "").trim();
     if (!title) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: title is required`); continue; }
 
-    let technicianId: string | null = (r.technicianId ?? "").trim() || null;
-    if (!technicianId && r.technician) technicianId = techs.byName.get(r.technician.trim().toLowerCase()) ?? null;
+    let technicianId: string | null = r.technician ? techs.byName.get(r.technician.trim().toLowerCase()) ?? null : null;
+    if (r.technician && !technicianId) {
+      res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: unknown technician`); continue;
+    }
     if (technicianId && !techs.byId.has(technicianId)) {
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: unknown technician`); continue;
     }
@@ -388,6 +416,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
     const priority = r.priority ? PRIORITY_BY_LABEL[r.priority.trim().toLowerCase()] ?? "MEDIUM" : "MEDIUM";
     const start = parseDate(r.startDate);
     const durationDays = r.durationDays && Number(r.durationDays) > 0 ? Number(r.durationDays) : null;
+    const tentative = parseBool(r.tentative, false);
     const id = (r.id ?? "").trim();
 
     try {
@@ -397,7 +426,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           select: {
             id: true, title: true, soNumber: true, customerName: true, description: true,
             jobType: true, jobStatus: true, hardwareTarget: true, priority: true,
-            technicianId: true, startDate: true, durationDays: true,
+            technicianId: true, startDate: true, durationDays: true, tentative: true,
           },
         });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: id not found`); continue; }
@@ -416,6 +445,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           endDate: end,
           durationDays: start ? dur : durationDays,
           jobStatus: jobStatus ?? (start ? "SCHEDULED" : "UNCONFIRMED"),
+          tentative,
         };
         const same =
           ex.title === data.title &&
@@ -428,7 +458,8 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           (ex.technicianId ?? null) === (data.technicianId ?? null) &&
           ymd(ex.startDate) === ymd(data.startDate) &&
           (ex.durationDays ?? null) === (data.durationDays ?? null) &&
-          (ex.jobStatus ?? null) === (data.jobStatus ?? null);
+          (ex.jobStatus ?? null) === (data.jobStatus ?? null) &&
+          ex.tentative === data.tentative;
         if (same) { res.unchanged++; continue; }
         if (apply) await prisma.task.update({ where: { id }, data });
         res.updated++;
@@ -437,7 +468,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           await createJob(scope, {
             title, soNumber: (r.soNumber ?? "").trim() || null, customerName: (r.customer ?? "").trim() || null,
             description: (r.scope ?? "").trim() || null, jobType, hardwareTarget: (r.hardware ?? "").trim() || null,
-            priority, technicianId, startDate: start, durationDays, jobStatus,
+            priority, technicianId, startDate: start, durationDays, jobStatus, tentative,
           });
         }
         res.created++;
@@ -447,6 +478,94 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
     }
   }
   return res;
+}
+
+async function importHolidays(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
+  const res: SheetResult = { sheet: SHEET.holidays, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]; const line = i + 2;
+    const name = (r.name ?? "").trim();
+    if (!name) { res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: name is required`); continue; }
+    const date = parseDate(r.date);
+    if (!date) { res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: invalid date`); continue; }
+    const id = (r.id ?? "").trim();
+    try {
+      if (id) {
+        const ex = await prisma.holiday.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, date: true, name: true } });
+        if (!ex) { res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: id not found`); continue; }
+        if (ymd(ex.date) === ymd(date) && ex.name === name) { res.unchanged++; continue; }
+        if (apply) await prisma.holiday.update({ where: { id }, data: { date, name } });
+        res.updated++;
+      } else {
+        // No id: upsert by (orgId, date) — one holiday per date.
+        const ex = await prisma.holiday.findFirst({ where: { orgId: scope.ctx.orgId, date }, select: { id: true, name: true } });
+        if (ex) {
+          if (ex.name === name) { res.unchanged++; continue; }
+          if (apply) await prisma.holiday.update({ where: { id: ex.id }, data: { name } });
+          res.updated++;
+        } else {
+          if (apply) await prisma.holiday.create({ data: { orgId: scope.ctx.orgId, date, name } });
+          res.created++;
+        }
+      }
+    } catch {
+      res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: could not save`);
+    }
+  }
+  return res;
+}
+
+function summarize(results: SheetResult[]): ImportSummary {
+  return {
+    results,
+    totalCreated: results.reduce((a, r) => a + r.created, 0),
+    totalUpdated: results.reduce((a, r) => a + r.updated, 0),
+    totalUnchanged: results.reduce((a, r) => a + r.unchanged, 0),
+    totalErrors: results.reduce((a, r) => a + r.errors.length, 0),
+  };
+}
+
+// ═════════════════ Schedule-window workbook (Jobs only) ═════════════════
+// The /schedule Import + Export use these. They reuse the SAME Jobs columns and
+// importer as the admin round-trip, so the two stay in lock-step. Unlike the
+// admin import, these are NOT gated on org-admin — any scheduler can use them.
+
+export async function buildJobsWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Team Planner";
+  wb.created = new Date();
+
+  const info = wb.addWorksheet("README");
+  info.columns = [{ header: "How to use this file", key: "t", width: 90 }];
+  info.getRow(1).font = { bold: true };
+  [
+    "Edit the Jobs sheet, then re-import it from the schedule's Import button.",
+    "Keep the 'id' column intact: rows with an id are UPDATED; rows with a blank id are CREATED.",
+    "Removing a row does NOT delete the job.",
+    "Set the Technician by name (must match a technician exactly). Leave blank to unassign.",
+    "Dates use YYYY-MM-DD. jobType/jobStatus/priority accept their labels. tentative is true/false.",
+    "project is informational (export only) and ignored on import.",
+  ].forEach((t) => info.addRow({ t }));
+
+  addSheet(wb, SHEET.jobs, [...JOBS_COLUMNS], await jobsExportRows(scope));
+  return wb.xlsx.writeBuffer();
+}
+
+export async function runJobsImport(
+  scope: TenantScope,
+  data: ArrayBuffer,
+  apply: boolean,
+): Promise<ImportSummary> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(data);
+  const ws = wb.getWorksheet(SHEET.jobs);
+  const results: SheetResult[] = [];
+  if (ws) {
+    results.push(await importJobs(scope, sheetRows(ws), apply));
+  } else {
+    results.push({ sheet: SHEET.jobs, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: ["No 'Jobs' sheet found in the workbook."] });
+  }
+  return summarize(results);
 }
 
 /**
@@ -477,12 +596,7 @@ export async function runImport(
   await run(SHEET.projects, importProjects);
   await run(SHEET.timeOff, importTimeOff);
   await run(SHEET.jobs, importJobs);
+  await run(SHEET.holidays, importHolidays);
 
-  return {
-    results,
-    totalCreated: results.reduce((a, r) => a + r.created, 0),
-    totalUpdated: results.reduce((a, r) => a + r.updated, 0),
-    totalUnchanged: results.reduce((a, r) => a + r.unchanged, 0),
-    totalErrors: results.reduce((a, r) => a + r.errors.length, 0),
-  };
+  return summarize(results);
 }

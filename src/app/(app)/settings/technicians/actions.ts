@@ -6,6 +6,7 @@ import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
 import {
   createTechnician,
   updateTechnician,
+  archiveTechnician,
   createTechTimeOff,
   deleteTechTimeOff,
 } from "@/lib/services/technicians";
@@ -57,6 +58,19 @@ export async function updateTechnicianAction(input: {
   } catch (e) {
     if (e instanceof ForbiddenError) return { error: e.message };
     return { error: "Could not update the technician." };
+  }
+}
+
+export async function archiveTechnicianAction(input: { id: string }): Promise<TechFormState> {
+  const { scope } = await requireScope();
+  try {
+    await archiveTechnician(scope, input.id);
+    revalidatePath("/settings/technicians");
+    revalidatePath("/schedule");
+    return { success: true };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not delete the technician." };
   }
 }
 

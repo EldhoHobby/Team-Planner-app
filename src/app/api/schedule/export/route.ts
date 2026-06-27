@@ -1,19 +1,20 @@
 import { requireScope } from "@/lib/auth/current-user";
-import { listFieldJobs, serializeJobsCsv } from "@/lib/services/field-service";
+import { buildJobsWorkbook } from "@/lib/services/data-io";
 
 export const dynamic = "force-dynamic";
 
-// Scoped CSV export of the field-service schedule. Auth + tenancy via requireScope.
+// Scoped Excel export of the field-service schedule (Jobs sheet). Auth + tenancy
+// via requireScope. Round-trips with the schedule Import button and the admin
+// Data round-trip (shared Jobs columns in data-io.ts).
 export async function GET() {
   try {
     const { scope } = await requireScope();
-    const jobs = await listFieldJobs(scope);
-    const csv = serializeJobsCsv(jobs);
+    const data = await buildJobsWorkbook(scope);
     const date = new Date().toISOString().slice(0, 10);
-    return new Response(csv, {
+    return new Response(Buffer.from(data as ArrayBuffer), {
       headers: {
-        "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="schedule-${date}.csv"`,
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Disposition": `attachment; filename="schedule-${date}.xlsx"`,
       },
     });
   } catch {

@@ -4,6 +4,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import type { JobType, JobStatus, TaskKind } from "@prisma/client";
 import { DEFAULT_TECHNICIANS } from "@/lib/scheduling/colors";
 import { endFromDuration, inclusiveDayCount, toUtcMidnight } from "@/lib/scheduling/calc";
+import { writeAudit } from "@/lib/services/audit";
 
 export type { JobType, JobStatus };
 
@@ -26,7 +27,7 @@ export async function ensureDefaultTechnicians(scope: TenantScope): Promise<void
 
 export function listTechnicians(scope: TenantScope) {
   return prisma.technician.findMany({
-    where: { orgId: scope.ctx.orgId },
+    where: { orgId: scope.ctx.orgId, archived: false },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
 }
@@ -95,6 +96,7 @@ export interface CreateJobInput {
   startDate?: Date | null;
   durationDays?: number | null;
   jobStatus?: JobStatus;
+  tentative?: boolean;
 }
 
 /** Derive endDate + a coherent jobStatus from start/duration/technician. */
@@ -120,7 +122,7 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
 
   const { start, end, duration, status } = deriveSchedule(input);
 
-  return prisma.task.create({
+  const job = await prisma.task.create({
     data: {
       orgId: scope.ctx.orgId,
       teamId,
@@ -138,9 +140,31 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
       endDate: end,
       durationDays: duration,
       jobStatus: status,
+      tentative: input.tentative ?? false,
     },
     include: JOB_INCLUDE,
   });
+  await writeAudit(scope, { entity: "job", entityId: job.id, action: "created", summary: `Created "${job.title}"` });
+  return job;
+}
+
+export async function setJobTentative(
+  scope: TenantScope,
+  id: string,
+  tentative: boolean,
+) {
+  const job = await prisma.task.findFirst({
+    where: { id, kind: "FIELD_SERVICE", ...scope.team() },
+    select: { id: true },
+  });
+  if (!job) throw new ForbiddenError("Job not found");
+  const updated = await prisma.task.update({
+    where: { id },
+    data: { tentative },
+    include: JOB_INCLUDE,
+  });
+  await writeAudit(scope, { entity: "job", entityId: id, action: "updated", summary: tentative ? "Marked tentative" : "Marked confirmed" });
+  return updated;
 }
 
 export interface RescheduleInput {
@@ -181,19 +205,45 @@ export async function rescheduleJob(
         : undefined,
   });
 
-  return prisma.task.update({
+  // Preserve the day-count even when unscheduled, so a trip through the backlog
+  // doesn't silently reset a multi-day job back to 1 day.
+  const storedDuration = nextDuration && nextDuration > 0 ? nextDuration : 1;
+  const updated = await prisma.task.update({
     where: { id },
     data: {
       startDate: start,
       endDate: end,
-      // Preserve the day-count even when unscheduled, so a trip through the
-      // backlog doesn't silently reset a multi-day job back to 1 day.
-      durationDays: nextDuration && nextDuration > 0 ? nextDuration : 1,
+      durationDays: storedDuration,
       technicianId: nextTech || null,
       jobStatus: start ? status : "UNCONFIRMED",
     },
     include: JOB_INCLUDE,
   });
+
+  // Describe exactly what changed so the history reads clearly: a move, a
+  // duration change (resize), and/or a reassignment — not always "Moved".
+  const oldStart = job.startDate ? job.startDate.toISOString().slice(0, 10) : null;
+  const newStart = start ? start.toISOString().slice(0, 10) : null;
+  const oldDuration = job.durationDays ?? null;
+  const parts: string[] = [];
+  if (oldStart !== newStart) {
+    parts.push(newStart ? `Moved to ${newStart}` : "Moved to the backlog");
+  }
+  if (oldStart && newStart && oldDuration !== storedDuration) {
+    parts.push(`Duration ${oldDuration ?? "?"} → ${storedDuration} day${storedDuration === 1 ? "" : "s"}`);
+  }
+  if ((job.technicianId ?? null) !== (nextTech ?? null)) {
+    parts.push(`Assigned to ${updated.technician?.name ?? "Unassigned"}`);
+  }
+  const summary = parts.length ? parts.join(" · ") : "Updated";
+
+  // Coalesce rapid repeats (e.g. several quick drags) into one history entry.
+  await writeAudit(
+    scope,
+    { entity: "job", entityId: id, action: "rescheduled", summary },
+    { coalesceMs: 60_000 },
+  );
+  return updated;
 }
 
 export async function setJobStatus(
@@ -206,20 +256,23 @@ export async function setJobStatus(
     select: { id: true },
   });
   if (!job) throw new ForbiddenError("Job not found");
-  return prisma.task.update({
+  const updated = await prisma.task.update({
     where: { id },
     data: { jobStatus },
     include: JOB_INCLUDE,
   });
+  await writeAudit(scope, { entity: "job", entityId: id, action: "status", summary: `Status → ${jobStatus}` });
+  return updated;
 }
 
 export async function deleteJob(scope: TenantScope, id: string) {
   const job = await prisma.task.findFirst({
     where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-    select: { id: true },
+    select: { id: true, title: true },
   });
   if (!job) throw new ForbiddenError("Job not found");
   await prisma.task.delete({ where: { id } });
+  await writeAudit(scope, { entity: "job", entityId: id, action: "deleted", summary: `Deleted "${job.title}"` });
 }
 
 // ─────────────────────────── CSV import/export ───────────────────────────

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DatePicker } from "@/components/ui/date-picker";
 import { createTaskAction, updateTaskAction, deleteTaskAction } from "./actions";
 import type {
   TaskRow,
@@ -301,16 +302,9 @@ function TaskForm({
               Due date{" "}
               <span className="font-normal text-muted-foreground">(optional)</span>
             </Label>
-            <input
-              id="task-due"
+            <DatePicker
               name="dueDate"
-              type="date"
-              className={selectClass}
-              defaultValue={
-                initialTask?.dueDate
-                  ? initialTask.dueDate.slice(0, 10)
-                  : undefined
-              }
+              defaultValue={initialTask?.dueDate ? initialTask.dueDate.slice(0, 10) : ""}
             />
           </div>
           <div className="space-y-2">
