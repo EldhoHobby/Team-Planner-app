@@ -5,3 +5,8 @@ export interface DataIoState {
   phase?: "preview" | "applied";
   summary?: ImportSummary;
 }
+
+export interface ResetState {
+  error?: string;
+  done?: boolean;
+}

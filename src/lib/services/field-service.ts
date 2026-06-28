@@ -15,8 +15,15 @@ const JOB_INCLUDE = {
 
 // ─────────────────────────── Technicians ───────────────────────────
 
-/** Idempotently seed the default crew the first time an org opens the board. */
+/**
+ * Optionally seed the default crew the first time an org opens the board.
+ *
+ * OFF by default — a fresh install starts with no technicians, so production
+ * databases never get the built-in demo crew (set `SEED_DEFAULT_TECHNICIANS=true`
+ * to opt in for dev/demo). Still idempotent: only seeds when the org has none.
+ */
 export async function ensureDefaultTechnicians(scope: TenantScope): Promise<void> {
+  if (process.env.SEED_DEFAULT_TECHNICIANS !== "true") return;
   const count = await prisma.technician.count({ where: { orgId: scope.ctx.orgId } });
   if (count > 0) return;
   await prisma.technician.createMany({

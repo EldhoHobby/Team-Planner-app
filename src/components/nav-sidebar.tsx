@@ -6,6 +6,7 @@ import { CalendarDays, CalendarX, Database, FolderOpen, HardHat, ListChecks, Use
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { VERSION_LABEL } from "@/lib/version";
 
 const NAV = [
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
@@ -55,6 +56,15 @@ export function NavSidebar({
         </p>
         <ThemeToggle />
         <SignOutButton />
+        <p className="pt-1 text-center text-[10px] text-muted-foreground" title="Application version and build date">
+          {VERSION_LABEL}
+        </p>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/DreamsLIVE_logo_png.png"
+          alt="Dreams Live Solutions"
+          className="mx-auto mt-1 w-36"
+        />
       </div>
     </aside>
   );

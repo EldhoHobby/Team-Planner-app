@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useActionState, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Download, CheckCircle2, AlertTriangle } from "lucide-react";
-import { previewImportAction, applyImportAction } from "./actions";
-import type { DataIoState } from "./types";
+import { Download, CheckCircle2, AlertTriangle, Trash2 } from "lucide-react";
+import { previewImportAction, applyImportAction, resetDatabaseAction } from "./actions";
+import type { DataIoState, ResetState } from "./types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Modal } from "@/components/ui/modal";
 import {
   Card,
   CardContent,
@@ -20,6 +22,19 @@ export function DataClient() {
   const [file, setFile] = useState<File | null>(null);
   const [state, setState] = useState<DataIoState>({});
   const [pending, start] = useTransition();
+
+  // Danger zone: reset all planning data to fresh.
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetState, resetAction, resetting] = useActionState(
+    resetDatabaseAction,
+    {} as ResetState,
+  );
+  useEffect(() => {
+    if (resetState.done) {
+      setResetOpen(false);
+      router.refresh();
+    }
+  }, [resetState.done, router]);
 
   const withFile = (
     action: (prev: DataIoState, fd: FormData) => Promise<DataIoState>,
@@ -141,6 +156,68 @@ export function DataClient() {
           ) : null}
         </CardContent>
       </Card>
+
+      <Card className="border-destructive/50">
+        <CardHeader>
+          <CardTitle className="text-lg text-destructive">Danger zone</CardTitle>
+          <CardDescription>
+            Reset all planning data — jobs, projects, teams, technicians, time off,
+            holidays, and history — back to a fresh, empty state. Your login and
+            organization are kept. This cannot be undone.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="outline"
+            className="border-destructive text-destructive hover:bg-destructive/10"
+            onClick={() => setResetOpen(true)}
+          >
+            <Trash2 className="mr-1.5 h-4 w-4" /> Reset to fresh…
+          </Button>
+          {resetState.done ? (
+            <p className="mt-3 flex items-center gap-2 text-sm text-green-600">
+              <CheckCircle2 className="h-4 w-4" /> All planning data was reset.
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Modal
+        open={resetOpen}
+        onClose={() => setResetOpen(false)}
+        title="Reset everything to fresh?"
+        description="This permanently deletes all jobs, projects, teams, technicians, time off, holidays, and change history for your organization. Your account and login stay. This cannot be undone."
+      >
+        <form action={resetAction} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="confirm">
+              Type <span className="font-mono font-semibold">RESET</span> to confirm
+            </Label>
+            <Input id="confirm" name="confirm" autoComplete="off" placeholder="RESET" />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="password">Your password</Label>
+            <Input id="password" name="password" type="password" autoComplete="current-password" />
+          </div>
+
+          {resetState.error ? (
+            <p role="alert" className="text-sm text-destructive">{resetState.error}</p>
+          ) : null}
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setResetOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={resetting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {resetting ? "Resetting…" : "Reset everything"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </main>
   );
 }

@@ -1,22 +1,19 @@
 # Reverse proxy + TLS termination.
 #
-# Two site blocks:
-#  1) Public domain — automatic, trusted Let's Encrypt certificate. Requires the
-#     domain's DNS to point at your public IP and ports 80+443 forwarded to this
-#     host (port 80 is used for the ACME challenge).
-#  2) Local + LAN — internal self-signed cert for https://planner.localhost and
-#     https://192.168.10.71.
+# Offline / LAN setup: a single self-signed (internal) certificate serves the app
+# over HTTPS for localhost and this host's LAN IP — no internet / Let's Encrypt
+# needed. Change/add the IP below to match the host, and use a static IP or DHCP
+# reservation so it doesn't change out from under you.
 #
-# If the public cert can't be issued yet (DNS/forwarding not ready), Caddy keeps
-# retrying in the background and the local/LAN block still works.
+# To expose a public domain with a trusted Let's Encrypt cert instead (requires
+# internet + ports 80/443 reachable from outside), add a block like:
+#   your-domain.example.org {
+#     encode gzip
+#     reverse_proxy app:3000
+#   }
 
-eldho-planner01.duckdns.org {
-	encode gzip
-	reverse_proxy app:3000
-}
-
-planner.localhost, 192.168.10.71 {
-	encode gzip
-	reverse_proxy app:3000
-	tls internal
+planner.localhost, 10.210.4.65 {
+  encode gzip
+  reverse_proxy app:3000
+  tls internal
 }

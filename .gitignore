@@ -27,3 +27,6 @@ next-env.d.ts
 
 # local agent / tooling cache (not part of the app)
 /.claude
+
+# docker image bundles for offline deploy (large; never commit)
+*.tar

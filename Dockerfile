@@ -15,7 +15,9 @@ RUN apk add --no-cache libc6-compat openssl
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
-RUN npm run build
+# Stamp the build date (dd-mm-yyyy) into the bundle. Next.js inlines NEXT_PUBLIC_*
+# at build, so the version string shows when this image was built.
+RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%d-%m-%Y)" npm run build
 
 # 3. Migrator image — keeps the FULL node_modules so the Prisma CLI (and all of
 #    its transitive deps) work. Used by the one-shot `migrate` compose service to

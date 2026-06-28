@@ -16,7 +16,8 @@ export default async function SchedulePage() {
   await requireAuth();
   const { scope } = await requireScope();
 
-  // Seed the named crew on first visit so the board is immediately usable.
+  // Optionally seed a demo crew on first visit (opt-in via SEED_DEFAULT_TECHNICIANS;
+  // off by default, so production starts with no technicians). No-op otherwise.
   await ensureDefaultTechnicians(scope);
 
   const [jobs, techs, timeOff, holidays] = await Promise.all([

@@ -1,22 +1,25 @@
-# Production stack for the HOST machine — pulls prebuilt images from GHCR instead
-# of building locally. Use this on the always-on computer that serves the app.
+# OFFLINE stack for a host with NO internet. Uses locally-loaded images only —
+# `pull_policy: never` makes Docker fail loudly instead of trying to reach a
+# registry. Load the image bundle first (docker load -i ...), then:
 #
-#   docker compose -f docker-compose.prod.yml pull
-#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.offline.yml up -d
 #
-# Pin a specific release for rollback by setting IMAGE_TAG (e.g. IMAGE_TAG=sha-abc1234
-# or IMAGE_TAG=v1.2.0) in your .env; it defaults to "latest".
-#
-# Image names are the lowercase of your GitHub repo (EldhoHobby/Team-Planner-app):
-#   app      -> ghcr.io/eldhohobby/team-planner-app
-#   migrator -> ghcr.io/eldhohobby/team-planner-app-migrator
+# The four images below must already be present on the host (from the bundle):
+#   team-planner-app:latest            (your app, built on the dev PC)
+#   team-planner-app-migrator:latest   (schema sync, built on the dev PC)
+#   caddy:2-alpine                     (pulled on the dev PC, then saved)
+#   postgres:16-alpine                 (pulled on the dev PC, then saved)
 
 services:
   proxy:
     image: caddy:2-alpine
+    pull_policy: never
     restart: unless-stopped
+    # Only 443 is published. Port 80 is intentionally NOT mapped to the host —
+    # offline + self-signed TLS doesn't need it (it's only for HTTP→HTTPS
+    # redirects / Let's Encrypt), and Windows often has port 80 reserved by
+    # HTTP.sys/IIS. Caddy still listens on 80 INSIDE the container, harmlessly.
     ports:
-      - "80:80"
       - "443:443"
     environment:
       APP_DOMAIN: ${APP_DOMAIN:-planner.localhost}
@@ -31,7 +34,8 @@ services:
 
   # One-shot: syncs the DB schema, then exits. Runs before app starts.
   migrate:
-    image: ghcr.io/eldhohobby/team-planner-app-migrator:${IMAGE_TAG:-latest}
+    image: team-planner-app-migrator:latest
+    pull_policy: never
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
     depends_on:
@@ -42,7 +46,8 @@ services:
     restart: "no"
 
   app:
-    image: ghcr.io/eldhohobby/team-planner-app:${IMAGE_TAG:-latest}
+    image: team-planner-app:latest
+    pull_policy: never
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
@@ -66,6 +71,7 @@ services:
 
   db:
     image: postgres:16-alpine
+    pull_policy: never
     restart: unless-stopped
     environment:
       POSTGRES_USER: planner

@@ -43,6 +43,7 @@ services:
       SMTP_URL: ${SMTP_URL:-}
       SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
       NODE_ENV: production
     volumes:
       - uploads:/app/uploads          # task attachments, persisted on the host

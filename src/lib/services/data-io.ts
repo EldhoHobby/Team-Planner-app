@@ -128,6 +128,32 @@ const PRIORITY_BY_LABEL: Record<string, TaskPriority> = {
   urgent: "URGENT",
 };
 
+// ═══════════════════════════════ RESET ═══════════════════════════════
+
+/**
+ * Wipe all PLANNING data for the caller's org back to a fresh state — jobs,
+ * tasks, projects, teams, technicians, time-off, holidays, calendar events,
+ * attachments, invitations, and audit history. Users, memberships, the
+ * organization, and sessions are KEPT, so the admin stays logged in.
+ *
+ * Org-admin only. Deletes are org-scoped (the org boundary is never crossed) and
+ * rely on the schema's ON DELETE CASCADE to remove children (e.g. deleting a team
+ * removes its projects → boards → tasks → assignments/attachments).
+ */
+export async function resetOrgData(scope: TenantScope): Promise<void> {
+  if (!scope.ctx.isOrgAdmin) throw new ForbiddenError("Admins only");
+  const orgId = scope.ctx.orgId;
+  await prisma.$transaction([
+    prisma.auditLog.deleteMany({ where: { orgId } }),
+    prisma.holiday.deleteMany({ where: { orgId } }),
+    prisma.technician.deleteMany({ where: { orgId } }), // cascades technician time-off
+    prisma.invitation.deleteMany({ where: { orgId } }),
+    // Teams cascade: projects → boards → columns → tasks → assignments/attachments,
+    // plus team memberships, calendar events, and team time-off.
+    prisma.team.deleteMany({ where: { orgId } }),
+  ]);
+}
+
 // ═══════════════════════════════ EXPORT ═══════════════════════════════
 
 function addSheet(
