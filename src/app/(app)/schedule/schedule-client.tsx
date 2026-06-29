@@ -260,7 +260,7 @@ export function ScheduleClient({
     (fSo === "ALL" || j.soNumber === fSo) &&
     matchesStatus(j, fStatus);
 
-  const visible = useMemo(() => jobs.filter(matches), [jobs, fTech, fType, fStatus]);
+  const visible = useMemo(() => jobs.filter(matches), [jobs, fTech, fType, fSo, fStatus]);
   const scheduled = visible.filter((j) => j.startDate);
   const unscheduled = visible.filter((j) => !j.startDate);
   const tentativeCount = visible.filter((j) => j.tentative).length;
@@ -533,8 +533,6 @@ export function ScheduleClient({
         {sidebarOpen ? (
           <aside
             className="flex w-72 shrink-0 flex-col border-r bg-card/40"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onDropBacklog}
             aria-label="Jobs queue"
           >
             <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
@@ -577,7 +575,18 @@ export function ScheduleClient({
         {/* Main view */}
         <div className={`min-w-0 flex-1 ${view === "calendar" ? "overflow-hidden" : "overflow-auto"}`}>
           {view === "calendar" ? (
-            <MonthCalendar month={anchor} jobs={visible} conflicts={warnings} holidays={holidayMap} onOpenJob={setSelected} onDropDay={moveDate} onClearDate={(jobId) => moveDate(jobId, null)} />
+            <MonthCalendar
+              month={anchor}
+              jobs={visible}
+              conflicts={warnings}
+              holidays={holidayMap}
+              technicians={technicians}
+              fTech={fTech}
+              isOffOnDay={isOffOnDay}
+              onOpenJob={setSelected}
+              onDropDay={moveDate}
+              onClearDate={(jobId) => moveDate(jobId, null)}
+            />
           ) : (
             <>
               <div className="sticky top-0 z-10 grid grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b bg-background">

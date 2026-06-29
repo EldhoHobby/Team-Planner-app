@@ -10,8 +10,9 @@ import {
   MS_PER_DAY,
 } from "@/lib/scheduling/calc";
 import { barStyle, hatchStyle } from "@/lib/scheduling/colors";
+import { dotStyle } from "@/lib/scheduling/colors";
 import { jobLabel } from "./format";
-import type { JobRow } from "./types";
+import type { JobRow, TechnicianOption } from "./types";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const HEADER_H = 28; // px reserved at the top of a cell for the date number
@@ -70,6 +71,9 @@ export function MonthCalendar({
   jobs,
   conflicts,
   holidays,
+  technicians,
+  fTech,
+  isOffOnDay,
   onOpenJob,
   onDropDay,
   onClearDate,
@@ -78,6 +82,9 @@ export function MonthCalendar({
   jobs: JobRow[];
   conflicts: Set<string>;
   holidays: Map<string, string>;
+  technicians: TechnicianOption[];
+  fTech: string;
+  isOffOnDay: (techId: string | null, day: Date) => boolean;
   onOpenJob: (job: JobRow) => void;
   onDropDay: (jobId: string, day: Date) => void;
   onClearDate: (jobId: string) => void;
@@ -116,6 +123,14 @@ export function MonthCalendar({
                   const isToday = ymd(day) === todayYmd;
                   const weekend = ci === 0 || ci === 6;
                   const holiday = holidays.get(ymd(day));
+
+                  const techOff =
+                    fTech !== "ALL" && fTech !== "UNASSIGNED" ? isOffOnDay(fTech, day) : false;
+                  const offNames =
+                    fTech === "ALL"
+                      ? technicians.filter((t) => t.active && isOffOnDay(t.id, day))
+                      : [];
+
                   return (
                     <div
                       key={ci}
@@ -126,7 +141,7 @@ export function MonthCalendar({
                         const id = e.dataTransfer.getData("text/plain");
                         if (id) onDropDay(id, day);
                       }}
-                      className={`h-full border-b border-r p-1 ${holiday ? "bg-amber-100/60" : !inMonth ? "bg-muted/20" : weekend ? "bg-muted/30" : ""}`}
+                      className={`h-full border-b border-r p-1 ${holiday ? "bg-amber-100/60" : techOff ? "bg-red-100/50" : !inMonth ? "bg-muted/20" : weekend ? "bg-muted/30" : ""}`}
                     >
                       <div className="flex items-start justify-between gap-1">
                         {holiday ? (
@@ -146,6 +161,18 @@ export function MonthCalendar({
                           </span>
                         )}
                       </div>
+                      {offNames.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {offNames.map((t) => (
+                            <span
+                              key={t.id}
+                              title={`${t.name} (Time Off)`}
+                              className="inline-flex h-2 w-2 rounded-full ring-1 ring-white"
+                              style={dotStyle(t.color)}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
