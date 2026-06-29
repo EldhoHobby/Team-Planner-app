@@ -427,8 +427,8 @@ export function ScheduleClient({
             </button>
             <span className="min-w-[10rem] text-center text-sm font-medium">
               {view === "calendar"
-                ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })
-                : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`}
+                ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
+                : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
             </span>
             <button type="button" aria-label={view === "calendar" ? "Next month" : "Next week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(1)}>
               <ChevronRight className="h-4 w-4" />
