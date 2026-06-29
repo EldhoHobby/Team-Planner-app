@@ -141,7 +141,7 @@ export function ScheduleClient({
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const weekStart = useMemo(() => startOfWeekSunday(anchor), [anchor]);
-  const weekMonday = useMemo(() => startOfWeekMonday(anchor), [anchor]);
+  const weekMonday = useMemo(() => addDays(weekStart, 1), [weekStart]);
 
   // Real-time-ish sync: refetch every 60s so other users' changes appear without
   // churning the board. Paused while dragging, a dialog is open, or the tab is
@@ -301,7 +301,7 @@ export function ScheduleClient({
   }, [visible, panelStatus, panelSort]);
 
   const overbooked = technicians.filter(
-    (t) => (capacity.get(t.id) ?? 0) >= capacityDenom,
+    (t) => (capacity.get(t.id) ?? 0) > capacityDenom,
   ).length;
 
   const inWeek = (j: JobRow) => {

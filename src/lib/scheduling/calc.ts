@@ -88,7 +88,9 @@ export function countBookedDays(
     let booked = 0;
     for (const day of days) {
       const t = day.getTime();
-      if (list.some((j) => j.start.getTime() <= t && t <= j.end.getTime())) booked++;
+      // Additive capacity: count how many jobs cover this day. If a tech is
+      // double-booked, the count increments by more than 1 per day.
+      booked += list.filter((j) => j.start.getTime() <= t && t <= j.end.getTime()).length;
     }
     result.set(techId, booked);
   }
