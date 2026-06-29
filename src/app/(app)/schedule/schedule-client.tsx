@@ -629,7 +629,7 @@ export function ScheduleClient({
                             type="button"
                             draggable
                             onDragStart={(e) => e.dataTransfer.setData("text/plain", job.id)}
-                            onClick={() => setSelected(job)}
+                            onDoubleClick={() => setSelected(job)}
                             onContextMenu={(e) => {
                               e.preventDefault();
                               moveDate(job.id, null);
@@ -758,12 +758,12 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
   const [expanded, setExpanded] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Delay the single-click (open editor) briefly so a double-click (jump to the
-  // job's date) can cancel it — otherwise both fire on a double-click.
+  // Delay the single-click (jump to date) briefly so a double-click (open editor)
+  // can cancel it — otherwise both fire on a double-click.
   const handleClick = () => {
     if (clickTimer.current) clearTimeout(clickTimer.current);
     clickTimer.current = setTimeout(() => {
-      onOpen();
+      onJump();
       clickTimer.current = null;
     }, 220);
   };
@@ -772,7 +772,7 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
       clearTimeout(clickTimer.current);
       clickTimer.current = null;
     }
-    onJump();
+    onOpen();
   };
 
   return (
@@ -784,7 +784,7 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
         onDragStart={(e) => e.dataTransfer.setData("text/plain", job.id)}
         onClick={handleClick}
         onDoubleClick={handleDouble}
-        title={`${job.description ?? jobLabel(job)}\nClick: open · Double-click: jump to date`}
+        title={`${job.description ?? jobLabel(job)}\nClick: jump to date · Double-click: open`}
         style={assigned ? softStyle(job.technicianColor) : undefined}
         className={`group w-full cursor-grab rounded-md border p-2 text-left text-xs shadow-sm active:cursor-grabbing ${
           assigned

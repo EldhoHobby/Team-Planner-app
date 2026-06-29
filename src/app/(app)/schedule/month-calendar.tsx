@@ -160,7 +160,7 @@ export function MonthCalendar({
                       type="button"
                       draggable
                       onDragStart={(e: DragEvent) => e.dataTransfer.setData("text/plain", job.id)}
-                      onClick={() => onOpenJob(job)}
+                      onDoubleClick={() => onOpenJob(job)}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         onClearDate(job.id);
