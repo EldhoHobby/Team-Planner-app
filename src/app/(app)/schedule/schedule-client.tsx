@@ -131,6 +131,7 @@ export function ScheduleClient({
   // Filters
   const [fTech, setFTech] = useState<string>("ALL");
   const [fType, setFType] = useState<string>("ALL");
+  const [fSo, setFSo] = useState<string>("ALL");
   const [fStatus, setFStatus] = useState<string>("ALL");
 
   // Side-panel controls (independent of the header filters above).
@@ -199,6 +200,13 @@ export function ScheduleClient({
     return (offByTech.get(techId) ?? []).some((r) => r.s <= b && a <= r.e);
   };
 
+  // Unique SO numbers from all jobs for the filter dropdown.
+  const soNumbers = useMemo(() => {
+    const set = new Set<string>();
+    for (const j of jobs) if (j.soNumber) set.add(j.soNumber);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }, [jobs]);
+
   // Conflicts + capacity from ALL jobs (truth), so filters never hide overload.
   const jobLites: JobLite[] = useMemo(
     () =>
@@ -249,6 +257,7 @@ export function ScheduleClient({
   const matches = (j: JobRow) =>
     (fTech === "ALL" || (fTech === "UNASSIGNED" ? !j.technicianId : j.technicianId === fTech)) &&
     (fType === "ALL" || j.jobType === fType) &&
+    (fSo === "ALL" || j.soNumber === fSo) &&
     matchesStatus(j, fStatus);
 
   const visible = useMemo(() => jobs.filter(matches), [jobs, fTech, fType, fStatus]);
@@ -468,6 +477,12 @@ export function ScheduleClient({
             <option value="ALL">All types</option>
             {Object.entries(JOB_TYPE_LABELS).map(([k, v]) => (
               <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+          <select className={selectClass} value={fSo} onChange={(e) => setFSo(e.target.value)} aria-label="Filter Sales Order">
+            <option value="ALL">All Sales Orders</option>
+            {soNumbers.map((so) => (
+              <option key={so} value={so}>{so}</option>
             ))}
           </select>
           <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)} aria-label="Filter status">
