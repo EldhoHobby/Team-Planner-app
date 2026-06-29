@@ -644,6 +644,7 @@ export function ScheduleClient({
                               width: `calc(${(span / 7) * 100}% - 4px)`,
                               top: lane * 34 + 4,
                               height: 28,
+                              ...(conflict ? { color: "#ef4444", fontWeight: "bold" } : {}),
                             }}
                           >
                             {conflict ? <AlertTriangle className="h-3 w-3 shrink-0" aria-label="Scheduling conflict" /> : null}

@@ -182,6 +182,7 @@ export function MonthCalendar({
                         width: `calc(${(span / 7) * 100}% - 4px)`,
                         top: HEADER_H + lane * BAR_H,
                         height: BAR_H - 4,
+                        ...(conflicts.has(job.id) ? { color: "#ef4444", fontWeight: "bold" } : {}),
                       }}
                     >
                       {conflicts.has(job.id) ? (
