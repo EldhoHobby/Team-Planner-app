@@ -15,9 +15,9 @@ RUN apk add --no-cache libc6-compat openssl git
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
-# Stamp the version, build date (dd-mm-yyyy), and Git hash into the bundle.
+# Stamp the version, build date (MM/DD/YYYY), and Git hash into the bundle.
 # Next.js inlines NEXT_PUBLIC_* at build, so the values are frozen.
-RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%d-%m-%Y)" \
+RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%m/%d/%Y)" \
     NEXT_PUBLIC_GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo "dev")" \
     NEXT_PUBLIC_APP_VERSION="v$(npm pkg get version | tr -d '\"')" \
     npm run build
