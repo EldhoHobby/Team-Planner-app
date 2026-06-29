@@ -11,13 +11,16 @@ RUN npm ci
 # 2. Build the app (also generates the Prisma client)
 FROM node:22-alpine AS builder
 WORKDIR /app
-RUN apk add --no-cache libc6-compat openssl
+RUN apk add --no-cache libc6-compat openssl git
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
-# Stamp the build date (dd-mm-yyyy) into the bundle. Next.js inlines NEXT_PUBLIC_*
-# at build, so the version string shows when this image was built.
-RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%d-%m-%Y)" npm run build
+# Stamp the version, build date (dd-mm-yyyy), and Git hash into the bundle.
+# Next.js inlines NEXT_PUBLIC_* at build, so the values are frozen.
+RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%d-%m-%Y)" \
+    NEXT_PUBLIC_GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo "dev")" \
+    NEXT_PUBLIC_APP_VERSION="v$(npm pkg get version | tr -d '\"')" \
+    npm run build
 
 # 3. Migrator image — keeps the FULL node_modules so the Prisma CLI (and all of
 #    its transitive deps) work. Used by the one-shot `migrate` compose service to
