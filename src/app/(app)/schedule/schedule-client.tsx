@@ -660,9 +660,15 @@ export function ScheduleClient({
         </div>
       </div>
 
-      <NewJobDialog open={newOpen} onClose={() => setNewOpen(false)} technicians={technicians} />
-      <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
-      <JobEditor job={selected} technicians={technicians} onClose={() => setSelected(null)} />
+      {newOpen && (
+        <NewJobDialog open={newOpen} onClose={() => setNewOpen(false)} technicians={technicians} />
+      )}
+      {importOpen && (
+        <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
+      )}
+      {selected && (
+        <JobEditor job={selected} technicians={technicians} onClose={() => setSelected(null)} />
+      )}
     </div>
   );
 }
