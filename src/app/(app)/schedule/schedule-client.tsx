@@ -144,16 +144,30 @@ export function ScheduleClient({
   const weekMonday = useMemo(() => startOfWeekMonday(anchor), [anchor]);
 
   // Real-time-ish sync: refetch every 60s so other users' changes appear without
-  // churning the board. Paused while dragging or a dialog is open, so it never
-  // interrupts active work.
+  // churning the board. Paused while dragging, a dialog is open, or the tab is
+  // in the background, so it never interrupts active work or forces focus.
   const draggingRef = useRef(false);
   const busyRef = useRef(false);
   busyRef.current = newOpen || importOpen || selected !== null;
   useEffect(() => {
     const id = setInterval(() => {
-      if (!draggingRef.current && !busyRef.current) router.refresh();
+      if (!draggingRef.current && !busyRef.current && document.visibilityState === "visible") {
+        router.refresh();
+      }
     }, 60000);
-    return () => clearInterval(id);
+
+    // Refresh immediately when returning to the tab (if not busy).
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && !draggingRef.current && !busyRef.current) {
+        router.refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [router]);
 
   const go = (dir: number) =>
