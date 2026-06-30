@@ -1,10 +1,11 @@
 "use server";
 
 import { z } from "zod";
+import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/db/client";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
-import { destroySession } from "@/lib/auth/session";
+import { destroyAllSessions } from "@/lib/auth/session";
 
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required"),
@@ -33,7 +34,6 @@ export async function changePasswordAction(
 
   const { currentPassword, newPassword } = parsed.data;
 
-  // Fetch full user to get password hash
   const dbUser = await prisma.user.findUnique({
     where: { id: user.id },
     select: { passwordHash: true },
@@ -54,15 +54,8 @@ export async function changePasswordAction(
     data: { passwordHash: newHash },
   });
 
-  // Optional: logout other sessions or current session
-  // For security, it's often good to revoke all sessions.
-  await prisma.session.deleteMany({
-    where: { userId: user.id },
-  });
-
-  // Note: we can't easily destroy the current session cookie from a server action return
-  // without a redirect or using the redirect helper which throws.
-  // Actually, we can just return success and let the client handle it.
+  await destroyAllSessions(user.id);
+  revalidatePath("/settings/account");
 
   return { success: true };
 }

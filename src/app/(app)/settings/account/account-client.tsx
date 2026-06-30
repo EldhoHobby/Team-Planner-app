@@ -36,6 +36,7 @@ export function AccountClient({
     if (state.success) {
       alert("Password changed successfully. You will be logged out.");
       router.push("/login");
+      router.refresh();
     }
   }, [state.success, router]);
 
@@ -48,7 +49,7 @@ export function AccountClient({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-1">
-            <Label>Email</Label>
+            <Label>Email address</Label>
             <Input value={user.email} disabled className="bg-muted" />
           </div>
           {user.name && (
@@ -70,30 +71,33 @@ export function AccountClient({
         <CardContent>
           <form action={formAction} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="currentPassword">Current Password</Label>
+              <Label htmlFor="currentPassword">Current password</Label>
               <Input
                 id="currentPassword"
                 name="currentPassword"
                 type="password"
                 required
+                autoComplete="current-password"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="newPassword">New Password</Label>
+              <Label htmlFor="newPassword">New password</Label>
               <Input
                 id="newPassword"
                 name="newPassword"
                 type="password"
                 required
+                autoComplete="new-password"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="confirmPassword">Confirm New Password</Label>
+              <Label htmlFor="confirmPassword">Confirm new password</Label>
               <Input
                 id="confirmPassword"
                 name="confirmPassword"
                 type="password"
                 required
+                autoComplete="new-password"
               />
             </div>
 
