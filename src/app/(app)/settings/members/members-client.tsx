@@ -342,7 +342,7 @@ export function MembersClient({
                     <p className="text-muted-foreground">
                       {inv.orgRole.toLowerCase()}
                       {inv.teamName ? ` · ${inv.teamName}` : ""} · expires{" "}
-                      {new Date(inv.expiresAt).toLocaleDateString()}
+                      {new Date(inv.expiresAt).toLocaleDateString(undefined, { timeZone: "UTC" })}
                     </p>
                   </div>
                   <form action={revokeAction}>
