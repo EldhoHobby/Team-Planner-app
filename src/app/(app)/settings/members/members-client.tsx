@@ -46,13 +46,41 @@ function CreateTeamSubmit() {
   );
 }
 
-function TeamsCard({ teams }: { teams: TeamOption[] }) {
+function NewTeamForm({ onDone }: { onDone: () => void }) {
   const [state, formAction] = useActionState(createTeamAction, teamInitial);
-  const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    if (state.success) setOpen(false);
-  }, [state.success]);
+    if (state.success) onDone();
+  }, [state.success, onDone]);
+
+  return (
+    <div className="space-y-2">
+      <form action={formAction} className="flex items-end gap-2">
+        <div className="flex-1 space-y-1">
+          <label htmlFor="team-name" className="text-sm font-medium">
+            Team name
+          </label>
+          <input
+            id="team-name"
+            name="name"
+            required
+            className={selectClass}
+            placeholder="e.g. Engineering"
+          />
+        </div>
+        <CreateTeamSubmit />
+      </form>
+      {state.error && (
+        <p role="alert" className="text-sm text-destructive">
+          {state.error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TeamsCard({ teams }: { teams: TeamOption[] }) {
+  const [open, setOpen] = useState(false);
 
   return (
     <Card>
@@ -70,28 +98,7 @@ function TeamsCard({ teams }: { teams: TeamOption[] }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {open && (
-          <form action={formAction} className="flex items-end gap-2">
-            <div className="flex-1 space-y-1">
-              <label htmlFor="team-name" className="text-sm font-medium">
-                Team name
-              </label>
-              <input
-                id="team-name"
-                name="name"
-                required
-                className={selectClass}
-                placeholder="e.g. Engineering"
-              />
-            </div>
-            <CreateTeamSubmit />
-          </form>
-        )}
-        {state.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {state.error}
-          </p>
-        )}
+        {open && <NewTeamForm onDone={() => setOpen(false)} />}
         {teams.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No teams yet. Create one above to start adding projects.
@@ -194,37 +201,29 @@ function CopyLink({ link }: { link: string }) {
   );
 }
 
-export function MembersClient({
-  teams,
-  invites,
-  members,
-}: {
-  teams: TeamOption[];
-  invites: InviteRow[];
-  members: MemberRowData[];
-}) {
+function InviteForm({ teams }: { teams: TeamOption[] }) {
   const [state, formAction] = useActionState(inviteAction, initialState);
+  const [active, setActive] = useState(false);
 
   return (
-    <main className="mx-auto max-w-2xl space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Team members</h1>
-        <p className="text-sm text-muted-foreground">
-          Invite people to your organization. Share the generated link over a
-          channel they trust — it works without email.
-        </p>
-      </div>
-
-      <TeamsCard teams={teams} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Invite someone</CardTitle>
-          <CardDescription>
-            Creates a single-use link that expires in 7 days.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-lg">Invite someone</CardTitle>
+            <CardDescription>
+              Creates a single-use link that expires in 7 days.
+            </CardDescription>
+          </div>
+          {state.link && (
+            <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+              Invite another
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {!state.link ? (
           <form action={formAction} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
@@ -273,20 +272,43 @@ export function MembersClient({
 
             <InviteSubmit />
           </form>
+        ) : (
+          <div className="space-y-2 rounded-md border bg-muted/40 p-3">
+            <p className="text-sm font-medium">
+              Invite link for {state.email}
+            </p>
+            <CopyLink link={state.link} />
+            <p className="text-xs text-muted-foreground">
+              This link is shown once. If you lose it, revoke and re-invite.
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-          {state.link ? (
-            <div className="mt-4 space-y-2 rounded-md border bg-muted/40 p-3">
-              <p className="text-sm font-medium">
-                Invite link for {state.email}
-              </p>
-              <CopyLink link={state.link} />
-              <p className="text-xs text-muted-foreground">
-                This link is shown once. If you lose it, revoke and re-invite.
-              </p>
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+export function MembersClient({
+  teams,
+  invites,
+  members,
+}: {
+  teams: TeamOption[];
+  invites: InviteRow[];
+  members: MemberRowData[];
+}) {
+  return (
+    <main className="mx-auto max-w-2xl space-y-6 p-6">
+      <div>
+        <h1 className="text-2xl font-semibold">Team members</h1>
+        <p className="text-sm text-muted-foreground">
+          Invite people to your organization. Share the generated link over a
+          channel they trust — it works without email.
+        </p>
+      </div>
+
+      <TeamsCard teams={teams} />
+      <InviteForm teams={teams} />
 
       <Card>
         <CardHeader>

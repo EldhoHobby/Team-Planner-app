@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import type { TaskStatus, TaskPriority, TaskKind } from "@prisma/client";
+import { writeAudit } from "./audit";
 
 export type { TaskStatus, TaskPriority };
 
@@ -57,7 +58,7 @@ export async function createTask(scope: TenantScope, data: CreateTaskInput) {
   });
   if (!project) throw new ForbiddenError("Project not in scope");
 
-  return prisma.task.create({
+  const task = await prisma.task.create({
     data: {
       orgId: scope.ctx.orgId,
       teamId: project.teamId,
@@ -75,6 +76,13 @@ export async function createTask(scope: TenantScope, data: CreateTaskInput) {
     },
     include: TASK_INCLUDE,
   });
+  await writeAudit(scope, {
+    entity: "task",
+    entityId: task.id,
+    action: "created",
+    summary: `Created task "${task.title}"`,
+  });
+  return task;
 }
 
 export async function updateTask(
@@ -82,12 +90,12 @@ export async function updateTask(
   id: string,
   data: UpdateTaskInput,
 ) {
-  const task = await prisma.task.findFirst({
+  const existing = await prisma.task.findFirst({
     where: { id, ...scope.team() },
   });
-  if (!task) throw new ForbiddenError("Task not found");
+  if (!existing) throw new ForbiddenError("Task not found");
 
-  return prisma.task.update({
+  const task = await prisma.task.update({
     where: { id },
     data: {
       ...(data.title !== undefined ? { title: data.title.trim() } : {}),
@@ -109,6 +117,13 @@ export async function updateTask(
     },
     include: TASK_INCLUDE,
   });
+  await writeAudit(scope, {
+    entity: "task",
+    entityId: id,
+    action: "updated",
+    summary: `Updated task "${task.title}"`,
+  });
+  return task;
 }
 
 export async function deleteTask(scope: TenantScope, id: string) {
@@ -117,4 +132,10 @@ export async function deleteTask(scope: TenantScope, id: string) {
   });
   if (!task) throw new ForbiddenError("Task not found");
   await prisma.task.delete({ where: { id } });
+  await writeAudit(scope, {
+    entity: "task",
+    entityId: id,
+    action: "deleted",
+    summary: `Deleted task "${task.title}"`,
+  });
 }
