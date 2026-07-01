@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, Inbox, History } from "lucide-react";
 import {
+  updateJobAction,
   rescheduleJobAction,
   setJobStatusAction,
   setJobTentativeAction,
@@ -50,6 +51,12 @@ export function JobEditor({
   // Controlled form state so edits stay consistent (the inputs reflect each other
   // immediately). Reset whenever a different job is opened.
   const [form, setForm] = useState({
+    title: "",
+    soNumber: "",
+    customerName: "",
+    description: "",
+    jobType: "" as any,
+    hardwareTarget: "",
     technicianId: "",
     jobStatus: "UNCONFIRMED" as JobStatus,
     startDate: "",
@@ -59,6 +66,12 @@ export function JobEditor({
   useEffect(() => {
     if (job) {
       setForm({
+        title: job.title,
+        soNumber: job.soNumber ?? "",
+        customerName: job.customerName ?? "",
+        description: job.description ?? "",
+        jobType: job.jobType ?? "",
+        hardwareTarget: job.hardwareTarget ?? "",
         technicianId: job.technicianId ?? "",
         jobStatus: job.jobStatus,
         startDate: job.startDate ?? "",
@@ -92,28 +105,105 @@ export function JobEditor({
       description={[job.soNumber, job.customerName].filter(Boolean).join(" · ") || undefined}
     >
       <div className="space-y-4">
-        {(job.jobType || job.hardwareTarget || job.description) && (
-          <dl className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
-            {job.jobType ? (
-              <div className="flex gap-2">
-                <dt className="w-24 shrink-0 text-muted-foreground">Type</dt>
-                <dd>{JOB_TYPE_LABELS[job.jobType] ?? job.jobType}</dd>
-              </div>
-            ) : null}
-            {job.hardwareTarget ? (
-              <div className="flex gap-2">
-                <dt className="w-24 shrink-0 text-muted-foreground">Hardware</dt>
-                <dd>{job.hardwareTarget}</dd>
-              </div>
-            ) : null}
-            {job.description ? (
-              <div className="flex gap-2">
-                <dt className="w-24 shrink-0 text-muted-foreground">Scope</dt>
-                <dd className="whitespace-pre-wrap">{job.description}</dd>
-              </div>
-            ) : null}
-          </dl>
-        )}
+        <div className="space-y-2">
+          <Label htmlFor="ed-title">Title</Label>
+          <Input
+            id="ed-title"
+            value={form.title}
+            disabled={pending}
+            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v && v !== job.title) run(() => updateJobAction({ jobId: job.id, title: v }));
+            }}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <Label htmlFor="ed-so">SO Number</Label>
+            <Input
+              id="ed-so"
+              value={form.soNumber}
+              disabled={pending}
+              onChange={(e) => setForm((f) => ({ ...f, soNumber: e.target.value }))}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v !== (job.soNumber ?? ""))
+                  run(() => updateJobAction({ jobId: job.id, soNumber: v || null }));
+              }}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="ed-customer">Customer</Label>
+            <Input
+              id="ed-customer"
+              value={form.customerName}
+              disabled={pending}
+              onChange={(e) => setForm((f) => ({ ...f, customerName: e.target.value }))}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v !== (job.customerName ?? ""))
+                  run(() => updateJobAction({ jobId: job.id, customerName: v || null }));
+              }}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="ed-desc">Scope of work</Label>
+          <textarea
+            id="ed-desc"
+            rows={3}
+            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            value={form.description}
+            disabled={pending}
+            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v !== (job.description ?? ""))
+                run(() => updateJobAction({ jobId: job.id, description: v || null }));
+            }}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <Label htmlFor="ed-type">Job type</Label>
+            <select
+              id="ed-type"
+              className={selectClass}
+              value={form.jobType}
+              disabled={pending}
+              onChange={(e) => {
+                const v = e.target.value as any;
+                setForm((f) => ({ ...f, jobType: v }));
+                run(() => updateJobAction({ jobId: job.id, jobType: v || null }));
+              }}
+            >
+              <option value="">—</option>
+              {Object.entries(JOB_TYPE_LABELS).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="ed-hardware">Hardware / product</Label>
+            <Input
+              id="ed-hardware"
+              value={form.hardwareTarget}
+              disabled={pending}
+              onChange={(e) => setForm((f) => ({ ...f, hardwareTarget: e.target.value }))}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v !== (job.hardwareTarget ?? ""))
+                  run(() => updateJobAction({ jobId: job.id, hardwareTarget: v || null }));
+              }}
+            />
+          </div>
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">

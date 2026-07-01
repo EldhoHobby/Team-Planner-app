@@ -1,0 +1,19 @@
+# Keep the Docker build context small and prevent host artifacts from leaking
+# into the image. IMPORTANT: .git is intentionally NOT ignored — the builder
+# stage runs `git rev-parse --short HEAD` to stamp the version string.
+
+node_modules
+.next
+out
+build
+
+# secrets & local env
+.env
+.env*.local
+
+# image bundles / notes / misc
+*.tar
+process.txt
+npm-debug.log*
+*.tsbuildinfo
+.DS_Store

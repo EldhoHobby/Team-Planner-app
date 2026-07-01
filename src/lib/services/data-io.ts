@@ -2,10 +2,20 @@ import ExcelJS from "exceljs";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
-import { isValidColor, toHex, DEFAULT_HEX } from "@/lib/scheduling/colors";
-import { toUtcMidnight, endFromDuration } from "@/lib/scheduling/calc";
+import { toHex } from "@/lib/scheduling/colors";
+import { endFromDuration } from "@/lib/scheduling/calc";
 import { createJob } from "@/lib/services/field-service";
-import type { JobType, JobStatus, TaskPriority } from "@prisma/client";
+import {
+  ymd,
+  sheetRows,
+  JOBS_COLUMNS,
+  TechnicianRowSchema,
+  TeamRowSchema,
+  ProjectRowSchema,
+  TimeOffRowSchema,
+  HolidayRowSchema,
+  JobRowSchema,
+} from "./data-io-schemas";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SINGLE SOURCE OF TRUTH for the admin Excel export/import.
@@ -43,18 +53,8 @@ const SHEET = {
   organization: "Organization",
 } as const;
 
-// Shared Jobs column list + row builder — the SINGLE definition used by BOTH the
-// full admin workbook (buildWorkbook) and the schedule-window workbook
-// (buildJobsWorkbook), so the two can never drift. Technician is referenced by
-// name only (no technicianId column); project is export-only (informational).
-// endDate is intentionally NOT a column: it's always derived internally from
-// startDate + durationDays (endFromDuration), so it never needs to round-trip.
-const JOBS_COLUMNS = [
-  "id", "soNumber", "customer", "title", "scope", "jobType", "jobStatus",
-  "hardware", "priority", "technician", "project", "startDate",
-  "durationDays", "tentative",
-] as const;
-
+// Jobs column list + row builder for both workbooks. The column list itself
+// (JOBS_COLUMNS) lives in ./data-io-schemas so it can be unit-tested.
 async function jobsExportRows(scope: TenantScope): Promise<Record<string, unknown>[]> {
   const orgId = scope.ctx.orgId;
   const techs = await prisma.technician.findMany({ where: { orgId }, select: { id: true, name: true } });
@@ -76,57 +76,8 @@ async function jobsExportRows(scope: TenantScope): Promise<Record<string, unknow
   }));
 }
 
-// ─────────────────────────── helpers ───────────────────────────
-
-function ymd(d: Date | null | undefined): string {
-  return d ? d.toISOString().slice(0, 10) : "";
-}
-function parseDate(v: string): Date | null {
-  const s = (v ?? "").trim();
-  if (!s) return null;
-  const d = new Date(s.length <= 10 ? `${s}T00:00:00.000Z` : s);
-  return Number.isNaN(d.getTime()) ? null : toUtcMidnight(d);
-}
-function parseBool(v: string, fallback = false): boolean {
-  const s = (v ?? "").trim().toLowerCase();
-  if (["true", "yes", "y", "1"].includes(s)) return true;
-  if (["false", "no", "n", "0"].includes(s)) return false;
-  return fallback;
-}
-function cellStr(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
-  if (typeof value === "object") {
-    const o = value as Record<string, unknown>;
-    if (typeof o.text === "string") return o.text;
-    if (o.result !== undefined) return String(o.result);
-    if (typeof o.hyperlink === "string") return o.hyperlink;
-    return "";
-  }
-  return String(value);
-}
-
-const JOB_TYPE_BY_LABEL: Record<string, JobType> = {
-  commissioning: "COMMISSIONING",
-  training: "TRAINING",
-  "annual maintenance": "ANNUAL_MAINTENANCE",
-  annual_maintenance: "ANNUAL_MAINTENANCE",
-  "emergency support": "EMERGENCY_SUPPORT",
-  emergency_support: "EMERGENCY_SUPPORT",
-};
-const JOB_STATUS_BY_LABEL: Record<string, JobStatus> = {
-  unconfirmed: "UNCONFIRMED",
-  scheduled: "SCHEDULED",
-  "in progress": "IN_PROGRESS",
-  in_progress: "IN_PROGRESS",
-  completed: "COMPLETED",
-};
-const PRIORITY_BY_LABEL: Record<string, TaskPriority> = {
-  low: "LOW",
-  medium: "MEDIUM",
-  high: "HIGH",
-  urgent: "URGENT",
-};
+// Cell coercion, label maps, and the per-sheet Zod row schemas all live in
+// ./data-io-schemas (pure, unit-tested). `ymd` is imported from there too.
 
 // ═══════════════════════════════ RESET ═══════════════════════════════
 
@@ -239,28 +190,9 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
 }
 
 // ═══════════════════════════════ IMPORT ═══════════════════════════════
-
-function sheetRows(ws: ExcelJS.Worksheet): Record<string, string>[] {
-  const headers: string[] = [];
-  ws.getRow(1).eachCell((cell, col) => {
-    headers[col] = cellStr(cell.value).trim();
-  });
-  const out: Record<string, string>[] = [];
-  ws.eachRow((row, n) => {
-    if (n === 1) return;
-    const obj: Record<string, string> = {};
-    let any = false;
-    for (let col = 1; col < headers.length + 1; col++) {
-      const h = headers[col];
-      if (!h) continue;
-      const v = cellStr(row.getCell(col).value).trim();
-      obj[h] = v;
-      if (v) any = true;
-    }
-    if (any) out.push(obj);
-  });
-  return out;
-}
+// Each importer validates a raw row with its Zod schema (from ./data-io-schemas)
+// before the upsert, then runs the DB-dependent checks (id lookup, uniqueness,
+// reference resolution, change detection).
 
 async function uniqueTechViolation(
   scope: TenantScope,
@@ -292,12 +224,9 @@ async function importTechnicians(scope: TenantScope, rows: Record<string, string
   const res: SheetResult = { sheet: SHEET.technicians, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
-    const name = (r.name ?? "").trim();
-    if (!name) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: name is required`); continue; }
-    const color = isValidColor(r.color ?? "") ? toHex(r.color) : DEFAULT_HEX;
-    const active = parseBool(r.active, true);
-    const archived = parseBool(r.archived, false);
-    const id = (r.id ?? "").trim();
+    const parsed = TechnicianRowSchema.safeParse(r);
+    if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.technicians} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
+    const { id, name, color, active, archived } = parsed.data;
     try {
       if (id) {
         const ex = await prisma.technician.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, color: true, active: true, archived: true } });
@@ -338,14 +267,15 @@ async function importTimeOff(scope: TenantScope, rows: Record<string, string>[],
   const techs = await techMap(scope);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
-    const technicianId = r.technician ? techs.byName.get(r.technician.trim().toLowerCase()) ?? "" : "";
+    const parsed = TimeOffRowSchema.safeParse(r);
+    if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.timeOff} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
+    const { id, technician, startDate: start, endDate: end, reason } = parsed.data;
+    const technicianId = technician ? techs.byName.get(technician.toLowerCase()) ?? "" : "";
     if (!technicianId || !techs.byId.has(technicianId)) {
       res.skipped++; res.errors.push(`${SHEET.timeOff} row ${line}: unknown technician`); continue;
     }
-    const start = parseDate(r.startDate); const end = parseDate(r.endDate);
     if (!start || !end) { res.skipped++; res.errors.push(`${SHEET.timeOff} row ${line}: invalid dates`); continue; }
-    const data = { technicianId, startDate: start, endDate: end < start ? start : end, reason: (r.reason ?? "").trim() || null };
-    const id = (r.id ?? "").trim();
+    const data = { technicianId, startDate: start, endDate: end < start ? start : end, reason };
     try {
       if (id) {
         const ex = await prisma.technicianTimeOff.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, technicianId: true, startDate: true, endDate: true, reason: true } });
@@ -368,9 +298,9 @@ async function importTeams(scope: TenantScope, rows: Record<string, string>[], a
   const res: SheetResult = { sheet: SHEET.teams, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
-    const name = (r.name ?? "").trim();
-    if (!name) { res.skipped++; res.errors.push(`${SHEET.teams} row ${line}: name is required`); continue; }
-    const id = (r.id ?? "").trim();
+    const parsed = TeamRowSchema.safeParse(r);
+    if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.teams} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
+    const { id, name } = parsed.data;
     try {
       if (id) {
         const ex = await prisma.team.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true } });
@@ -396,13 +326,11 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
   const teamByName = new Map(teams.map((t) => [t.name.trim().toLowerCase(), t.id]));
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
-    const name = (r.name ?? "").trim();
-    if (!name) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: name is required`); continue; }
-    let teamId = (r.teamId ?? "").trim();
-    if (!teamId && r.team) teamId = teamByName.get(r.team.trim().toLowerCase()) ?? "";
-    const description = (r.description ?? "").trim() || null;
-    const archived = parseBool(r.archived, false);
-    const id = (r.id ?? "").trim();
+    const parsed = ProjectRowSchema.safeParse(r);
+    if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
+    const { id, name, team, description, archived } = parsed.data;
+    let teamId = parsed.data.teamId;
+    if (!teamId && team) teamId = teamByName.get(team.toLowerCase()) ?? "";
     try {
       if (id) {
         const ex = await prisma.project.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, description: true, archived: true } });
@@ -427,23 +355,20 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
   const techs = await techMap(scope);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
-    const title = (r.title ?? "").trim();
-    if (!title) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: title is required`); continue; }
+    const parsed = JobRowSchema.safeParse(r);
+    if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
+    const {
+      id, soNumber, customer, title, scope: scopeText, jobType, jobStatus,
+      hardware, priority, technician, startDate: start, durationDays, tentative,
+    } = parsed.data;
 
-    let technicianId: string | null = r.technician ? techs.byName.get(r.technician.trim().toLowerCase()) ?? null : null;
-    if (r.technician && !technicianId) {
+    let technicianId: string | null = technician ? techs.byName.get(technician.toLowerCase()) ?? null : null;
+    if (technician && !technicianId) {
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: unknown technician`); continue;
     }
     if (technicianId && !techs.byId.has(technicianId)) {
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: unknown technician`); continue;
     }
-    const jobType = r.jobType ? JOB_TYPE_BY_LABEL[r.jobType.trim().toLowerCase()] ?? null : null;
-    const jobStatus = r.jobStatus ? JOB_STATUS_BY_LABEL[r.jobStatus.trim().toLowerCase()] : undefined;
-    const priority = r.priority ? PRIORITY_BY_LABEL[r.priority.trim().toLowerCase()] ?? "MEDIUM" : "MEDIUM";
-    const start = parseDate(r.startDate);
-    const durationDays = r.durationDays && Number(r.durationDays) > 0 ? Number(r.durationDays) : null;
-    const tentative = parseBool(r.tentative, false);
-    const id = (r.id ?? "").trim();
 
     try {
       if (id) {
@@ -460,11 +385,11 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
         const end = start ? endFromDuration(start, dur) : null;
         const data = {
           title,
-          soNumber: (r.soNumber ?? "").trim() || null,
-          customerName: (r.customer ?? "").trim() || null,
-          description: (r.scope ?? "").trim() || null,
+          soNumber,
+          customerName: customer,
+          description: scopeText,
           jobType,
-          hardwareTarget: (r.hardware ?? "").trim() || null,
+          hardwareTarget: hardware,
           priority,
           technicianId,
           startDate: start,
@@ -492,9 +417,9 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
       } else {
         if (apply) {
           await createJob(scope, {
-            title, soNumber: (r.soNumber ?? "").trim() || null, customerName: (r.customer ?? "").trim() || null,
-            description: (r.scope ?? "").trim() || null, jobType, hardwareTarget: (r.hardware ?? "").trim() || null,
-            priority, technicianId, startDate: start, durationDays, jobStatus, tentative,
+            title, soNumber, customerName: customer, description: scopeText,
+            jobType, hardwareTarget: hardware, priority, technicianId,
+            startDate: start, durationDays, jobStatus, tentative,
           });
         }
         res.created++;
@@ -510,11 +435,10 @@ async function importHolidays(scope: TenantScope, rows: Record<string, string>[]
   const res: SheetResult = { sheet: SHEET.holidays, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
-    const name = (r.name ?? "").trim();
-    if (!name) { res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: name is required`); continue; }
-    const date = parseDate(r.date);
+    const parsed = HolidayRowSchema.safeParse(r);
+    if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
+    const { id, name, date } = parsed.data;
     if (!date) { res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: invalid date`); continue; }
-    const id = (r.id ?? "").trim();
     try {
       if (id) {
         const ex = await prisma.holiday.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, date: true, name: true } });

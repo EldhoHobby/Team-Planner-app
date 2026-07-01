@@ -6,6 +6,7 @@ import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
 import { createInvitation, revokeInvitation } from "@/lib/invitations/service";
 import { createAdminResetLink } from "@/lib/auth/password-reset";
 import { prisma } from "@/lib/db/client";
+import { writeAudit } from "@/lib/services/audit";
 import type { InviteState, ResetLinkState, CreateTeamState } from "./types";
 
 const InviteSchema = z.object({
@@ -79,8 +80,14 @@ export async function createTeamAction(
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
   try {
-    await prisma.team.create({
+    const team = await prisma.team.create({
       data: { orgId: scope.ctx.orgId, name: parsed.data.name.trim() },
+    });
+    await writeAudit(scope, {
+      entity: "team",
+      entityId: team.id,
+      action: "created",
+      summary: `Created team "${team.name}"`,
     });
     revalidatePath("/settings/members");
     revalidatePath("/projects");

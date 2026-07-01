@@ -1,6 +1,7 @@
+import type { AuditEntry } from "../schedule/types";
 import type { TaskStatus, TaskPriority } from "@prisma/client";
 
-export type { TaskStatus, TaskPriority };
+export type { TaskStatus, TaskPriority, AuditEntry };
 
 export type Assignee = {
   id: string;

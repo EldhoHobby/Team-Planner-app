@@ -10,8 +10,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-const initial: ImportState = {};
-
 function ImportButton() {
   const { pending } = useFormStatus();
   return (
@@ -22,7 +20,7 @@ function ImportButton() {
 }
 
 export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [state, formAction] = useActionState(importScheduleXlsxAction, initial);
+  const [state, formAction] = useActionState(importScheduleXlsxAction, {} as ImportState);
   const router = useRouter();
 
   useEffect(() => {

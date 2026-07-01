@@ -30,3 +30,6 @@ next-env.d.ts
 
 # docker image bundles for offline deploy (large; never commit)
 *.tar
+
+# scratch/notes
+process.txt

@@ -117,7 +117,7 @@ export function ScheduleClient({
       /* ignore */
     }
   }, [view]);
-  const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const [anchor, setAnchor] = useState<Date>(() => toUtcMidnight(new Date()));
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
@@ -131,6 +131,7 @@ export function ScheduleClient({
   // Filters
   const [fTech, setFTech] = useState<string>("ALL");
   const [fType, setFType] = useState<string>("ALL");
+  const [fSo, setFSo] = useState<string>("ALL");
   const [fStatus, setFStatus] = useState<string>("ALL");
 
   // Side-panel controls (independent of the header filters above).
@@ -140,27 +141,43 @@ export function ScheduleClient({
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const weekStart = useMemo(() => startOfWeekSunday(anchor), [anchor]);
-  const weekMonday = useMemo(() => startOfWeekMonday(anchor), [anchor]);
+  const weekMonday = useMemo(() => addDays(weekStart, 1), [weekStart]);
 
   // Real-time-ish sync: refetch every 60s so other users' changes appear without
-  // churning the board. Paused while dragging or a dialog is open, so it never
-  // interrupts active work.
+  // churning the board. Paused while dragging, a dialog is open, or the tab is
+  // in the background, so it never interrupts active work or forces focus.
   const draggingRef = useRef(false);
   const busyRef = useRef(false);
   busyRef.current = newOpen || importOpen || selected !== null;
   useEffect(() => {
     const id = setInterval(() => {
-      if (!draggingRef.current && !busyRef.current) router.refresh();
+      if (!draggingRef.current && !busyRef.current && document.visibilityState === "visible") {
+        router.refresh();
+      }
     }, 60000);
-    return () => clearInterval(id);
+
+    // Refresh immediately when returning to the tab (if not busy).
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && !draggingRef.current && !busyRef.current) {
+        router.refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [router]);
 
   const go = (dir: number) =>
-    setAnchor((a) =>
-      view === "calendar"
-        ? new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + dir, 1))
-        : addDays(a, dir * 7),
-    );
+    setAnchor((a) => {
+      if (view === "calendar") {
+        // Create new UTC date for the 1st of next/prev month
+        return new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + dir, 1));
+      }
+      return addDays(a, dir * 7);
+    });
 
   const weekDays = useMemo(
     () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
@@ -198,6 +215,13 @@ export function ScheduleClient({
     const b = toUtcMidnight(e).getTime();
     return (offByTech.get(techId) ?? []).some((r) => r.s <= b && a <= r.e);
   };
+
+  // Unique SO numbers from all jobs for the filter dropdown.
+  const soNumbers = useMemo(() => {
+    const set = new Set<string>();
+    for (const j of jobs) if (j.soNumber) set.add(j.soNumber);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }, [jobs]);
 
   // Conflicts + capacity from ALL jobs (truth), so filters never hide overload.
   const jobLites: JobLite[] = useMemo(
@@ -249,9 +273,10 @@ export function ScheduleClient({
   const matches = (j: JobRow) =>
     (fTech === "ALL" || (fTech === "UNASSIGNED" ? !j.technicianId : j.technicianId === fTech)) &&
     (fType === "ALL" || j.jobType === fType) &&
+    (fSo === "ALL" || j.soNumber === fSo) &&
     matchesStatus(j, fStatus);
 
-  const visible = useMemo(() => jobs.filter(matches), [jobs, fTech, fType, fStatus]);
+  const visible = useMemo(() => jobs.filter(matches), [jobs, fTech, fType, fSo, fStatus]);
   const scheduled = visible.filter((j) => j.startDate);
   const unscheduled = visible.filter((j) => !j.startDate);
   const tentativeCount = visible.filter((j) => j.tentative).length;
@@ -278,7 +303,7 @@ export function ScheduleClient({
   }, [visible, panelStatus, panelSort]);
 
   const overbooked = technicians.filter(
-    (t) => (capacity.get(t.id) ?? 0) >= capacityDenom,
+    (t) => (capacity.get(t.id) ?? 0) > capacityDenom,
   ).length;
 
   const inWeek = (j: JobRow) => {
@@ -417,7 +442,7 @@ export function ScheduleClient({
             </button>
           </div>
           {/* Standalone Today */}
-          <Button variant="outline" size="sm" onClick={() => setAnchor(new Date())}>
+          <Button variant="outline" size="sm" onClick={() => setAnchor(toUtcMidnight(new Date()))}>
             Today
           </Button>
           {/* Arrows framing the date label: [ < ]  Month Year  [ > ] */}
@@ -427,8 +452,8 @@ export function ScheduleClient({
             </button>
             <span className="min-w-[10rem] text-center text-sm font-medium">
               {view === "calendar"
-                ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" })
-                : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`}
+                ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
+                : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
             </span>
             <button type="button" aria-label={view === "calendar" ? "Next month" : "Next week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(1)}>
               <ChevronRight className="h-4 w-4" />
@@ -468,6 +493,12 @@ export function ScheduleClient({
             <option value="ALL">All types</option>
             {Object.entries(JOB_TYPE_LABELS).map(([k, v]) => (
               <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+          <select className={selectClass} value={fSo} onChange={(e) => setFSo(e.target.value)} aria-label="Filter Sales Order">
+            <option value="ALL">All Sales Orders</option>
+            {soNumbers.map((so) => (
+              <option key={so} value={so}>{so}</option>
             ))}
           </select>
           <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)} aria-label="Filter status">
@@ -562,7 +593,18 @@ export function ScheduleClient({
         {/* Main view */}
         <div className={`min-w-0 flex-1 ${view === "calendar" ? "overflow-hidden" : "overflow-auto"}`}>
           {view === "calendar" ? (
-            <MonthCalendar month={anchor} jobs={visible} conflicts={warnings} holidays={holidayMap} onOpenJob={setSelected} onDropDay={moveDate} onClearDate={(jobId) => moveDate(jobId, null)} />
+            <MonthCalendar
+              month={anchor}
+              jobs={visible}
+              conflicts={warnings}
+              holidays={holidayMap}
+              technicians={technicians}
+              fTech={fTech}
+              isOffOnDay={isOffOnDay}
+              onOpenJob={setSelected}
+              onDropDay={moveDate}
+              onClearDate={(jobId) => moveDate(jobId, null)}
+            />
           ) : (
             <>
               <div className="sticky top-0 z-10 grid grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b bg-background">
@@ -629,7 +671,7 @@ export function ScheduleClient({
                             type="button"
                             draggable
                             onDragStart={(e) => e.dataTransfer.setData("text/plain", job.id)}
-                            onClick={() => setSelected(job)}
+                            onDoubleClick={() => setSelected(job)}
                             onContextMenu={(e) => {
                               e.preventDefault();
                               moveDate(job.id, null);
@@ -644,6 +686,7 @@ export function ScheduleClient({
                               width: `calc(${(span / 7) * 100}% - 4px)`,
                               top: lane * 34 + 4,
                               height: 28,
+                              ...(conflict ? { color: "#ef4444", fontWeight: "bold" } : {}),
                             }}
                           >
                             {conflict ? <AlertTriangle className="h-3 w-3 shrink-0" aria-label="Scheduling conflict" /> : null}
@@ -660,9 +703,20 @@ export function ScheduleClient({
         </div>
       </div>
 
-      <NewJobDialog open={newOpen} onClose={() => setNewOpen(false)} technicians={technicians} />
-      <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
-      <JobEditor job={selected} technicians={technicians} onClose={() => setSelected(null)} />
+      {newOpen && (
+        <NewJobDialog
+          key="new-job"
+          open={newOpen}
+          onClose={() => setNewOpen(false)}
+          technicians={technicians}
+        />
+      )}
+      {importOpen && (
+        <ImportDialog key="import" open={importOpen} onClose={() => setImportOpen(false)} />
+      )}
+      {selected && (
+        <JobEditor job={selected} technicians={technicians} onClose={() => setSelected(null)} />
+      )}
     </div>
   );
 }
@@ -751,12 +805,12 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
   const [expanded, setExpanded] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Delay the single-click (open editor) briefly so a double-click (jump to the
-  // job's date) can cancel it — otherwise both fire on a double-click.
+  // Delay the single-click (jump to date) briefly so a double-click (open editor)
+  // can cancel it — otherwise both fire on a double-click.
   const handleClick = () => {
     if (clickTimer.current) clearTimeout(clickTimer.current);
     clickTimer.current = setTimeout(() => {
-      onOpen();
+      onJump();
       clickTimer.current = null;
     }, 220);
   };
@@ -765,7 +819,7 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
       clearTimeout(clickTimer.current);
       clickTimer.current = null;
     }
-    onJump();
+    onOpen();
   };
 
   return (
@@ -777,7 +831,7 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
         onDragStart={(e) => e.dataTransfer.setData("text/plain", job.id)}
         onClick={handleClick}
         onDoubleClick={handleDouble}
-        title={`${job.description ?? jobLabel(job)}\nClick: open · Double-click: jump to date`}
+        title={`${job.description ?? jobLabel(job)}\nClick: jump to date · Double-click: open`}
         style={assigned ? softStyle(job.technicianColor) : undefined}
         className={`group w-full cursor-grab rounded-md border p-2 text-left text-xs shadow-sm active:cursor-grabbing ${
           assigned
