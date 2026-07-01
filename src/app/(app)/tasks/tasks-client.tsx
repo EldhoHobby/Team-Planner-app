@@ -1,3 +1,4 @@
+import { History } from "lucide-react";
 "use client";
 
 import { useEffect, useActionState, useState } from "react";
@@ -9,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
-import { createTaskAction, updateTaskAction, deleteTaskAction } from "./actions";
+import { createTaskAction, updateTaskAction, deleteTaskAction, listTaskHistoryAction } from "./actions";
 import type {
   TaskRow,
   ProjectOption,
@@ -17,6 +18,7 @@ import type {
   TaskFormState,
   TaskStatus,
   TaskPriority,
+  AuditEntry,
 } from "./types";
 
 // ─── Style constants ───
@@ -196,6 +198,8 @@ function TaskForm({
   const initialState: TaskFormState = {};
   const [state, formAction] = useActionState(action, initialState);
   const [deleteState, deleteFormAction] = useActionState(deleteTaskAction, initialState);
+  const [history, setHistory] = useState<AuditEntry[] | null>(null);
+  const loadHistory = async () => setHistory(await listTaskHistoryAction({ taskId: initialTask?.id ?? "" }));
 
   // Which project is currently selected (controls available assignees)
   const [selectedProjectId, setSelectedProjectId] = useState(
@@ -390,6 +394,23 @@ function TaskForm({
           </Button>
         </div>
       </form>
+          {history && (
+            <div className="mt-4 border-t pt-4">
+              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Change History</h4>
+              {history.length ? (
+                <ul className="space-y-1.5 text-xs">
+                  {history.map((h, i) => (
+                    <li key={i} className="flex gap-2 text-muted-foreground">
+                      <span className="shrink-0">{new Date(h.createdAt).toLocaleString()}</span>
+                      <span className="text-foreground">{h.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-muted-foreground">No history recorded yet.</p>
+              )}
+            </div>
+          )}
 
       {/* Delete section — only in edit mode */}
       {mode === "edit" && initialTask && (
@@ -402,7 +423,27 @@ function TaskForm({
               </p>
             )}
             <DeleteButton />
+            <Button type="button" variant="ghost" size="sm" onClick={loadHistory} className="ml-auto">
+              <History className="mr-1.5 h-4 w-4" /> {history ? "Refresh history" : "History"}
+            </Button>
           </form>
+          {history && (
+            <div className="mt-4 border-t pt-4">
+              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Change History</h4>
+              {history.length ? (
+                <ul className="space-y-1.5 text-xs">
+                  {history.map((h, i) => (
+                    <li key={i} className="flex gap-2 text-muted-foreground">
+                      <span className="shrink-0">{new Date(h.createdAt).toLocaleString()}</span>
+                      <span className="text-foreground">{h.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-muted-foreground">No history recorded yet.</p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </>

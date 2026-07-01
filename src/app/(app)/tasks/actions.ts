@@ -334,3 +334,47 @@ export async function importScheduleXlsxAction(
     return { error: "Could not read that file — is it the exported .xlsx workbook?" };
   }
 }
+
+export async function listTaskHistoryAction(input: { taskId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "task", input.taskId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+export async function listProjectHistoryAction(input: { projectId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "project", input.projectId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+export async function listTechnicianHistoryAction(input: { technicianId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "technician", input.technicianId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+export async function listHolidayHistoryAction(input: { holidayId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "holiday", input.holidayId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}

@@ -14,8 +14,6 @@ import { DatePicker } from "@/components/ui/date-picker";
 const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const initial: JobFormState = {};
-
 function SaveButton() {
   const { pending } = useFormStatus();
   return (
@@ -34,7 +32,7 @@ export function NewJobDialog({
   onClose: () => void;
   technicians: TechnicianOption[];
 }) {
-  const [state, formAction] = useActionState(createJobAction, initial);
+  const [state, formAction] = useActionState(createJobAction, {} as JobFormState);
   const router = useRouter();
 
   // Track the date so the Tentative checkbox can require one (a tentative job

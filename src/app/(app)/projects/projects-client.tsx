@@ -1,3 +1,4 @@
+import { History } from "lucide-react";
 "use client";
 
 import { useActionState, useEffect, useState } from "react";
@@ -8,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createProjectAction, archiveProjectAction } from "./actions";
-import type { ProjectRow, TeamOption, CreateProjectState } from "./types";
+import { listProjectHistoryAction } from "../tasks/actions";
+import type { ProjectRow, TeamOption, CreateProjectState, AuditEntry } from "./types";
 
 // ─── shared select style (matches members page pattern) ───
 const selectClass =

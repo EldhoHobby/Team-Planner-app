@@ -1,3 +1,5 @@
+import type { AuditEntry } from "../schedule/types";
+
 export type ProjectRow = {
   id: string;
   name: string;
@@ -17,3 +19,5 @@ export type CreateProjectState = {
   error?: string;
   success?: boolean;
 };
+
+export type { AuditEntry };

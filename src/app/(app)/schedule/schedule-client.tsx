@@ -117,7 +117,7 @@ export function ScheduleClient({
       /* ignore */
     }
   }, [view]);
-  const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const [anchor, setAnchor] = useState<Date>(() => toUtcMidnight(new Date()));
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
@@ -171,11 +171,13 @@ export function ScheduleClient({
   }, [router]);
 
   const go = (dir: number) =>
-    setAnchor((a) =>
-      view === "calendar"
-        ? new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + dir, 1))
-        : addDays(a, dir * 7),
-    );
+    setAnchor((a) => {
+      if (view === "calendar") {
+        // Create new UTC date for the 1st of next/prev month
+        return new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + dir, 1));
+      }
+      return addDays(a, dir * 7);
+    });
 
   const weekDays = useMemo(
     () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
@@ -440,7 +442,7 @@ export function ScheduleClient({
             </button>
           </div>
           {/* Standalone Today */}
-          <Button variant="outline" size="sm" onClick={() => setAnchor(new Date())}>
+          <Button variant="outline" size="sm" onClick={() => setAnchor(toUtcMidnight(new Date()))}>
             Today
           </Button>
           {/* Arrows framing the date label: [ < ]  Month Year  [ > ] */}
@@ -700,10 +702,15 @@ export function ScheduleClient({
       </div>
 
       {newOpen && (
-        <NewJobDialog open={newOpen} onClose={() => setNewOpen(false)} technicians={technicians} />
+        <NewJobDialog
+          key="new-job"
+          open={newOpen}
+          onClose={() => setNewOpen(false)}
+          technicians={technicians}
+        />
       )}
       {importOpen && (
-        <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
+        <ImportDialog key="import" open={importOpen} onClose={() => setImportOpen(false)} />
       )}
       {selected && (
         <JobEditor job={selected} technicians={technicians} onClose={() => setSelected(null)} />

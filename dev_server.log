@@ -1,0 +1,108 @@
+
+> team-planner@0.1.0 dev
+> next dev
+
+   ▲ Next.js 15.5.19
+   - Local:        http://localhost:3000
+   - Network:      http://192.168.0.2:3000
+   - Experiments (use with caution):
+     · serverActions
+
+ ✓ Starting...
+Attention: Next.js now collects completely anonymous telemetry regarding usage.
+This information is used to shape Next.js' roadmap and prioritize features.
+You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+https://nextjs.org/telemetry
+
+ ✓ Ready in 4s
+ ○ Compiling /schedule ...
+ ✓ Compiled /schedule in 14.2s (1404 modules)
+ GET /schedule 307 in 17561ms
+ ○ Compiling /login ...
+ ✓ Compiled /login in 4.9s (1424 modules)
+prisma:error
+Invalid `prisma.organization.count()` invocation:
+
+
+error: Environment variable not found: DATABASE_URL.
+  -->  schema.prisma:11
+   |
+10 |   provider = "postgresql"
+11 |   url      = env("DATABASE_URL")
+   |
+
+Validation Error Count: 1
+ ⨯ Error [PrismaClientInitializationError]:
+Invalid `prisma.organization.count()` invocation:
+
+
+error: Environment variable not found: DATABASE_URL.
+  -->  schema.prisma:11
+   |
+10 |   provider = "postgresql"
+11 |   url      = env("DATABASE_URL")
+   |
+
+Validation Error Count: 1
+    at <unknown> (-->  schema.prisma:11)
+    at async isBootstrapped (src/lib/auth/bootstrap.ts:9:17)
+    at async LoginPage (src/app/(auth)/login/page.tsx:17:9)
+   7 |  */
+   8 | export async function isBootstrapped(): Promise<boolean> {
+>  9 |   const count = await prisma.organization.count();
+     |                 ^
+  10 |   return count > 0;
+  11 | }
+  12 | {
+  clientVersion: '6.19.3',
+  errorCode: undefined,
+  retryable: undefined,
+  digest: '3736739001'
+}
+ GET /login 500 in 5568ms
+ HEAD /schedule 307 in 181ms
+ ○ Compiling /setup ...
+ ✓ Compiled /setup in 1105ms (754 modules)
+prisma:error
+Invalid `prisma.organization.count()` invocation:
+
+
+error: Environment variable not found: DATABASE_URL.
+  -->  schema.prisma:11
+   |
+10 |   provider = "postgresql"
+11 |   url      = env("DATABASE_URL")
+   |
+
+Validation Error Count: 1
+ ⨯ Error [PrismaClientInitializationError]:
+Invalid `prisma.organization.count()` invocation:
+
+
+error: Environment variable not found: DATABASE_URL.
+  -->  schema.prisma:11
+   |
+10 |   provider = "postgresql"
+11 |   url      = env("DATABASE_URL")
+   |
+
+Validation Error Count: 1
+    at <unknown> (-->  schema.prisma:11)
+    at async isBootstrapped (src/lib/auth/bootstrap.ts:9:17)
+    at async SetupPage (src/app/(auth)/setup/page.tsx:17:7)
+   7 |  */
+   8 | export async function isBootstrapped(): Promise<boolean> {
+>  9 |   const count = await prisma.organization.count();
+     |                 ^
+  10 |   return count > 0;
+  11 | }
+  12 | {
+  clientVersion: '6.19.3',
+  errorCode: undefined,
+  retryable: undefined,
+  digest: '764319042'
+}
+ HEAD /setup 500 in 1675ms
+ ✓ Compiled in 797ms (310 modules)
+ ✓ Compiled in 243ms (310 modules)
+ ✓ Compiled in 377ms (310 modules)
