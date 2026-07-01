@@ -1,5 +1,7 @@
 "use client";
 
+import { History } from "lucide-react";
+
 import { useActionState, useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
@@ -8,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createProjectAction, archiveProjectAction } from "./actions";
-import type { ProjectRow, TeamOption, CreateProjectState } from "./types";
+import { listProjectHistoryAction } from "../tasks/actions";
+import type { ProjectRow, TeamOption, CreateProjectState, AuditEntry } from "./types";
 
 // ─── shared select style (matches members page pattern) ───
 const selectClass =
@@ -138,6 +141,16 @@ export function ProjectsClient({
   teams: TeamOption[];
 }) {
   const [createOpen, setCreateOpen] = useState(false);
+  const [historyProject, setHistoryProject] = useState<ProjectRow | null>(null);
+  const [history, setHistory] = useState<AuditEntry[] | null>(null);
+
+  useEffect(() => {
+    if (historyProject) {
+      listProjectHistoryAction({ projectId: historyProject.id }).then(setHistory);
+    } else {
+      setHistory(null);
+    }
+  }, [historyProject]);
 
   return (
     <>
@@ -194,25 +207,35 @@ export function ProjectsClient({
                       {p.teamName}
                     </p>
                   </div>
-                  <form action={archiveProjectAction}>
-                    <input type="hidden" name="projectId" value={p.id} />
+                  <div className="flex items-center gap-1">
                     <button
-                      type="submit"
-                      onClick={(e) => {
-                        if (
-                          !window.confirm(
-                            `Archive "${p.name}"? Tasks will be preserved but the project will be hidden.`,
-                          )
-                        ) {
-                          e.preventDefault();
-                        }
-                      }}
-                      className="rounded text-muted-foreground/50 hover:text-muted-foreground"
-                      title="Archive project"
+                      type="button"
+                      onClick={() => setHistoryProject(p)}
+                      className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
+                      title="View history"
                     >
-                      <X className="h-3.5 w-3.5" />
+                      <History className="h-3.5 w-3.5" />
                     </button>
-                  </form>
+                    <form action={archiveProjectAction}>
+                      <input type="hidden" name="projectId" value={p.id} />
+                      <button
+                        type="submit"
+                        onClick={(e) => {
+                          if (
+                            !window.confirm(
+                              `Archive "${p.name}"? Tasks will be preserved but the project will be hidden.`,
+                            )
+                          ) {
+                            e.preventDefault();
+                          }
+                        }}
+                        className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
+                        title="Archive project"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </form>
+                  </div>
                 </div>
 
                 {p.description && (
@@ -236,6 +259,32 @@ export function ProjectsClient({
         title="New project"
       >
         <NewProjectForm teams={teams} onClose={() => setCreateOpen(false)} />
+      </Modal>
+
+      <Modal
+        open={!!historyProject}
+        onClose={() => setHistoryProject(null)}
+        title={`Project History: ${historyProject?.name}`}
+      >
+        <div className="max-h-[60vh] overflow-y-auto p-6 pt-2">
+          {history === null ? (
+            <p className="py-4 text-center text-sm text-muted-foreground">Loading history...</p>
+          ) : history.length > 0 ? (
+            <ul className="space-y-3 divide-y">
+              {history.map((h, i) => (
+                <li key={i} className="flex flex-col gap-0.5 pt-3 first:pt-0">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span>{new Date(h.createdAt).toLocaleString()}</span>
+                    {h.actorEmail && <span className="font-medium text-foreground">{h.actorEmail}</span>}
+                  </div>
+                  <p className="text-xs">{h.summary}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="py-4 text-center text-sm text-muted-foreground">No history recorded yet.</p>
+          )}
+        </div>
       </Modal>
     </>
   );

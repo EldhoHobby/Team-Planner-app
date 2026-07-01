@@ -6,6 +6,7 @@ import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
 import { createTask, updateTask, deleteTask } from "@/lib/services/tasks";
 import {
   createJob,
+  updateJob,
   rescheduleJob,
   setJobStatus,
   setJobTentative,
@@ -178,6 +179,56 @@ export async function createJobAction(
 
 // Typed actions (called directly from client handlers — drag-drop + dropdowns).
 
+const UpdateJobSchema = z.object({
+  jobId: z.string().min(1),
+  title: z.string().min(1, "Title is required").max(200).optional(),
+  soNumber: z.string().max(60).optional().nullable(),
+  customerName: z.string().max(160).optional().nullable(),
+  description: z.string().max(4000).optional().nullable(),
+  jobType: z.enum(JOB_TYPES).optional().nullable(),
+  hardwareTarget: z.string().max(120).optional().nullable(),
+  priority: z.enum(PRIORITIES).optional(),
+  technicianId: z.string().optional().nullable(),
+  startDate: z.string().optional().nullable(),
+  durationDays: z.coerce.number().int().positive().max(60).optional().nullable(),
+  jobStatus: z.enum(JOB_STATUSES).optional(),
+  tentative: z.boolean().optional(),
+});
+
+export async function updateJobAction(input: {
+  jobId: string;
+  title?: string;
+  soNumber?: string | null;
+  customerName?: string | null;
+  description?: string | null;
+  jobType?: (typeof JOB_TYPES)[number] | null;
+  hardwareTarget?: string | null;
+  priority?: (typeof PRIORITIES)[number];
+  technicianId?: string | null;
+  startDate?: string | null;
+  durationDays?: number | null;
+  jobStatus?: (typeof JOB_STATUSES)[number];
+  tentative?: boolean;
+}): Promise<JobFormState> {
+  const { scope } = await requireScope();
+  const parsed = UpdateJobSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  const { jobId, startDate, ...rest } = parsed.data;
+  try {
+    await updateJob(scope, jobId, {
+      ...rest,
+      startDate: startDate ? new Date(startDate) : startDate === null ? null : undefined,
+    });
+    revalidatePath("/schedule");
+    return { success: true };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not update the job." };
+  }
+}
+
 export async function rescheduleJobAction(input: {
   jobId: string;
   startDate?: string | null;
@@ -282,4 +333,48 @@ export async function importScheduleXlsxAction(
     if (e instanceof ForbiddenError) return { error: e.message };
     return { error: "Could not read that file — is it the exported .xlsx workbook?" };
   }
+}
+
+export async function listTaskHistoryAction(input: { taskId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "task", input.taskId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+export async function listProjectHistoryAction(input: { projectId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "project", input.projectId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+export async function listTechnicianHistoryAction(input: { technicianId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "technician", input.technicianId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
+export async function listHolidayHistoryAction(input: { holidayId: string }): Promise<AuditEntry[]> {
+  const { scope } = await requireScope();
+  const rows = await listAudit(scope, "holiday", input.holidayId);
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    createdAt: r.createdAt.toISOString(),
+  }));
 }

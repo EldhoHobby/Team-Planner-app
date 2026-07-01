@@ -65,14 +65,13 @@ export function softStyle(color: string | null | undefined): CSSProperties {
 export function hatchStyle(color: string | null | undefined): CSSProperties {
   const h = toHex(color);
   const text = contrastText(h);
-  const stripe = text === "#ffffff" ? "rgba(255,255,255,0.40)" : "rgba(0,0,0,0.28)";
-  const shadow = text === "#ffffff" ? "0 1px 1px rgba(0,0,0,0.5)" : "0 1px 1px rgba(255,255,255,0.5)";
+  // Lower opacity stripes so they don't fight with the text.
+  const stripe = text === "#ffffff" ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.10)";
   return {
     backgroundColor: h,
     backgroundImage: `repeating-linear-gradient(45deg, ${stripe} 0, ${stripe} 4px, transparent 4px, transparent 9px)`,
     borderColor: h,
     color: text,
-    textShadow: shadow,
   };
 }
 

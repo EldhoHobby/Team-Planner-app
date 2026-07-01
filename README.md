@@ -31,8 +31,8 @@ quick brief + conventions.
   password-reset links.
 - **Data** (`/settings/data`) — admin **Excel export/import** (one sheet per
   table, upsert-by-id, preview-then-confirm). See `src/lib/services/data-io.ts`.
-- **Auth** — first-run setup wizard, login/logout, route guard, and
-  **rate-limiting** on login + reset.
+- **Auth & Account** — first-run setup wizard, login/logout, route guard,
+  **rate-limiting** on login + reset, and **Account Settings** (password change).
 
 ## Run the full stack (Docker)
 

@@ -80,6 +80,7 @@ src/app/(app)/schedule/            # FIELD-SERVICE DASHBOARD — timeline + cale
                                    #   backlog, drag-drop, dialogs (the main feature)
 src/app/(app)/tasks/               # generic task list + field-service job actions
 src/app/(app)/projects/            # project list + create/archive
+src/app/(app)/settings/account/    # profile + secure password change
 src/app/(app)/settings/technicians/# crew CRUD (colour wheel) + technician time-off
 src/app/(app)/settings/members/    # admin: invites + member reset links
 src/app/(app)/settings/data/       # admin Excel export/import UI
@@ -130,8 +131,8 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
 ## Status & roadmap
 
 - **Foundation + auth + tenancy:** done — bootstrap wizard, login/logout/guard,
-  invite flow, admin-issued password reset, login/reset rate-limiting. Owner:
-  `admin@q.com`.
+  invite flow, admin-issued password reset, login/reset rate-limiting, and
+  personal **Account Settings** (password change). Owner: `admin@q.com`.
 - **Generic tasks/projects:** done — CRUD, status/priority/due date/estimate,
   multi-assignee.
 - **Field-service scheduling (primary):** done — jobs are `Task` rows with
@@ -142,6 +143,8 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   filters, full-height calendar, Excel (.xlsx) import/export.
 - **Admin data round-trip:** done — Excel export/import at `/settings/data`
   (`data-io.ts`), upsert-by-id with change detection + preview.
+- **Observability & Build:** done — comprehensive **audit logging** for all
+  domain mutations; automated application **versioning** (Git hash + date).
 - **Remote access:** done — Caddy serves localhost + LAN IP + public DuckDNS
   domain with Let's Encrypt.
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog, audit

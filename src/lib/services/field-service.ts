@@ -155,6 +155,72 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
   return job;
 }
 
+export interface UpdateJobInput {
+  title?: string;
+  soNumber?: string | null;
+  customerName?: string | null;
+  description?: string | null;
+  jobType?: JobType | null;
+  hardwareTarget?: string | null;
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+  technicianId?: string | null;
+  startDate?: Date | null;
+  durationDays?: number | null;
+  jobStatus?: JobStatus;
+  tentative?: boolean;
+}
+
+export async function updateJob(scope: TenantScope, id: string, input: UpdateJobInput) {
+  const job = await prisma.task.findFirst({
+    where: { id, kind: "FIELD_SERVICE", ...scope.team() },
+  });
+  if (!job) throw new ForbiddenError("Job not found");
+
+  if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
+
+  const nextStart = input.startDate !== undefined ? input.startDate : job.startDate;
+  const nextDuration =
+    input.durationDays !== undefined ? input.durationDays : (job.durationDays ?? 1);
+  const nextTech = input.technicianId !== undefined ? input.technicianId : job.technicianId;
+
+  const { start, end, duration, status } = deriveSchedule({
+    startDate: nextStart,
+    durationDays: nextDuration,
+    technicianId: nextTech,
+    jobStatus: input.jobStatus ?? job.jobStatus ?? undefined,
+  });
+
+  const updated = await prisma.task.update({
+    where: { id },
+    data: {
+      title: input.title !== undefined ? input.title.trim() : undefined,
+      description: input.description !== undefined ? (input.description?.trim() || null) : undefined,
+      soNumber: input.soNumber !== undefined ? (input.soNumber?.trim() || null) : undefined,
+      customerName:
+        input.customerName !== undefined ? (input.customerName?.trim() || null) : undefined,
+      jobType: input.jobType !== undefined ? input.jobType : undefined,
+      hardwareTarget:
+        input.hardwareTarget !== undefined ? (input.hardwareTarget?.trim() || null) : undefined,
+      priority: input.priority !== undefined ? input.priority : undefined,
+      technicianId: nextTech !== undefined ? (nextTech || null) : undefined,
+      startDate: start,
+      endDate: end,
+      durationDays: duration,
+      jobStatus: status,
+      tentative: input.tentative !== undefined ? input.tentative : undefined,
+    },
+    include: JOB_INCLUDE,
+  });
+
+  await writeAudit(scope, {
+    entity: "job",
+    entityId: id,
+    action: "updated",
+    summary: `Updated "${updated.title}"`,
+  });
+  return updated;
+}
+
 export async function setJobTentative(
   scope: TenantScope,
   id: string,

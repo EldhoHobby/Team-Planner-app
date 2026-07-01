@@ -13,7 +13,8 @@ app has since been built and pivoted to a **field-service scheduling** focus.*
 > warnings, and time-off blocking. **Technicians** are their own org-scoped model
 > (not the `User`/`TaskAssignment` path sketched in §3). Added since: technician
 > management, admin **Excel export/import** (`data-io.ts`), login/reset
-> rate-limiting, and remote access via Caddy + Let's Encrypt.
+> rate-limiting, comprehensive **audit logging**, **Account Settings** (password
+> change), **Sales Order filtering**, and remote access via Caddy + Let's Encrypt.
 > **For the up-to-date brief and conventions, read `CLAUDE.md`; for setup, `README.md`.**
 
 ---

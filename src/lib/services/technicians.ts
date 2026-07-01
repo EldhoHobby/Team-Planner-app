@@ -3,6 +3,7 @@ import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { isValidColor, toHex, DEFAULT_HEX } from "@/lib/scheduling/colors";
 import { toUtcMidnight } from "@/lib/scheduling/calc";
+import { writeAudit } from "./audit";
 
 function assertAdmin(scope: TenantScope) {
   if (!scope.ctx.isOrgAdmin) {
@@ -54,9 +55,16 @@ export async function createTechnician(
   if (!name) throw new ForbiddenError("Name is required");
   const color = isValidColor(input.color) ? toHex(input.color) : DEFAULT_HEX;
   await assertUnique(scope, { name, color });
-  return prisma.technician.create({
+  const tech = await prisma.technician.create({
     data: { orgId: scope.ctx.orgId, name, color },
   });
+  await writeAudit(scope, {
+    entity: "technician",
+    entityId: tech.id,
+    action: "created",
+    summary: `Added technician "${tech.name}"`,
+  });
+  return tech;
 }
 
 export async function updateTechnician(
@@ -76,7 +84,7 @@ export async function updateTechnician(
     input.color !== undefined && isValidColor(input.color) ? toHex(input.color) : undefined;
   await assertUnique(scope, { name, color, excludeId: id });
 
-  return prisma.technician.update({
+  const tech_updated = await prisma.technician.update({
     where: { id },
     data: {
       ...(name ? { name } : {}),
@@ -84,6 +92,13 @@ export async function updateTechnician(
       ...(input.active !== undefined ? { active: input.active } : {}),
     },
   });
+  await writeAudit(scope, {
+    entity: "technician",
+    entityId: id,
+    action: "updated",
+    summary: `Updated technician "${tech_updated.name}"`,
+  });
+  return tech_updated;
 }
 
 /** Soft-delete: hide the technician everywhere but keep historical jobs intact. */
@@ -91,13 +106,20 @@ export async function archiveTechnician(scope: TenantScope, id: string) {
   assertAdmin(scope);
   const tech = await prisma.technician.findFirst({
     where: { id, orgId: scope.ctx.orgId },
-    select: { id: true },
+    select: { id: true, name: true },
   });
   if (!tech) throw new ForbiddenError("Technician not found");
-  return prisma.technician.update({
+  const tech_archived = await prisma.technician.update({
     where: { id },
     data: { archived: true, active: false },
   });
+  await writeAudit(scope, {
+    entity: "technician",
+    entityId: id,
+    action: "archived",
+    summary: `Archived technician "${tech.name}"`,
+  });
+  return tech_archived;
 }
 
 // ─────────────────────────── Technician time-off ───────────────────────────
@@ -116,13 +138,13 @@ export async function createTechTimeOff(
   assertAdmin(scope);
   const tech = await prisma.technician.findFirst({
     where: { id: input.technicianId, orgId: scope.ctx.orgId },
-    select: { id: true },
+    select: { id: true, name: true },
   });
   if (!tech) throw new ForbiddenError("Technician not in your organization");
 
   const start = toUtcMidnight(input.startDate);
   const end = toUtcMidnight(input.endDate);
-  return prisma.technicianTimeOff.create({
+  const off = await prisma.technicianTimeOff.create({
     data: {
       orgId: scope.ctx.orgId,
       technicianId: input.technicianId,
@@ -131,11 +153,30 @@ export async function createTechTimeOff(
       reason: input.reason?.trim() || null,
     },
   });
+  await writeAudit(scope, {
+    entity: "timeoff",
+    entityId: off.id,
+    action: "created",
+    summary: `Added time off for ${tech.name}: ${off.startDate.toISOString().slice(0, 10)} to ${off.endDate.toISOString().slice(0, 10)}`,
+  });
+  return off;
 }
 
 export async function deleteTechTimeOff(scope: TenantScope, id: string) {
   assertAdmin(scope);
-  await prisma.technicianTimeOff.deleteMany({
+  const off = await prisma.technicianTimeOff.findFirst({
     where: { id, orgId: scope.ctx.orgId },
+    include: { technician: { select: { name: true } } },
+  });
+  if (!off) return;
+
+  await prisma.technicianTimeOff.delete({
+    where: { id },
+  });
+  await writeAudit(scope, {
+    entity: "timeoff",
+    entityId: id,
+    action: "deleted",
+    summary: `Removed time off for ${off.technician.name}`,
   });
 }
