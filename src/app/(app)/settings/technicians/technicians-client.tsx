@@ -1,9 +1,9 @@
 "use client";
 
-import { useActionState, useEffect, useTransition } from "react";
+import { useActionState, useEffect, useTransition, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Trash2 } from "lucide-react";
+import { Trash2, History, X } from "lucide-react";
 import {
   createTechnicianAction,
   updateTechnicianAction,
@@ -11,7 +11,9 @@ import {
   addTimeOffAction,
   deleteTimeOffAction,
 } from "./actions";
+import { listTechnicianHistoryAction } from "../../tasks/actions";
 import type { TechFormState, TechnicianRow, TimeOffRow } from "./types";
+import type { AuditEntry } from "../../schedule/types";
 import { toHex } from "@/lib/scheduling/colors";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Button } from "@/components/ui/button";
@@ -39,7 +41,7 @@ function AddTimeOffButton() {
   return <Button type="submit" disabled={pending}>{pending ? "Saving…" : "Add time off"}</Button>;
 }
 
-function TechRow({ tech }: { tech: TechnicianRow }) {
+function TechRow({ tech, onViewHistory }: { tech: TechnicianRow; onViewHistory: (t: TechnicianRow) => void }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const run = (fn: () => Promise<unknown>) =>
@@ -80,6 +82,14 @@ function TechRow({ tech }: { tech: TechnicianRow }) {
       >
         {tech.active ? "Active" : "Inactive"}
       </Button>
+      <button
+        type="button"
+        onClick={() => onViewHistory(tech)}
+        className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
+        title="View history"
+      >
+        <History className="h-4 w-4" />
+      </button>
       <Button
         type="button"
         variant="ghost"
@@ -140,10 +150,20 @@ export function TechniciansClient({
   const router = useRouter();
   const [createState, createAction] = useActionState(createTechnicianAction, initial);
   const [offState, offAction] = useActionState(addTimeOffAction, initial);
+  const [historyTech, setHistoryTech] = useState<TechnicianRow | null>(null);
+  const [history, setHistory] = useState<AuditEntry[] | null>(null);
 
   useEffect(() => {
     if (createState.success || offState.success) router.refresh();
   }, [createState.success, offState.success, router]);
+
+  useEffect(() => {
+    if (historyTech) {
+      listTechnicianHistoryAction({ technicianId: historyTech.id }).then(setHistory);
+    } else {
+      setHistory(null);
+    }
+  }, [historyTech]);
 
   const nameOf = (id: string) => technicians.find((t) => t.id === id)?.name ?? "—";
 
@@ -165,7 +185,7 @@ export function TechniciansClient({
         <CardContent>
           <ul className="divide-y">
             {technicians.map((t) => (
-              <TechRow key={t.id} tech={t} />
+              <TechRow key={t.id} tech={t} onViewHistory={setHistoryTech} />
             ))}
           </ul>
           <form action={createAction} className="mt-4 flex items-end gap-2 border-t pt-4">
@@ -230,6 +250,38 @@ export function TechniciansClient({
           )}
         </CardContent>
       </Card>
+
+      {historyTech && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={() => setHistoryTech(null)}>
+          <div className="relative w-full max-w-md rounded-xl border bg-background shadow-lg" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b px-6 py-4">
+              <h2 className="text-base font-semibold">History: {historyTech.name}</h2>
+              <button type="button" onClick={() => setHistoryTech(null)} className="rounded-sm text-muted-foreground hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto p-6 pt-2">
+              {history === null ? (
+                <p className="py-4 text-center text-sm text-muted-foreground">Loading history...</p>
+              ) : history.length > 0 ? (
+                <ul className="space-y-3 divide-y">
+                  {history.map((h, i) => (
+                    <li key={i} className="flex flex-col gap-0.5 pt-3 first:pt-0">
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                        <span>{new Date(h.createdAt).toLocaleString()}</span>
+                        {h.actorEmail && <span className="font-medium text-foreground">{h.actorEmail}</span>}
+                      </div>
+                      <p className="text-xs">{h.summary}</p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="py-4 text-center text-sm text-muted-foreground">No history recorded yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

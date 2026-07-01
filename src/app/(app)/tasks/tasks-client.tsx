@@ -1,5 +1,6 @@
-import { History } from "lucide-react";
 "use client";
+
+import { History } from "lucide-react";
 
 import { useEffect, useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
@@ -394,23 +395,6 @@ function TaskForm({
           </Button>
         </div>
       </form>
-          {history && (
-            <div className="mt-4 border-t pt-4">
-              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Change History</h4>
-              {history.length ? (
-                <ul className="space-y-1.5 text-xs">
-                  {history.map((h, i) => (
-                    <li key={i} className="flex gap-2 text-muted-foreground">
-                      <span className="shrink-0">{new Date(h.createdAt).toLocaleString()}</span>
-                      <span className="text-foreground">{h.summary}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-xs text-muted-foreground">No history recorded yet.</p>
-              )}
-            </div>
-          )}
 
       {/* Delete section — only in edit mode */}
       {mode === "edit" && initialTask && (
