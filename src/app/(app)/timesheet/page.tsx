@@ -3,6 +3,7 @@ import { requireScope } from "@/lib/auth/current-user";
 import {
   getTimesheet,
   listTimesheetWeeks,
+  getSoLookup,
   weekEndingFor,
   currentWeekEnding,
 } from "@/lib/services/timesheets";
@@ -25,9 +26,10 @@ export default async function TimesheetPage({
     if (!Number.isNaN(d.getTime())) weekEnding = weekEndingFor(d);
   }
 
-  const [data, weeks] = await Promise.all([
+  const [data, weeks, soLookup] = await Promise.all([
     getTimesheet(scope, weekEnding),
     listTimesheetWeeks(scope),
+    getSoLookup(),
   ]);
 
   return (
@@ -36,6 +38,7 @@ export default async function TimesheetPage({
       empNo={user.empNo ?? ""}
       data={data}
       weeks={weeks}
+      soLookup={soLookup}
     />
   );
 }

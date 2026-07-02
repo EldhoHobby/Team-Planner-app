@@ -207,6 +207,45 @@ function templatePath(): string {
 // Day column letters on the template: F=Sun … L=Sat.
 const DAY_COLS = ["F", "G", "H", "I", "J", "K", "L"] as const;
 
+// Excel point size for the Customer Name cell, shrinking as text gets longer
+// (replicates the old Worksheet_Change VBA font rule).
+export function customerFontSize(len: number): number {
+  if (len <= 10) return 10;
+  if (len <= 13) return 9;
+  if (len <= 15) return 8;
+  return 7;
+}
+
+export interface SoLookupEntry {
+  code: string;
+  description: string;
+}
+
+/**
+ * The S.O./Dev → Customer/Description lookup, read from the template's Sheet2
+ * (the "Lookup01" B:C table the old VBA used for its VLOOKUP). Typing a matching
+ * code on the timesheet auto-fills Customer Name. Returns [] if unavailable.
+ */
+export async function getSoLookup(): Promise<SoLookupEntry[]> {
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(templatePath());
+    const s2 = wb.getWorksheet("Sheet2");
+    if (!s2) return [];
+    const out: SoLookupEntry[] = [];
+    s2.eachRow((row) => {
+      const code = (row.getCell(2).text ?? "").trim(); // column B
+      const description = (row.getCell(3).text ?? "").trim(); // column C
+      if (code && description && code.toLowerCase() !== "dev-number") {
+        out.push({ code, description });
+      }
+    });
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export async function generateTimesheetXlsx(
   scope: TenantScope,
   weekEnding: Date,
@@ -236,7 +275,12 @@ export async function generateTimesheetXlsx(
     const row = 8 + i;
     if (r.workDept) ws.getCell(`B${row}`).value = r.workDept;
     if (r.soNumber) ws.getCell(`C${row}`).value = r.soNumber;
-    if (r.customerName) ws.getCell(`D${row}`).value = r.customerName;
+    if (r.customerName) {
+      const cell = ws.getCell(`D${row}`);
+      cell.value = r.customerName;
+      // Match the old VBA: shrink the Customer Name font by text length so it fits.
+      cell.font = { ...(cell.font ?? {}), size: customerFontSize(r.customerName.length) };
+    }
     if (r.issueNo) ws.getCell(`E${row}`).value = r.issueNo;
     DAY_KEYS.forEach((k, di) => {
       if (r[k] > 0) ws.getCell(`${DAY_COLS[di]}${row}`).value = r[k];

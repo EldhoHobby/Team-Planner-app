@@ -27,6 +27,13 @@ function todayWeekEnding(): string {
   return ymd(new Date(m.getTime() + (6 - m.getUTCDay()) * MS_DAY));
 }
 const rowTotal = (r: Record<DayKey, number>) => DAY_KEYS.reduce((a, k) => a + (Number(r[k]) || 0), 0);
+// Shrink the Customer Name cell as text gets longer (mirrors the old VBA font rule, in web px).
+function custFontPx(len: number): number {
+  if (len <= 10) return 14;
+  if (len <= 13) return 12.5;
+  if (len <= 15) return 11.5;
+  return 10.5;
+}
 // Borderless inputs so the editable grid reads like the view-only grid; a soft
 // focus highlight shows the active cell. Bigger font for readability.
 const numInput = "h-8 w-14 rounded bg-transparent px-1 text-center text-sm focus:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -37,11 +44,13 @@ export function TimesheetClient({
   empNo: initialEmpNo,
   data,
   weeks,
+  soLookup,
 }: {
   userName: string;
   empNo: string;
   data: TimesheetData;
   weeks: WeekSummary[];
+  soLookup: { code: string; description: string }[];
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -84,6 +93,21 @@ export function TimesheetClient({
     setDirect((rows) => rows.map((r, idx) => (idx === i ? { ...r, [k]: value } : r)));
   const setIndirectDay = (i: number, k: DayKey, value: number) =>
     setIndirect((rows) => rows.map((r, idx) => (idx === i ? { ...r, [k]: value } : r)));
+
+  // S.O./Dev → Customer auto-fill (replaces the VBA VLOOKUP). Typing a code that
+  // matches the template's Sheet2 table fills Customer Name with the description.
+  const soMap = useMemo(
+    () => new Map(soLookup.map((x) => [x.code.trim().toUpperCase(), x.description] as const)),
+    [soLookup],
+  );
+  const onSoChange = (i: number, v: string) => {
+    const desc = soMap.get(v.trim().toUpperCase());
+    setDirect((rows) =>
+      rows.map((r, idx) =>
+        idx === i ? { ...r, soNumber: v, ...(desc !== undefined ? { customerName: desc } : {}) } : r,
+      ),
+    );
+  };
 
   const goWeek = (deltaWeeks: number) =>
     router.push(`/timesheet?week=${ymd(new Date(we.getTime() + deltaWeeks * 7 * MS_DAY))}`);
@@ -172,7 +196,16 @@ export function TimesheetClient({
 
       {/* DIRECT LABOR */}
       <Section title="DIRECT LABOR">
-        <table className="w-full border-collapse text-sm">
+        <table className="w-full table-fixed border-collapse text-sm">
+          <colgroup>
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "17%" }} />
+            <col style={{ width: "7%" }} />
+            {DAY_KEYS.map((k) => <col key={k} style={{ width: "6%" }} />)}
+            <col style={{ width: "10%" }} />
+          </colgroup>
           <thead>
             <tr className="bg-muted/50">
               <Th>Line</Th><Th className="text-left">Work Dept</Th><Th className="text-left">S.O./S.C./Dev</Th>
@@ -186,8 +219,19 @@ export function TimesheetClient({
               <tr key={i} className="border-t">
                 <Td className="text-center text-muted-foreground">{i + 1}</Td>
                 <Td><Field editable={editable} value={r.workDept} onChange={(v) => setDirectText(i, "workDept", v)} /></Td>
-                <Td><Field editable={editable} value={r.soNumber} onChange={(v) => setDirectText(i, "soNumber", v)} /></Td>
-                <Td><Field editable={editable} value={r.customerName} onChange={(v) => setDirectText(i, "customerName", v)} /></Td>
+                <Td><Field editable={editable} value={r.soNumber} onChange={(v) => onSoChange(i, v)} /></Td>
+                <Td>
+                  {editable ? (
+                    <input
+                      className={txtInput}
+                      style={{ fontSize: `${custFontPx(r.customerName.length)}px` }}
+                      value={r.customerName}
+                      onChange={(e) => setDirectText(i, "customerName", e.target.value)}
+                    />
+                  ) : (
+                    <span style={{ fontSize: `${custFontPx(r.customerName.length)}px` }}>{r.customerName}</span>
+                  )}
+                </Td>
                 <Td><Field editable={editable} value={r.issueNo} onChange={(v) => setDirectText(i, "issueNo", v)} /></Td>
                 {DAY_KEYS.map((k) => (
                   <Td key={k} className="text-center">
@@ -206,7 +250,13 @@ export function TimesheetClient({
 
       {/* INDIRECT LABOR */}
       <Section title="INDIRECT LABOR">
-        <table className="w-full border-collapse text-sm">
+        <table className="w-full table-fixed border-collapse text-sm">
+          <colgroup>
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "43%" }} />
+            {DAY_KEYS.map((k) => <col key={k} style={{ width: "6%" }} />)}
+            <col style={{ width: "10%" }} />
+          </colgroup>
           <thead>
             <tr className="bg-muted/50">
               <Th>Line</Th><Th className="text-left">Function</Th>
