@@ -27,8 +27,10 @@ function todayWeekEnding(): string {
   return ymd(new Date(m.getTime() + (6 - m.getUTCDay()) * MS_DAY));
 }
 const rowTotal = (r: Record<DayKey, number>) => DAY_KEYS.reduce((a, k) => a + (Number(r[k]) || 0), 0);
-const numInput = "h-7 w-12 rounded border border-input bg-transparent px-1 text-center text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-const txtInput = "h-7 w-full rounded border border-input bg-transparent px-1.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+// Borderless inputs so the editable grid reads like the view-only grid; a soft
+// focus highlight shows the active cell. Bigger font for readability.
+const numInput = "h-8 w-14 rounded bg-transparent px-1 text-center text-sm focus:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+const txtInput = "h-8 w-full rounded bg-transparent px-1.5 text-sm focus:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export function TimesheetClient({
   userName,
@@ -118,7 +120,7 @@ export function TimesheetClient({
             <label className="mt-1 flex items-center gap-2">
               <span className="text-muted-foreground">Emp No #:</span>
               <input
-                className={`${txtInput} w-28`}
+                className={`${txtInput} w-28 border border-input`}
                 value={empNo}
                 onChange={(e) => setEmpNo(e.target.value)}
                 onBlur={saveEmp}
@@ -170,7 +172,7 @@ export function TimesheetClient({
 
       {/* DIRECT LABOR */}
       <Section title="DIRECT LABOR">
-        <table className="w-full border-collapse text-xs">
+        <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="bg-muted/50">
               <Th>Line</Th><Th className="text-left">Work Dept</Th><Th className="text-left">S.O./S.C./Dev</Th>
@@ -204,7 +206,7 @@ export function TimesheetClient({
 
       {/* INDIRECT LABOR */}
       <Section title="INDIRECT LABOR">
-        <table className="w-full border-collapse text-xs">
+        <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="bg-muted/50">
               <Th>Line</Th><Th className="text-left">Function</Th>
@@ -270,19 +272,19 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 function Th({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <th className={`border px-1 py-1 text-center text-[11px] font-semibold ${className}`}>{children}</th>;
+  return <th className={`border px-1.5 py-1 text-center text-xs font-semibold ${className}`}>{children}</th>;
 }
 function Td({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <td className={`border px-1 py-0.5 ${className}`}>{children}</td>;
+  return <td className={`border px-1.5 py-1 ${className}`}>{children}</td>;
 }
 function Field({ editable, value, onChange }: { editable: boolean; value: string; onChange: (v: string) => void }) {
-  if (!editable) return <span className="text-xs">{value}</span>;
+  if (!editable) return <span className="text-sm">{value}</span>;
   return <input className={txtInput} value={value} onChange={(e) => onChange(e.target.value)} />;
 }
 function TotalRow({ label, days, total, labelColSpan, strong }: { label: string; days: Record<DayKey, number>; total: number; labelColSpan: number; strong?: boolean }) {
   return (
     <tr className={`border-t ${strong ? "bg-muted/60 font-bold" : "bg-muted/30 font-semibold"}`}>
-      <td colSpan={labelColSpan} className="border px-2 py-1 text-right text-[11px]">{label}:</td>
+      <td colSpan={labelColSpan} className="border px-2 py-1 text-right text-xs">{label}:</td>
       {DAY_KEYS.map((k) => <td key={k} className="border px-1 py-1 text-center">{days[k] || ""}</td>)}
       <td className="border px-1 py-1 text-center">{total || ""}</td>
     </tr>
