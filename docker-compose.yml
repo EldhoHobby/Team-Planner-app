@@ -44,9 +44,11 @@ services:
       SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
       SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
+      TIMESHEET_TEMPLATE_PATH: ${TIMESHEET_TEMPLATE_PATH:-/app/timesheet-template/Time_Sheet_Template.xlsm}
       NODE_ENV: production
     volumes:
       - uploads:/app/uploads          # task attachments, persisted on the host
+      - ./timesheet-template:/app/timesheet-template:ro   # QEI timesheet template (host-managed)
     depends_on:
       db:
         condition: service_healthy

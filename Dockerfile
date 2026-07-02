@@ -52,6 +52,9 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Timesheet Excel template (default; a host bind-mount can override it at runtime).
+COPY --from=builder /app/timesheet-template ./timesheet-template
+
 # Prisma generated client + query engine, which Next's tracer doesn't bundle.
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client

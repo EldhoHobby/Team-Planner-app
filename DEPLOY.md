@@ -61,6 +61,9 @@ Copy these to a USB stick:
 - `team-planner-bundle.tar`
 - `docker-compose.offline.yml`
 - `Caddyfile`
+- the `timesheet-template/` folder (contains `Time_Sheet_Template.xlsm`) — the compose
+  bind-mounts `./timesheet-template` so the timesheet generator can read it on the host.
+  You can update this .xlsm on the host anytime without rebuilding the image.
 
 Do **not** copy `.env` — create it fresh on the host (secrets shouldn't ride on the USB).
 

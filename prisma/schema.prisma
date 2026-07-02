@@ -32,6 +32,7 @@ model Organization {
   techTimeOff TechnicianTimeOff[]
   holidays    Holiday[]
   auditLogs   AuditLog[]
+  timesheets  Timesheet[]
 }
 
 model User {
@@ -41,6 +42,7 @@ model User {
   passwordHash String
   isActive     Boolean  @default(true)
   theme        String? // "light" | "dark" — per-user UI theme (null = follow system)
+  empNo        String? // employment ID, shown on the timesheet (Emp No #)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -53,6 +55,7 @@ model User {
   uploads         Attachment[]
   invitesSent     Invitation[]         @relation("InvitedBy")
   technician      Technician?
+  timesheets      Timesheet[]
 }
 
 enum OrgRole {
@@ -421,6 +424,62 @@ model Holiday {
 
   @@unique([orgId, date])
   @@index([orgId])
+}
+
+// ─────────────────────────── Timesheets ───────────────────────────
+
+// A weekly timesheet for one user (week ends on a Saturday — matches the QEI
+// template). Filled in the app, stored here, and rendered into the Excel
+// template on generate. One per user per week.
+model Timesheet {
+  id         String   @id @default(cuid())
+  orgId      String
+  userId     String
+  weekEnding DateTime // the Saturday the week ends on (UTC midnight)
+  comments   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  org     Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries TimesheetEntry[]
+
+  @@unique([userId, weekEnding])
+  @@index([orgId])
+}
+
+enum TimesheetSection {
+  DIRECT
+  INDIRECT
+}
+
+// One row of a timesheet. DIRECT rows use so/customer/issue/workDept; INDIRECT
+// rows use functionLabel (one of the fixed template categories). Hours are per
+// day, Sunday..Saturday.
+model TimesheetEntry {
+  id            String           @id @default(cuid())
+  timesheetId   String
+  section       TimesheetSection
+  lineNo        Int
+  // DIRECT columns
+  workDept      String?
+  soNumber      String?
+  customerName  String?
+  issueNo       String?
+  // INDIRECT column
+  functionLabel String?
+  // hours per day
+  sun           Float            @default(0)
+  mon           Float            @default(0)
+  tue           Float            @default(0)
+  wed           Float            @default(0)
+  thu           Float            @default(0)
+  fri           Float            @default(0)
+  sat           Float            @default(0)
+
+  timesheet Timesheet @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+
+  @@index([timesheetId])
 }
 
 // Change-history trail for jobs, technicians, etc. (what / when / who).

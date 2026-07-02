@@ -70,7 +70,8 @@ src/lib/auth/                      # password, tokens, session, current-user, gu
                                    #   bootstrap, password-reset, auth-actions, rate-limit
 src/lib/invitations/               # invitation service
 src/lib/services/                  # business logic — tasks, projects,
-                                   #   field-service (jobs), technicians, data-io (xlsx)
+                                   #   field-service (jobs), technicians, data-io (xlsx),
+                                   #   timesheets (fills the QEI Excel template)
 src/lib/scheduling/                # pure math (calc.ts) + colour helpers (colors.ts)
 src/components/ui/                 # shadcn components (+ modal, date-picker)
 src/components/nav-sidebar.tsx     # authenticated app sidebar (client component)
@@ -79,6 +80,7 @@ src/app/(app)/layout.tsx           # authenticated shell (sidebar + content area
 src/app/(app)/schedule/            # FIELD-SERVICE DASHBOARD — timeline + calendar,
                                    #   backlog, drag-drop, dialogs (the main feature)
 src/app/(app)/tasks/               # generic task list + field-service job actions
+src/app/(app)/timesheet/           # per-user weekly QEI timesheet (grid + Excel gen)
 src/app/(app)/projects/            # project list + create/archive
 src/app/(app)/settings/account/    # profile + secure password change
 src/app/(app)/settings/technicians/# crew CRUD (colour wheel) + technician time-off
@@ -86,6 +88,8 @@ src/app/(app)/settings/members/    # admin: invites + member reset links
 src/app/(app)/settings/data/       # admin Excel export/import UI
 src/app/api/admin/export/          # scoped .xlsx config export
 src/app/api/schedule/export/       # scoped schedule Excel (.xlsx) export (Jobs sheet)
+src/app/api/timesheet/export/      # fills the QEI timesheet template → .xlsx download
+timesheet-template/                # QEI Time_Sheet_Template.xlsm (host-mounted in prod)
 src/app/invite/[token]/            # public accept-invite
 src/app/reset/[token]/             # public set-new-password
 src/app/api/health/                # DB readiness probe
