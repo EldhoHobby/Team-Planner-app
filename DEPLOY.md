@@ -23,6 +23,13 @@ you don't rediscover them.
   click through.
 - **Data** lives in Docker named volumes (`teamplanner_db_data`, `teamplanner_uploads`),
   not in `C:\TeamPlanner`.
+- **Email → task ingest needs outbound internet.** The app can poll a Gmail inbox
+  (IMAP) and turn "@username" emails into dashboard tasks, but that requires the
+  host to reach `imap.gmail.com:993`. On this offline host leave
+  `EMAIL_INGEST_ENABLED=false` (the default) — everything else works without it.
+  If the host ever gets outbound access, set `EMAIL_INGEST_ENABLED=true`,
+  `IMAP_USER`, `IMAP_PASSWORD` (a Google App Password) in `.env` and recreate the
+  app container.
 
 ---
 

@@ -13,26 +13,43 @@ quick brief + conventions.
 - **App:** Next.js 15 (App Router, React 19, standalone) + TypeScript
 - **DB:** PostgreSQL 16 via Prisma ORM
 - **UI:** Tailwind CSS v3 + shadcn/ui
-- **Auth:** local email + password (Argon2id), server-side sessions
+- **Auth:** local **username** + password (email also accepted at sign-in;
+  Argon2id), server-side sessions
 - **Proxy:** Caddy (TLS termination, automatic certs)
 - **Deploy:** Docker Compose — `proxy` + one-shot `migrate` + `app` + `db`
 
 ## What's built
 
-- **Schedule dashboard** (`/schedule`) — weekly **timeline** (technician lanes,
+- **Schedule board** (`/schedule`) — weekly **timeline** (technician lanes,
   multi-day spanning bars, drag-and-drop with optimistic UI) and a **month
   calendar**, Sunday-first, with a triage/unscheduled backlog, conflict +
-  overload warnings, view-aware capacity, technician colour-coding, time-off
-  blocking, filters, and CSV export.
-- **Technicians** (`/settings/technicians`) — crew CRUD with a free-form colour
-  wheel (unique name + colour) and per-technician time-off.
+  overload warnings, view-aware capacity, technician **checkbox multi-filter**
+  (defaults to yourself, or your team if you're a manager), time-off shown as
+  its own calendar lanes, today markers, and an Excel (.xlsx) Jobs round-trip.
+- **Dashboard** (`/dashboard`) — per-person open-items list (priority, target
+  date, inline-editable cells, state dropdown, sortable columns, overdue /
+  due-soon chips), each person's assigned jobs, and a collapsible pool of
+  unassigned work. Managers see their department (sub-teams roll up).
+- **People & Departments** (`/settings/people`) — unified admin page: a person
+  is one login user + schedulable technician. Auto-generated unique board
+  colours (admin can override), nested departments (`parentTeamId`), manager
+  roles, extra-manager links, cross-functional **work groups** (e.g. Field
+  Service), set-password hand-off links, and time-off.
 - **Tasks & projects** (`/tasks`, `/projects`) — generic task/project CRUD.
-- **Members** (`/settings/members`) — invite-only onboarding + admin-issued
-  password-reset links.
+- **Timesheet** (`/timesheet`) — weekly grid filled in-app, generated into the
+  QEI Excel template.
 - **Data** (`/settings/data`) — admin **Excel export/import** (one sheet per
-  table, upsert-by-id, preview-then-confirm). See `src/lib/services/data-io.ts`.
-- **Auth & Account** — first-run setup wizard, login/logout, route guard,
-  **rate-limiting** on login + reset, and **Account Settings** (password change).
+  table incl. People and dashboard My Tasks; upsert-by-id,
+  preview-then-confirm). See `src/lib/services/data-io.ts`.
+- **Email → tasks** (`/settings/email`) — the app polls a designated Gmail
+  inbox (IMAP + app password); "@username" tags in an email create dashboard
+  tasks. Admin page has a Check-mail-now button, 30-day statistics and
+  per-email history. Configure via `EMAIL_INGEST_ENABLED` / `IMAP_*` in `.env`.
+- **View as** — OWNER-only sidebar dropdown to render and use the whole app as
+  any person (testing tool); audit logs still record the real actor.
+- **Auth & Account** — first-run setup wizard, username (or email) login,
+  route guard, **rate-limiting** on login + reset, and **Account Settings**
+  (password change). Admin-only pages are hidden from non-admin navigation.
 
 ## Run the full stack (Docker)
 

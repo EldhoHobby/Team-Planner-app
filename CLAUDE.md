@@ -97,15 +97,21 @@ lock-step with the admin Jobs sheet. Unlike the admin import, it is NOT admin-ga
 ```
 prisma/schema.prisma               # data model (source of truth for the DB)
 src/lib/db/                        # prisma client + TenantScope
-src/lib/auth/                      # password, tokens, session, current-user, guard,
-                                   #   bootstrap, password-reset, auth-actions, rate-limit
+src/lib/auth/                      # password, tokens, session (+ "view as" actor),
+                                   #   current-user, guard, bootstrap, password-reset,
+                                   #   auth-actions, rate-limit, username, view-as-actions
+src/lib/users.ts                   # displayHandle() + username helpers (pure, client-safe)
 src/lib/invitations/               # invitation service
-src/lib/services/                  # business logic — tasks, projects,
-                                   #   field-service (jobs), technicians, data-io (xlsx),
+src/lib/email/ingest.ts            # Gmail IMAP → dashboard-task poller (+ 30-day stats log)
+src/instrumentation.ts             # server boot hook — starts the email poller
+src/lib/services/                  # business logic — tasks, tech-tasks (dashboard),
+                                   #   projects, people, work-groups, field-service (jobs),
+                                   #   technicians (time-off), data-io (xlsx),
                                    #   timesheets (fills the QEI Excel template)
-src/lib/scheduling/                # pure math (calc.ts) + colour helpers (colors.ts)
+src/lib/scheduling/                # pure math (calc.ts) + colour helpers/palette (colors.ts)
 src/components/ui/                 # shadcn components (+ modal, date-picker)
-src/components/nav-sidebar.tsx     # authenticated app sidebar (client component)
+src/components/nav-sidebar.tsx     # authenticated app sidebar (admin-only items hidden)
+src/components/view-as.tsx         # OWNER-only "View as" picker + banner
 src/app/(auth)/setup|login/        # first-run wizard + sign in
 src/app/(app)/layout.tsx           # authenticated shell (sidebar + content area)
 src/app/(app)/dashboard/           # TECH/MANAGER open-items dashboard — per-person
@@ -121,6 +127,9 @@ src/app/(app)/settings/people/     # UNIFIED people + departments admin: person 
                                    #   assignment + role, manager exceptions, time-off.
                                    #   /settings/technicians + /settings/members REDIRECT here.
 src/app/(app)/settings/data/       # admin Excel export/import UI
+src/app/(app)/settings/email/      # admin Email→tasks page: Check-mail-now button,
+                                   #   30-day stats + per-email history, how-it-works
+src/app/api/email-ingest/          # admin-only manual ingest trigger (POST)
 src/app/api/admin/export/          # scoped .xlsx config export
 src/app/api/schedule/export/       # scoped schedule Excel (.xlsx) export (Jobs sheet)
 src/app/api/timesheet/export/      # fills the QEI timesheet template → .xlsx download
@@ -158,9 +167,9 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
 - **Prisma + standalone:** the slim runtime image can't run the Prisma CLI (missing
   deps). Schema sync runs in the separate `migrate` image (full `node_modules`),
   NOT in the app entrypoint. Keep it that way.
-- **New deps:** update `package.json` AND regenerate `package-lock.json`
-  (`npm install --package-lock-only`) — the Docker build uses `npm ci`, which
-  fails if they're out of sync.
+- **New deps:** edit `package.json` only — the Docker deps stage runs
+  `npm install` (NOT `npm ci`), because this machine has no npm to regenerate
+  `package-lock.json`. The lockfile in the repo may lag behind; that's expected.
 - **Native module (argon2):** the deps stage installs `python3 make g++` to
   compile it on Alpine. Don't remove.
 - **PowerShell:** the user is on Windows PowerShell 5.1 — chain commands with `;`,

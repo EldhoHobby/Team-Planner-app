@@ -4,6 +4,11 @@
 cross-functional pools as a separate **WorkGroup** model; **username-primary** login with
 optional email; curated-palette auto color with admin override.*
 
+> **Status: IMPLEMENTED (2026-07-02).** All six steps below are built, including the
+> People-sheet Excel round-trip (§3's "export-only Username column" became a full
+> import/export). This document is kept as the design record — see `CLAUDE.md` for
+> the current conventions.
+
 ---
 
 ## 1. Mapping the company onto the model

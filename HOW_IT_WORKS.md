@@ -20,12 +20,20 @@ The request flow is:
 - **Every query is tenant-scoped.** All data access goes through `TenantScope`
   (`src/lib/db/scope.ts`), which constrains queries to the caller's organization, so
   one org can never see another's data.
-- **Auth** is local email/password (Argon2id hashing) with server-side sessions.
+- **Auth** is local username/password (email also accepted at sign-in; Argon2id
+  hashing) with server-side sessions. The org OWNER additionally has a "View as"
+  dropdown that renders the whole app as any selected person (testing tool).
 
-The core data idea: a **job is just a `Task` row** with `kind = FIELD_SERVICE` and some
-extra columns (SO number, customer, dates, technician, status). Technicians, holidays,
-and time-off are their own tables. The schedule screen renders those rows as bars on a
-weekly timeline and a monthly calendar.
+The core data idea: a **person is one `User` row** (login + schedulable
+technician, with an auto-generated identity colour), and a **job is just a
+`Task` row** with `kind = FIELD_SERVICE` and some extra columns (SO number,
+customer, dates, technician = a user id, status). Departments (`Team`, nestable
+via `parentTeamId`), cross-functional work groups, holidays, and time-off are
+their own tables. The schedule screen renders those rows as bars on a weekly
+timeline and a monthly calendar; the dashboard shows each person's open items
+(`TechTask`) and jobs. A background poller can also turn **emails into tasks**:
+it watches a Gmail inbox over IMAP and "@username" tags in a message create
+dashboard items (see Settings → Email for statistics and a full explanation).
 
 ## Excel import/export — the methods used
 
@@ -43,9 +51,9 @@ There are two round-trips built on the same code:
 The builder functions assemble an in-memory workbook and return its bytes:
 
 - `buildWorkbook(scope)` — the admin export. It calls a helper `addSheet(wb, name,
-  columns, rows)` once per entity (Technicians, Time Off, Teams, Projects, Jobs,
-  Holidays, plus read-only Members/Organization), each row pulled from Prisma. It
-  finishes with `wb.xlsx.writeBuffer()`.
+  columns, rows)` once per entity (People, My Tasks, Time Off, Departments,
+  Projects, Jobs, Holidays, plus read-only Members/Organization), each row pulled
+  from Prisma. It finishes with `wb.xlsx.writeBuffer()`.
 - `buildJobsWorkbook(scope)` — the schedule export; just a README + the Jobs sheet, built
   from the shared `jobsExportRows(scope)` and `JOBS_COLUMNS`.
 
@@ -75,8 +83,10 @@ Uploading works the opposite way, and always **previews before it writes**:
 3. A helper `sheetRows(ws)` turns each worksheet into plain objects — it reads the header
    row, then each data row, coercing every cell with `cellStr()` (plus `parseDate`,
    `parseBool`, and label maps like `JOB_TYPE_BY_LABEL`).
-4. Each sheet is handed to its **per-entity importer** — `importTechnicians`,
-   `importTeams`, `importProjects`, `importTimeOff`, `importJobs`, `importHolidays`.
+4. Each sheet is handed to its **per-entity importer** — `importPeople`,
+   `importTechTasks`, `importTeams`, `importProjects`, `importTimeOff`,
+   `importJobs`, `importHolidays` (in dependency order: departments before
+   people, people before time-off/jobs).
 
 Every importer follows the same **upsert-by-`id`** rule: a blank `id` **creates** a row, a
 known `id` **updates** it, and a row that matches what's already stored is counted as
@@ -90,12 +100,15 @@ compute all the counts and validation errors **without writing**, so the UI can 
 
 ### A couple of conventions in the workbook
 
-- Technicians are referenced **by name** on the Time Off and Jobs sheets (there's no
-  `technicianId` column) — names are unique per org.
+- People are referenced by **username, name or email** on the Time Off, Jobs and
+  My Tasks sheets (there's no id column there); username wins on a clash.
 - The Jobs sheet has **no `endDate`** column; the end date is always derived internally
-  from `startDate + durationDays`.
+  from `startDate + durationDays`. Jobs may name a cross-functional `workGroup`.
+- The **People sheet is a full round-trip**: a blank id creates a login user
+  (placeholder password — the admin hands off a set-password link); blank
+  username/colour auto-generate; `workGroups` is a ";"-separated name list.
 - The Members and Organization sheets are **export-only** and ignored on import, and
-  secrets (password hashes, tokens) are never exported.
+  secrets (password hashes, tokens) are never exported or imported.
 
 ## Where things live
 

@@ -15,6 +15,15 @@ app has since been built and pivoted to a **field-service scheduling** focus.*
 > management, admin **Excel export/import** (`data-io.ts`), login/reset
 > rate-limiting, comprehensive **audit logging**, **Account Settings** (password
 > change), **Sales Order filtering**, and remote access via Caddy + Let's Encrypt.
+>
+> **Update (2026-07-02).** The app has moved further since the note above: the
+> separate `Technician` model was folded back into `User` (a person = one login +
+> schedulable technician; **username-based sign-in**, auto-generated identity
+> colours), departments nest with manager rollup, cross-functional **WorkGroups**
+> were added, the Excel round-trip now covers People and dashboard "My Tasks",
+> and the app gained a per-person dashboard (`/dashboard`), QEI timesheets,
+> OWNER-only "View as" impersonation, and Gmail→task email ingest
+> (see `ARCHITECTURE-UPDATE.md` for that design record).
 > **For the up-to-date brief and conventions, read `CLAUDE.md`; for setup, `README.md`.**
 
 ---
