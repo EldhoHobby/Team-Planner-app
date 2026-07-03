@@ -69,7 +69,7 @@ export function DataClient() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Export</CardTitle>
-          <CardDescription>Technicians, time off, teams, projects, jobs, holidays, and reference sheets.</CardDescription>
+          <CardDescription>People, time off, departments, projects, jobs, holidays, and reference sheets.</CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={() => { window.location.href = "/api/admin/export"; }}>
@@ -161,9 +161,10 @@ export function DataClient() {
         <CardHeader>
           <CardTitle className="text-lg text-destructive">Danger zone</CardTitle>
           <CardDescription>
-            Reset all planning data — jobs, projects, teams, technicians, time off,
-            holidays, and history — back to a fresh, empty state. Your login and
-            organization are kept. This cannot be undone.
+            Reset all planning data — jobs, projects, departments, time off,
+            holidays, and history — back to a fresh, empty state. People, your login,
+            and the organization are kept (their department links are cleared). This
+            cannot be undone.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -186,7 +187,7 @@ export function DataClient() {
         open={resetOpen}
         onClose={() => setResetOpen(false)}
         title="Reset everything to fresh?"
-        description="This permanently deletes all jobs, projects, teams, technicians, time off, holidays, and change history for your organization. Your account and login stay. This cannot be undone."
+        description="This permanently deletes all jobs, projects, departments, time off, holidays, and change history for your organization. People and their logins stay (department links are cleared). This cannot be undone."
       >
         <form action={resetAction} className="space-y-4">
           <div className="space-y-2">

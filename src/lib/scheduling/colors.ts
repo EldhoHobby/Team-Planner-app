@@ -75,6 +75,41 @@ export function hatchStyle(color: string | null | undefined): CSSProperties {
   };
 }
 
+// ─── Automatic identity-colour generation ───
+// A curated, visually distinct palette assigned in order at user creation
+// (first colour not already in use). Overflow beyond the palette walks the hue
+// wheel by the golden angle so later colours stay distinct too. Admins (org
+// OWNER/ADMIN) can still override the colour manually afterwards.
+
+export const IDENTITY_PALETTE: string[] = [
+  "#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2",
+  "#db2777", "#65a30d", "#7c3aed", "#0d9488", "#b91c1c", "#4f46e5",
+  "#c026d3", "#059669", "#d97706", "#0284c7", "#e11d48", "#4d7c0f",
+  "#6d28d9", "#0f766e", "#f59e0b", "#3b82f6", "#a855f7", "#ef4444",
+];
+
+export function hslToHex(h: number, s: number, l: number): string {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const c = l / 100 - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+    return Math.round(255 * c).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/** Pick the next unique identity colour given the colours already in use. */
+export function nextIdentityColor(used: Iterable<string>): string {
+  const taken = new Set([...used].map((c) => toHex(c)));
+  const free = IDENTITY_PALETTE.find((c) => !taken.has(c));
+  if (free) return free;
+  // Overflow: golden-angle hue walk, skipping anything already taken.
+  for (let i = taken.size; ; i++) {
+    const hex = hslToHex((i * 137.508) % 360, 68, 48);
+    if (!taken.has(hex)) return hex;
+  }
+}
+
 // Seeded on first load so the board is immediately usable with the named crew.
 export const DEFAULT_TECHNICIANS: { name: string; color: string }[] = [
   { name: "Charles", color: "#3b82f6" },

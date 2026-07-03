@@ -1,5 +1,6 @@
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
+import { prisma } from "@/lib/db/client";
 import {
   ensureDefaultTechnicians,
   listFieldJobs,
@@ -12,19 +13,61 @@ import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types
 
 export const dynamic = "force-dynamic";
 
-export default async function SchedulePage() {
+/**
+ * Personal default for the technician filter (user can change it freely):
+ * - org OWNER/ADMIN → null (= all technicians)
+ * - department MANAGER → self + everyone in their department(s) incl. sub-teams
+ * - plain member → just themselves
+ */
+async function defaultTechIdsFor(userId: string, orgId: string, isOrgAdmin: boolean): Promise<string[] | null> {
+  if (isOrgAdmin) return null;
+
+  const mgrTeams = await prisma.teamMembership.findMany({
+    where: { userId, role: "MANAGER", team: { orgId } },
+    select: { teamId: true },
+  });
+  if (!mgrTeams.length) return [userId];
+
+  // Expand managed teams with all their descendants (rollup, like the dashboard).
+  const all = await prisma.team.findMany({ where: { orgId }, select: { id: true, parentTeamId: true } });
+  const byParent = new Map<string, string[]>();
+  for (const t of all) {
+    if (!t.parentTeamId) continue;
+    (byParent.get(t.parentTeamId) ?? byParent.set(t.parentTeamId, []).get(t.parentTeamId)!).push(t.id);
+  }
+  const teamIds = new Set(mgrTeams.map((t) => t.teamId));
+  const queue = [...teamIds];
+  while (queue.length) {
+    for (const c of byParent.get(queue.shift()!) ?? []) {
+      if (!teamIds.has(c)) { teamIds.add(c); queue.push(c); }
+    }
+  }
+  const members = await prisma.teamMembership.findMany({
+    where: { teamId: { in: [...teamIds] } },
+    select: { userId: true },
+  });
+  return [...new Set([userId, ...members.map((m) => m.userId)])];
+}
+
+export default async function SchedulePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tech?: string; date?: string }>;
+}) {
   await requireAuth();
-  const { scope } = await requireScope();
+  const { user, scope } = await requireScope();
+  const params = await searchParams;
 
   // Optionally seed a demo crew on first visit (opt-in via SEED_DEFAULT_TECHNICIANS;
   // off by default, so production starts with no technicians). No-op otherwise.
   await ensureDefaultTechnicians(scope);
 
-  const [jobs, techs, timeOff, holidays] = await Promise.all([
+  const [jobs, techs, timeOff, holidays, defaultTechIds] = await Promise.all([
     listFieldJobs(scope),
     listTechnicians(scope),
     listTechTimeOff(scope),
     listHolidays(scope),
+    defaultTechIdsFor(user.id, scope.ctx.orgId, scope.ctx.isOrgAdmin),
   ]);
 
   const jobRows: JobRow[] = jobs.map((j) => ({
@@ -71,6 +114,8 @@ export default async function SchedulePage() {
       technicians={technicians}
       timeOff={timeOffRows}
       holidays={holidayRows}
+      defaultTechIds={params.tech ? [params.tech] : defaultTechIds}
+      initialDate={params.date && /^\d{4}-\d{2}-\d{2}$/.test(params.date) ? params.date : null}
     />
   );
 }

@@ -2,7 +2,6 @@ import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import type { JobType, JobStatus, TaskKind } from "@prisma/client";
-import { DEFAULT_TECHNICIANS } from "@/lib/scheduling/colors";
 import { endFromDuration, inclusiveDayCount, toUtcMidnight } from "@/lib/scheduling/calc";
 import { writeAudit } from "@/lib/services/audit";
 
@@ -13,38 +12,50 @@ const JOB_INCLUDE = {
   project: { select: { name: true, teamId: true } },
 } as const;
 
-// ─────────────────────────── Technicians ───────────────────────────
+// ─────────────────────────── People (schedulable technicians) ───────────────────────────
+// A person IS a technician now: jobs are assigned to Users. These helpers return
+// the org's people shaped for the board ({ id, name, color, active }) so the
+// schedule UI is unchanged.
 
 /**
- * Optionally seed the default crew the first time an org opens the board.
- *
- * OFF by default — a fresh install starts with no technicians, so production
- * databases never get the built-in demo crew (set `SEED_DEFAULT_TECHNICIANS=true`
- * to opt in for dev/demo). Still idempotent: only seeds when the org has none.
+ * No-op retained for the schedule page's call site. People are created as login
+ * users on the People settings page, so there's no demo-crew seeding any more.
  */
-export async function ensureDefaultTechnicians(scope: TenantScope): Promise<void> {
-  if (process.env.SEED_DEFAULT_TECHNICIANS !== "true") return;
-  const count = await prisma.technician.count({ where: { orgId: scope.ctx.orgId } });
-  if (count > 0) return;
-  await prisma.technician.createMany({
-    data: DEFAULT_TECHNICIANS.map((t) => ({ ...t, orgId: scope.ctx.orgId })),
-    skipDuplicates: true,
-  });
+export async function ensureDefaultTechnicians(_scope: TenantScope): Promise<void> {
+  // Intentionally empty — kept so callers don't need to change.
 }
 
-export function listTechnicians(scope: TenantScope) {
-  return prisma.technician.findMany({
-    where: { orgId: scope.ctx.orgId, archived: false },
-    orderBy: [{ active: "desc" }, { name: "asc" }],
+/**
+ * Org people available for scheduling (not archived). `active` = schedulable.
+ * Pass `workGroupId` to narrow the assignable pool to one cross-functional work
+ * group (e.g. Field Service) — the pool cuts across departments by design.
+ */
+export async function listTechnicians(scope: TenantScope, workGroupId?: string) {
+  const people = await prisma.user.findMany({
+    where: {
+      archived: false,
+      memberships: { some: { orgId: scope.ctx.orgId } },
+      ...(workGroupId ? { workGroups: { some: { workGroupId } } } : {}),
+    },
+    select: { id: true, name: true, email: true, username: true, color: true, schedulable: true },
+    orderBy: [{ schedulable: "desc" }, { name: "asc" }],
   });
+  // Fall back to email when a person hasn't set a display name yet.
+  return people.map((p) => ({
+    id: p.id,
+    name: p.name ?? p.email ?? p.username,
+    color: p.color,
+    active: p.schedulable,
+    archived: false,
+  }));
 }
 
 async function assertTechnicianInScope(scope: TenantScope, technicianId: string) {
-  const tech = await prisma.technician.findFirst({
-    where: { id: technicianId, orgId: scope.ctx.orgId },
+  const membership = await prisma.membership.findFirst({
+    where: { userId: technicianId, orgId: scope.ctx.orgId },
     select: { id: true },
   });
-  if (!tech) throw new ForbiddenError("Technician not in your organization");
+  if (!membership) throw new ForbiddenError("That person is not in your organization");
 }
 
 // ─── Default container: field-service tasks still need a team + project ───
@@ -100,10 +111,19 @@ export interface CreateJobInput {
   hardwareTarget?: string | null;
   priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
   technicianId?: string | null;
+  workGroupId?: string | null; // cross-functional pool the job draws from
   startDate?: Date | null;
   durationDays?: number | null;
   jobStatus?: JobStatus;
   tentative?: boolean;
+}
+
+async function assertWorkGroupInScope(scope: TenantScope, workGroupId: string) {
+  const g = await prisma.workGroup.findFirst({
+    where: { id: workGroupId, orgId: scope.ctx.orgId },
+    select: { id: true },
+  });
+  if (!g) throw new ForbiddenError("Work group is not in your organization");
 }
 
 /** Derive endDate + a coherent jobStatus from start/duration/technician. */
@@ -126,6 +146,7 @@ function deriveSchedule(input: {
 export async function createJob(scope: TenantScope, input: CreateJobInput) {
   const { teamId, projectId } = await ensureContainer(scope);
   if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
+  if (input.workGroupId) await assertWorkGroupInScope(scope, input.workGroupId);
 
   const { start, end, duration, status } = deriveSchedule(input);
 
@@ -143,6 +164,7 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
       jobType: input.jobType ?? null,
       hardwareTarget: input.hardwareTarget?.trim() || null,
       technicianId: input.technicianId || null,
+      workGroupId: input.workGroupId || null,
       startDate: start,
       endDate: end,
       durationDays: duration,
@@ -164,6 +186,7 @@ export interface UpdateJobInput {
   hardwareTarget?: string | null;
   priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
   technicianId?: string | null;
+  workGroupId?: string | null;
   startDate?: Date | null;
   durationDays?: number | null;
   jobStatus?: JobStatus;
@@ -177,6 +200,7 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
   if (!job) throw new ForbiddenError("Job not found");
 
   if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
+  if (input.workGroupId) await assertWorkGroupInScope(scope, input.workGroupId);
 
   const nextStart = input.startDate !== undefined ? input.startDate : job.startDate;
   const nextDuration =
@@ -203,6 +227,7 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
         input.hardwareTarget !== undefined ? (input.hardwareTarget?.trim() || null) : undefined,
       priority: input.priority !== undefined ? input.priority : undefined,
       technicianId: nextTech !== undefined ? (nextTech || null) : undefined,
+      workGroupId: input.workGroupId !== undefined ? (input.workGroupId || null) : undefined,
       startDate: start,
       endDate: end,
       durationDays: duration,

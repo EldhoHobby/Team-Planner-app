@@ -18,10 +18,19 @@ export async function writeAudit(
   },
 ): Promise<void> {
   try {
-    const u = await prisma.user.findUnique({
-      where: { id: scope.ctx.userId },
-      select: { email: true },
+    // "View as": attribute to the REAL admin, noting who they acted as.
+    const realId = scope.ctx.realUserId ?? scope.ctx.userId;
+    const impersonating = realId !== scope.ctx.userId;
+    const ids = impersonating ? [realId, scope.ctx.userId] : [realId];
+    const users = await prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true, email: true, username: true },
     });
+    const u = users.find((x) => x.id === realId);
+    const target = impersonating ? users.find((x) => x.id === scope.ctx.userId) : undefined;
+    const summary = target
+      ? `${entry.summary} [acting as ${target.name ?? target.email ?? target.username}]`
+      : entry.summary;
 
     if (opts?.coalesceMs && opts.coalesceMs > 0) {
       const since = new Date(Date.now() - opts.coalesceMs);
@@ -31,7 +40,7 @@ export async function writeAudit(
           entity: entry.entity,
           entityId: entry.entityId,
           action: entry.action,
-          actorId: scope.ctx.userId,
+          actorId: realId,
           createdAt: { gte: since },
         },
         orderBy: { createdAt: "desc" },
@@ -40,7 +49,7 @@ export async function writeAudit(
       if (recent) {
         await prisma.auditLog.update({
           where: { id: recent.id },
-          data: { summary: entry.summary, createdAt: new Date() },
+          data: { summary, createdAt: new Date() },
         });
         return;
       }
@@ -49,12 +58,12 @@ export async function writeAudit(
     await prisma.auditLog.create({
       data: {
         orgId: scope.ctx.orgId,
-        actorId: scope.ctx.userId,
-        actorEmail: u?.email ?? null,
+        actorId: realId,
+        actorEmail: u?.email ?? u?.username ?? null,
         entity: entry.entity,
         entityId: entry.entityId,
         action: entry.action,
-        summary: entry.summary,
+        summary,
       },
     });
   } catch {

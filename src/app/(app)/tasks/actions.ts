@@ -29,6 +29,7 @@ const CreateSchema = z.object({
   dueDate: z.string().optional(),
   estimateHrs: z.coerce.number().positive().optional(),
   assigneeIds: z.array(z.string()).default([]),
+  location: z.string().max(200).optional(),
 });
 
 const UpdateSchema = z.object({
@@ -40,6 +41,7 @@ const UpdateSchema = z.object({
   dueDate: z.string().optional(),
   estimateHrs: z.coerce.number().positive().optional(),
   assigneeIds: z.array(z.string()).default([]),
+  location: z.string().max(200).optional(),
 });
 
 export async function createTaskAction(
@@ -56,14 +58,17 @@ export async function createTaskAction(
     dueDate: formData.get("dueDate") || undefined,
     estimateHrs: formData.get("estimateHrs") || undefined,
     assigneeIds: formData.getAll("assigneeIds"),
+    location: formData.get("location") || undefined,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
   const { dueDate: dueDateStr, ...rest } = parsed.data;
+  const isFieldTrip = formData.get("isFieldTrip") != null;
   try {
     await createTask(scope, {
       ...rest,
+      isFieldTrip,
       dueDate: dueDateStr ? new Date(dueDateStr) : undefined,
     });
     revalidatePath("/tasks");
@@ -88,14 +93,17 @@ export async function updateTaskAction(
     dueDate: formData.get("dueDate") || undefined,
     estimateHrs: formData.get("estimateHrs") || undefined,
     assigneeIds: formData.getAll("assigneeIds"),
+    location: formData.get("location") || undefined,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
   const { taskId, dueDate: dueDateStr, ...rest } = parsed.data;
+  const isFieldTrip = formData.get("isFieldTrip") != null;
   try {
     await updateTask(scope, taskId, {
       ...rest,
+      isFieldTrip,
       dueDate: dueDateStr ? new Date(dueDateStr) : null,
     });
     revalidatePath("/tasks");

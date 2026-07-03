@@ -9,7 +9,7 @@ import type { TaskRow, ProjectOption, TeamMember } from "./types";
 export const dynamic = "force-dynamic";
 
 export default async function TasksPage() {
-  await requireAuth();
+  const user = await requireAuth();
   const { scope } = await requireScope();
 
   const teamWhere = scope.ctx.isOrgAdmin
@@ -23,7 +23,7 @@ export default async function TasksPage() {
       where: scope.ctx.isOrgAdmin
         ? { team: { orgId: scope.ctx.orgId } }
         : { teamId: { in: scope.ctx.teamIds } },
-      include: { user: { select: { id: true, name: true, email: true } } },
+      include: { user: { select: { id: true, name: true, email: true, username: true } } },
     }),
   ]);
 
@@ -48,8 +48,11 @@ export default async function TasksPage() {
     assignees: t.assignments.map((a) => ({
       id: a.user.id,
       name: a.user.name,
-      email: a.user.email,
+      email: a.user.email ?? a.user.username,
     })),
+    origin: t.origin,
+    isFieldTrip: t.isFieldTrip,
+    location: t.location,
     createdAt: t.createdAt.toISOString(),
   }));
 
@@ -64,7 +67,7 @@ export default async function TasksPage() {
     teamId: tm.teamId,
     userId: tm.user.id,
     name: tm.user.name,
-    email: tm.user.email,
+    email: tm.user.email ?? tm.user.username,
   }));
 
   return (
@@ -73,6 +76,7 @@ export default async function TasksPage() {
       projects={projectOptions}
       teams={teams}
       teamMembers={members}
+      currentUserId={user.id}
     />
   );
 }

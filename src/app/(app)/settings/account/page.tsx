@@ -15,7 +15,7 @@ export default async function AccountPage() {
         </p>
       </div>
 
-      <AccountClient user={{ email: user.email, name: user.name }} />
+      <AccountClient user={{ username: user.username, email: user.email, name: user.name }} />
     </main>
   );
 }

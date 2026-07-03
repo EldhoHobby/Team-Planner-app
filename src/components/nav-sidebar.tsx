@@ -2,28 +2,35 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, CalendarX, Clock, Database, FolderOpen, HardHat, ListChecks, UserRound, Users } from "lucide-react";
+import { CalendarDays, CalendarX, Clock, Database, FolderOpen, LayoutDashboard, ListChecks, UserRound, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { ViewAsPicker, type ViewAsPerson } from "@/components/view-as";
 import { VERSION_LABEL } from "@/lib/version";
 
 const NAV = [
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/timesheet", label: "Timesheet", icon: Clock },
   { href: "/projects", label: "Projects", icon: FolderOpen },
   { href: "/settings/account", label: "Account", icon: UserRound },
-  { href: "/settings/technicians", label: "Technicians", icon: HardHat },
-  { href: "/settings/holidays", label: "Holidays", icon: CalendarX },
-  { href: "/settings/members", label: "Members", icon: Users },
-  { href: "/settings/data", label: "Data", icon: Database },
+  { href: "/settings/people", label: "People", icon: Users, adminOnly: true },
+  { href: "/settings/holidays", label: "Holidays", icon: CalendarX, adminOnly: true },
+  { href: "/settings/data", label: "Data", icon: Database, adminOnly: true },
 ] as const;
 
 export function NavSidebar({
   user,
+  isAdmin,
+  viewAs,
 }: {
   user: { email: string; name: string | null };
+  /** Effective user's org role — hides admin-only pages (People/Holidays/Data). */
+  isAdmin: boolean;
+  /** OWNER-only "view as" picker data; omitted for everyone else. */
+  viewAs?: { people: ViewAsPerson[]; currentId: string; selfId: string };
 }) {
   const pathname = usePathname();
   return (
@@ -35,7 +42,7 @@ export function NavSidebar({
       </div>
 
       <nav className="flex-1 space-y-0.5 p-2">
-        {NAV.map(({ href, label, icon: Icon }) => (
+        {NAV.filter((n) => !("adminOnly" in n && n.adminOnly) || isAdmin).map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}
@@ -53,6 +60,9 @@ export function NavSidebar({
       </nav>
 
       <div className="space-y-2 border-t p-3">
+        {viewAs ? (
+          <ViewAsPicker people={viewAs.people} currentId={viewAs.currentId} selfId={viewAs.selfId} />
+        ) : null}
         <p className="truncate text-xs text-muted-foreground">
           {user.name ?? user.email}
         </p>

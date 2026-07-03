@@ -17,7 +17,7 @@ import {
 import type { LoginState } from "./types";
 
 const LoginSchema = z.object({
-  email: z.string().email(),
+  identifier: z.string().min(1), // username or email
   password: z.string().min(1),
 });
 
@@ -43,22 +43,26 @@ export async function signIn(
   }
 
   const parsed = LoginSchema.safeParse({
-    email: formData.get("email"),
+    identifier: formData.get("identifier") ?? formData.get("email"),
     password: formData.get("password"),
   });
   if (!parsed.success) {
-    return { error: "Enter your email and password." };
+    return { error: "Enter your username and password." };
   }
 
-  const { email, password } = parsed.data;
-  const emailKey = `login:email:${email.toLowerCase()}`;
+  const identifier = parsed.data.identifier.trim().toLowerCase();
+  const { password } = parsed.data;
+  const emailKey = `login:id:${identifier}`;
   const emailLimit = isRateLimited(emailKey, LOGIN_EMAIL_LIMIT, WINDOW_MS);
   if (emailLimit.limited) {
     return { error: "Too many attempts for this account. Try again later." };
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email: email.toLowerCase() },
+  // Username is the primary login key; an email address also works.
+  const user = await prisma.user.findFirst({
+    where: identifier.includes("@")
+      ? { OR: [{ email: identifier }, { username: identifier }] }
+      : { username: identifier },
   });
 
   const hash = user?.passwordHash ?? (await getDummyHash());
@@ -69,7 +73,7 @@ export async function signIn(
     // Count failures only, so normal logins never trip the limit.
     registerFailure(ipKey, WINDOW_MS);
     registerFailure(emailKey, WINDOW_MS);
-    return { error: "Invalid email or password." };
+    return { error: "Invalid username or password." };
   }
 
   // Success — reset this account's counter.

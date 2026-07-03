@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db/client";
 import { hashPassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
 import { isBootstrapped, slugify } from "@/lib/auth/bootstrap";
+import { uniqueUsername } from "@/lib/auth/username";
 import type { SetupState } from "./types";
 
 const SetupSchema = z
@@ -52,8 +53,9 @@ export async function createOwnerAccount(
         data: { name: orgName, slug: slugify(orgName) },
       });
 
+      const username = await uniqueUsername({ email, name }, tx);
       const user = await tx.user.create({
-        data: { email: email.toLowerCase(), name, passwordHash },
+        data: { username, email: email.toLowerCase(), name, passwordHash },
       });
 
       await tx.membership.create({

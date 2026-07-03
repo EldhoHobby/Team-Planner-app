@@ -15,6 +15,8 @@ export type CreateTaskInput = {
   dueDate?: Date;
   estimateHrs?: number;
   assigneeIds?: string[];
+  isFieldTrip?: boolean;
+  location?: string;
 };
 
 export type UpdateTaskInput = {
@@ -25,12 +27,14 @@ export type UpdateTaskInput = {
   dueDate?: Date | null;
   estimateHrs?: number | null;
   assigneeIds?: string[];
+  isFieldTrip?: boolean;
+  location?: string;
 };
 
 const TASK_INCLUDE = {
   project: { select: { name: true, teamId: true } },
   assignments: {
-    include: { user: { select: { id: true, name: true, email: true } } },
+    include: { user: { select: { id: true, name: true, email: true, username: true } } },
   },
 } as const;
 
@@ -58,6 +62,12 @@ export async function createTask(scope: TenantScope, data: CreateTaskInput) {
   });
   if (!project) throw new ForbiddenError("Project not in scope");
 
+  // Origin: assigning to anyone other than yourself = MANAGER-assigned; otherwise
+  // it's your own task (SELF). Outlook-origin tasks come in via the sync connector.
+  const creatorId = scope.ctx.userId;
+  const assignedToOther = (data.assigneeIds ?? []).some((id) => id !== creatorId);
+  const origin = assignedToOther ? "MANAGER" : "SELF";
+
   const task = await prisma.task.create({
     data: {
       orgId: scope.ctx.orgId,
@@ -69,6 +79,10 @@ export async function createTask(scope: TenantScope, data: CreateTaskInput) {
       priority: data.priority ?? "MEDIUM",
       dueDate: data.dueDate ?? null,
       estimateHrs: data.estimateHrs ?? null,
+      origin,
+      assignedById: assignedToOther ? creatorId : null,
+      isFieldTrip: data.isFieldTrip ?? false,
+      location: data.location?.trim() || null,
       assignments:
         data.assigneeIds?.length
           ? { create: data.assigneeIds.map((userId) => ({ userId })) }
@@ -106,6 +120,13 @@ export async function updateTask(
       ...(data.priority !== undefined ? { priority: data.priority } : {}),
       ...(data.dueDate !== undefined ? { dueDate: data.dueDate } : {}),
       ...(data.estimateHrs !== undefined ? { estimateHrs: data.estimateHrs } : {}),
+      ...(data.isFieldTrip !== undefined ? { isFieldTrip: data.isFieldTrip } : {}),
+      ...(data.location !== undefined ? { location: data.location?.trim() || null } : {}),
+      // If a synced (Outlook-origin) task's completion changes here, flag it so a
+      // future sync run pushes the new status back to the source system.
+      ...(data.status !== undefined && existing.externalId && data.status !== existing.status
+        ? { syncDirty: true }
+        : {}),
       ...(data.assigneeIds !== undefined
         ? {
             assignments: {

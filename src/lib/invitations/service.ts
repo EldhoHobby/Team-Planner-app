@@ -4,6 +4,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { generateToken, hashToken } from "@/lib/auth/tokens";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
+import { uniqueUsername } from "@/lib/auth/username";
 
 const INVITE_TTL_DAYS = 7;
 const INVITE_TTL_MS = INVITE_TTL_DAYS * 24 * 60 * 60 * 1000;
@@ -121,8 +122,9 @@ export async function acceptInvitation(
       throw new Error("An account with this email already exists. Please sign in.");
     }
 
+    const username = await uniqueUsername({ email: invite.email, name: profile.name }, tx);
     const user = await tx.user.create({
-      data: { email: invite.email, name: profile.name, passwordHash },
+      data: { username, email: invite.email, name: profile.name, passwordHash },
     });
 
     await tx.membership.create({

@@ -13,6 +13,32 @@ Excel config round-trip. Also includes generic tasks/projects and full auth.
 Runs entirely on-prem via Docker Compose — no external runtime dependencies
 (SMTP optional).
 
+**People model (unified).** A **person is one `User`** — both a login account and
+a schedulable "technician." There is NO separate `Technician` model: jobs are
+assigned to users (`Task.technicianId` → `User.id`; the relation + column names
+were kept so the schedule board is unchanged), and `User` carries `color`,
+`schedulable`, and `archived`. **Login is by `username`** (unique, lowercase;
+email also accepted at sign-in) — `User.email` is now OPTIONAL contact info.
+Usernames are auto-derived (email local part → name) via `uniqueUsername()` in
+`src/lib/auth/username.ts`; render identity with `displayHandle()` in
+`src/lib/users.ts` ("Name (email-or-username)"). A person's **identity colour is
+system-generated at creation** (`nextIdentityColor()` in
+`src/lib/scheduling/colors.ts`: curated palette, first-unused per org, golden-angle
+HSL overflow); only org OWNER/ADMIN may override it later.
+People are grouped into **Departments** (the `Team` model, relabelled "Department"
+in the UI). Departments can NEST via `Team.parentTeamId` (e.g. Software Eng /
+System Eng under Engineering); a MANAGER of a parent department also oversees all
+descendant teams (rollup in `tech-tasks.ts`). A person has ONE department via
+`TeamMembership` with role MANAGER/MEMBER; `ManagerLink` covers the multi-manager
+exceptions. Separately, **WorkGroups** (`WorkGroup`/`WorkGroupMembership`, service
+`src/lib/services/work-groups.ts`) are cross-functional pools (e.g. "Field
+Service", "Production Release") that cut across the department tree — jobs may
+carry a `workGroupId`, and `listTechnicians(scope, workGroupId?)` narrows the
+assignable pool. Everyone is managed on **Settings → People** (`/settings/people`);
+admins add a person (which creates a login + a hand-off set-password link, no
+SMTP). The migrate image runs `prisma/pre-push.sql` before `db push` to backfill
+usernames on existing databases.
+
 ## Stack
 
 - **Next.js 15** (App Router, React 19, `output: "standalone"`) + **TypeScript**
@@ -45,16 +71,21 @@ only export async functions from those files (shared types go in a sibling
 "force-dynamic"` or the build fails trying to prerender them.
 
 **Admin data export/import (keep in sync!).** The admin Excel round-trip lives in
-`src/lib/services/data-io.ts` (one sheet per entity: Technicians, Time Off, Teams,
-Projects, Jobs, Holidays; Members/Organization are export-only). It's the SINGLE
-SOURCE OF TRUTH for that workbook. **Whenever you add a field to an exported entity
-(Technician, field-service Task/job, Project, Team, TechnicianTimeOff, Holiday), you
-MUST also add it to that entity's column list + export row builder + (if editable) its
-importer in `data-io.ts`**, so it always round-trips. Import is upsert-by-`id`
-(blank id = create, known id = update, never deletes) and admin-only. Never export
-secrets (password hashes, tokens). Export route: `src/app/api/admin/export`; UI:
-`src/app/(app)/settings/data`. Technician is referenced by **name** on the Time Off
-and Jobs sheets (no `technicianId` column).
+`src/lib/services/data-io.ts` (sheets: People, My Tasks (dashboard TechTask items),
+Time Off, Departments, Projects, Jobs, Holidays; Members/Organization are export-only). It's the SINGLE SOURCE OF
+TRUTH for that workbook. **Whenever you add a field to an exported+importable entity
+(User/person, field-service Task/job, Project, Team/Department, TechnicianTimeOff,
+Holiday), you MUST also add it to that entity's column list + export row builder +
+importer in `data-io.ts`**, so it always round-trips. The **People** sheet is a FULL
+round-trip (`PEOPLE_COLUMNS`/`importPeople`): blank id CREATES a login user with a
+placeholder password (admin hands off a set-password link from the People page);
+blank username/color auto-generate; `workGroups` is a ";"-separated name list;
+passwords/secrets never round-trip; OWNER can't be demoted nor created via import.
+Import is upsert-by-`id` (blank id = create, known id = update, never deletes) and
+admin-only. Never export secrets (password hashes, tokens). Export route:
+`src/app/api/admin/export`; UI: `src/app/(app)/settings/data`. A person is
+referenced by **username, name or email** on the Time Off and Jobs sheets (no id
+column there).
 
 The **schedule window** has its own Jobs-only Excel round-trip (Import button +
 `src/app/api/schedule/export` → `.xlsx`), built on the SAME shared Jobs columns /
@@ -77,14 +108,18 @@ src/components/ui/                 # shadcn components (+ modal, date-picker)
 src/components/nav-sidebar.tsx     # authenticated app sidebar (client component)
 src/app/(auth)/setup|login/        # first-run wizard + sign in
 src/app/(app)/layout.tsx           # authenticated shell (sidebar + content area)
+src/app/(app)/dashboard/           # TECH/MANAGER open-items dashboard — per-person
+                                   #   task list (TechTask); self + direct reports
 src/app/(app)/schedule/            # FIELD-SERVICE DASHBOARD — timeline + calendar,
                                    #   backlog, drag-drop, dialogs (the main feature)
 src/app/(app)/tasks/               # generic task list + field-service job actions
 src/app/(app)/timesheet/           # per-user weekly QEI timesheet (grid + Excel gen)
 src/app/(app)/projects/            # project list + create/archive
 src/app/(app)/settings/account/    # profile + secure password change
-src/app/(app)/settings/technicians/# crew CRUD (colour wheel) + technician time-off
-src/app/(app)/settings/members/    # admin: invites + member reset links
+src/app/(app)/settings/people/     # UNIFIED people + departments admin: person CRUD
+                                   #   (login + colour + schedulable), department
+                                   #   assignment + role, manager exceptions, time-off.
+                                   #   /settings/technicians + /settings/members REDIRECT here.
 src/app/(app)/settings/data/       # admin Excel export/import UI
 src/app/api/admin/export/          # scoped .xlsx config export
 src/app/api/schedule/export/       # scoped schedule Excel (.xlsx) export (Jobs sheet)
@@ -138,17 +173,58 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   invite flow, admin-issued password reset, login/reset rate-limiting, and
   personal **Account Settings** (password change). Owner: `admin@q.com`.
 - **Generic tasks/projects:** done — CRUD, status/priority/due date/estimate,
-  multi-assignee.
+  multi-assignee. Tasks also carry an **origin** (`SELF` / `MANAGER`-assigned /
+  `OUTLOOK`), a **field-trip** flag + **location**, and **two-way-sync scaffolding**
+  (`externalId`, `externalSource`, `lastSyncedAt`, `syncDirty`) so a future Outlook /
+  Microsoft Graph connector can drop in — the connector itself is NOT built yet
+  (needs the host online + an Azure AD app). `syncDirty` is set when a synced task's
+  completion changes locally, marking it to push back on the next sync.
 - **Field-service scheduling (primary):** done — jobs are `Task` rows with
   `kind=FIELD_SERVICE`; `/schedule` timeline + month calendar (Sunday-first),
   drag-and-drop with optimistic UI, grouped job panel (Scheduled / Tentative /
   Unscheduled, with sort + type filter, collapsible), technician colour-coding,
   conflict + view-aware capacity, technician management + time-off blocking,
   filters, full-height calendar, Excel (.xlsx) import/export.
+- **Tech/manager dashboard (open items):** done — `/dashboard` shows a per-person
+  task list (`TechTask` model, service `src/lib/services/tech-tasks.ts`). A person
+  sees their own items; anyone with direct reports (via `User.managerId`, set by an
+  admin in Settings → Members "Reports to") also sees each report's list, grouped by
+  person. Fields follow the ops-tracker convention: integer **priority** (1=top),
+  **state** (New / To Do / In Progress / Hold / Done), **target date**, **notes**,
+  optional **location**, plus an **origin** tag (SELF / MANAGER / OUTLOOK). Owner is
+  single; self + your manager can add. **Table cells are inline-editable** (priority,
+  title, location, target, notes auto-save on blur/change); **state is the only field
+  edited via a popup** ("edit window") — a dropdown, opened from the state pill. Rows
+  **sort by priority first, then target date**. Target-date cues: **red "Overdue"**
+  once past due, **amber "Due soon"** within 2 days (`dueStatus` in the client).
+  Completed items appear (behind "Show completed") **grouped by completion week**
+  (`TechTask.completedAt`, stamped on entering DONE / cleared on leaving). The
+  dashboard also surfaces **field-service jobs** read-only: each person's dated jobs
+  (mapped via `Technician.userId`) under their section, plus a shared
+  **"Unscheduled & unassigned jobs"** pool — so techs see what's remaining. Jobs are
+  managed on the Schedule board (dashboard is view-only for them). Same two-way-sync
+  scaffolding as Task (`externalId`/`externalSource`/`syncDirty`) for a future Outlook
+  connector. This is SEPARATE from the generic project **Tasks** page.
+- **Unified People & Departments:** done — merged the old Technicians + Members
+  pages into one **People** page (`/settings/people`). A person is a single `User`
+  (login + `color`/`schedulable`/`archived`); no separate `Technician` model. People
+  belong to one **Department** (`Team`, relabelled) with a MANAGER/MEMBER role;
+  `ManagerLink` covers multi-manager exceptions. Admin adds a person → creates a
+  login + set-password link. Jobs/time-off reference a person by `User.id`
+  (`Task.technicianId` kept as the column name). Old `/settings/technicians` +
+  `/settings/members` routes redirect here.
 - **Admin data round-trip:** done — Excel export/import at `/settings/data`
   (`data-io.ts`), upsert-by-id with change detection + preview.
 - **Observability & Build:** done — comprehensive **audit logging** for all
   domain mutations; automated application **versioning** (Git hash + date).
+- **View as (impersonation):** done — OWNER-only testing tool. Sidebar dropdown
+  (`ViewAsPicker` in `src/components/view-as.tsx`, actions in
+  `src/lib/auth/view-as-actions.ts`) sets `Session.actingAsUserId`;
+  `getSessionActor()` in `session.ts` resolves the EFFECTIVE user, so every page
+  and mutation renders/acts as the selected person. An amber banner with Exit
+  shows while active. Audit logs attribute to the REAL owner with an
+  "[acting as X]" suffix (`scope.ctx.realUserId`). Password change is blocked
+  while impersonating.
 - **Remote access:** done — Caddy serves localhost + LAN IP + public DuckDNS
   domain with Let's Encrypt.
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog, audit

@@ -1,7 +1,7 @@
 "use client";
 
 import type { DragEvent } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Plane } from "lucide-react";
 import {
   startOfMonth,
   startOfWeekSunday,
@@ -10,13 +10,12 @@ import {
   MS_PER_DAY,
 } from "@/lib/scheduling/calc";
 import { barStyle, hatchStyle } from "@/lib/scheduling/colors";
-import { dotStyle } from "@/lib/scheduling/colors";
 import { jobLabel } from "./format";
-import type { JobRow, TechnicianOption } from "./types";
+import type { JobRow, TechnicianOption, TechTimeOff } from "./types";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const HEADER_H = 28; // px reserved at the top of a cell for the date number
-const BAR_H = 32; // px per stacked job bar
+const BAR_H = 32; // px per stacked bar (jobs and time-off alike)
 
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -28,28 +27,45 @@ function colOf(date: Date, weekStart: Date): number {
   return Math.round((toUtcMidnight(date).getTime() - weekStart.getTime()) / MS_PER_DAY);
 }
 
+// An item on the calendar: a job bar OR a time-off bar. Time off is packed into
+// the SAME lane system as jobs, so a job can never be drawn on top of it — the
+// week simply grows another lane instead.
+interface CalItem {
+  key: string;
+  kind: "job" | "off";
+  start: string; // YYYY-MM-DD
+  end: string;
+  job?: JobRow;
+  off?: { techName: string; color: string; reason: string | null };
+}
+
 interface Segment {
-  job: JobRow;
+  item: CalItem;
   startCol: number;
   span: number;
   lane: number;
 }
 
-/** Pack a week's job segments into lanes so non-overlapping jobs share a row. */
-function packWeek(jobs: JobRow[], weekStart: Date, weekEnd: Date): {
+/** Pack a week's segments into lanes so non-overlapping items share a row. */
+function packWeek(items: CalItem[], weekStart: Date, weekEnd: Date): {
   segments: Segment[];
   laneCount: number;
 } {
-  const visible = jobs
-    .map((job) => {
-      const s = parseYmd(job.startDate!);
-      const e = parseYmd(job.endDate ?? job.startDate!);
+  const visible = items
+    .map((item) => {
+      const s = parseYmd(item.start);
+      const e = parseYmd(item.end);
       const startCol = Math.max(0, colOf(s < weekStart ? weekStart : s, weekStart));
       const endCol = Math.min(6, colOf(e > weekEnd ? weekEnd : e, weekStart));
-      return { job, startCol, endCol };
+      return { item, startCol, endCol };
     })
     .filter((seg) => seg.endCol >= seg.startCol)
-    .sort((a, b) => a.startCol - b.startCol);
+    // Time off packs first so it claims the top lanes and stays prominent.
+    .sort((a, b) =>
+      a.item.kind !== b.item.kind
+        ? a.item.kind === "off" ? -1 : 1
+        : a.startCol - b.startCol,
+    );
 
   const laneEnds: number[] = []; // last endCol per lane
   const segments: Segment[] = [];
@@ -61,9 +77,21 @@ function packWeek(jobs: JobRow[], weekStart: Date, weekEnd: Date): {
     } else {
       laneEnds[lane] = seg.endCol;
     }
-    segments.push({ job: seg.job, startCol: seg.startCol, span: seg.endCol - seg.startCol + 1, lane });
+    segments.push({ item: seg.item, startCol: seg.startCol, span: seg.endCol - seg.startCol + 1, lane });
   }
   return { segments, laneCount: Math.max(1, laneEnds.length) };
+}
+
+/** Red-striped style for time-off bars — clearly distinct from job bars. */
+function offStyle(color: string) {
+  return {
+    backgroundColor: "#fee2e2", // red-100
+    backgroundImage:
+      "repeating-linear-gradient(45deg, rgba(220,38,38,0.18) 0, rgba(220,38,38,0.18) 5px, transparent 5px, transparent 11px)",
+    borderColor: "#fca5a5", // red-300
+    color: "#991b1b", // red-800
+    boxShadow: `inset 3px 0 0 ${color}`, // technician identity stripe on the left
+  } as const;
 }
 
 export function MonthCalendar({
@@ -72,8 +100,9 @@ export function MonthCalendar({
   conflicts,
   holidays,
   technicians,
-  fTech,
-  isOffOnDay,
+  selectedTechs,
+  timeOff,
+  todayYmd,
   onOpenJob,
   onDropDay,
   onClearDate,
@@ -83,8 +112,9 @@ export function MonthCalendar({
   conflicts: Set<string>;
   holidays: Map<string, string>;
   technicians: TechnicianOption[];
-  fTech: string;
-  isOffOnDay: (techId: string | null, day: Date) => boolean;
+  selectedTechs: Set<string> | null; // null = everyone
+  timeOff: TechTimeOff[];
+  todayYmd: string; // computed in the USER'S timezone by the parent
   onOpenJob: (job: JobRow) => void;
   onDropDay: (jobId: string, day: Date) => void;
   onClearDate: (jobId: string) => void;
@@ -92,8 +122,37 @@ export function MonthCalendar({
   const first = startOfMonth(month);
   const gridStart = startOfWeekSunday(first);
   const monthIdx = first.getUTCMonth();
-  const todayYmd = ymd(toUtcMidnight(new Date()));
-  const scheduled = jobs.filter((j) => j.startDate);
+
+  const techById = new Map(technicians.map((t) => [t.id, t]));
+  const visibleTech = (id: string) => {
+    const t = techById.get(id);
+    if (!t || !t.active) return false;
+    return selectedTechs === null || selectedTechs.has(id);
+  };
+
+  const items: CalItem[] = [
+    ...timeOff
+      .filter((o) => visibleTech(o.technicianId))
+      .map((o, i) => {
+        const t = techById.get(o.technicianId)!;
+        return {
+          key: `off-${o.technicianId}-${o.startDate}-${i}`,
+          kind: "off" as const,
+          start: o.startDate,
+          end: o.endDate,
+          off: { techName: t.name, color: t.color, reason: o.reason },
+        };
+      }),
+    ...jobs
+      .filter((j) => j.startDate)
+      .map((j) => ({
+        key: `job-${j.id}`,
+        kind: "job" as const,
+        start: j.startDate!,
+        end: j.endDate ?? j.startDate!,
+        job: j,
+      })),
+  ];
 
   const weeks = Array.from({ length: 6 }, (_, w) => addDays(gridStart, w * 7));
 
@@ -111,7 +170,7 @@ export function MonthCalendar({
         {weeks.map((weekStart, wi) => {
           const weekEnd = addDays(weekStart, 6);
           const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-          const { segments, laneCount } = packWeek(scheduled, weekStart, weekEnd);
+          const { segments, laneCount } = packWeek(items, weekStart, weekEnd);
           const cellMinH = HEADER_H + laneCount * BAR_H + 8;
 
           return (
@@ -124,24 +183,27 @@ export function MonthCalendar({
                   const weekend = ci === 0 || ci === 6;
                   const holiday = holidays.get(ymd(day));
 
-                  const techOff =
-                    fTech !== "ALL" && fTech !== "UNASSIGNED" ? isOffOnDay(fTech, day) : false;
-                  const offNames =
-                    fTech === "ALL"
-                      ? technicians.filter((t) => t.active && isOffOnDay(t.id, day))
-                      : [];
-
                   return (
                     <div
                       key={ci}
-                      title={holiday ? `Holiday: ${holiday}` : undefined}
+                      title={holiday ? `Holiday: ${holiday}` : isToday ? "Today" : undefined}
                       onDragOver={(e: DragEvent) => e.preventDefault()}
                       onDrop={(e: DragEvent) => {
                         e.preventDefault();
                         const id = e.dataTransfer.getData("text/plain");
                         if (id) onDropDay(id, day);
                       }}
-                      className={`h-full border-b border-r p-1 ${holiday ? "bg-amber-100/60" : techOff ? "bg-red-100/50" : !inMonth ? "bg-muted/20" : weekend ? "bg-muted/30" : ""}`}
+                      className={`h-full border-b border-r p-1 ${
+                        isToday
+                          ? "bg-primary/5 shadow-[inset_0_0_0_2px_hsl(var(--primary))]"
+                          : holiday
+                            ? "bg-amber-100/60"
+                            : !inMonth
+                              ? "bg-muted/20"
+                              : weekend
+                                ? "bg-muted/30"
+                                : ""
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-1">
                         {holiday ? (
@@ -161,29 +223,37 @@ export function MonthCalendar({
                           </span>
                         )}
                       </div>
-                      {offNames.length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {offNames.map((t) => (
-                            <span
-                              key={t.id}
-                              title={`${t.name} (Time Off)`}
-                              className="inline-flex h-2 w-2 rounded-full ring-1 ring-white"
-                              style={dotStyle(t.color)}
-                            />
-                          ))}
-                        </div>
-                      )}
                     </div>
                   );
                 })}
               </div>
 
-              {/* Continuous job bars overlaid on the week (pointer-events pass through gaps) */}
+              {/* Continuous bars overlaid on the week (pointer-events pass through gaps) */}
               <div className="pointer-events-none absolute inset-0">
-                {segments.map(({ job, startCol, span, lane }) => {
+                {segments.map(({ item, startCol, span, lane }) => {
+                  const left = `calc(${(startCol / 7) * 100}% + 2px)`;
+                  const width = `calc(${(span / 7) * 100}% - 4px)`;
+                  const top = HEADER_H + lane * BAR_H;
+
+                  if (item.kind === "off") {
+                    const off = item.off!;
+                    return (
+                      <div
+                        key={item.key}
+                        title={`${off.techName} — Time off${off.reason ? ` (${off.reason})` : ""}\n${item.start} → ${item.end}`}
+                        className="pointer-events-auto absolute flex items-center gap-1 overflow-hidden rounded border px-1.5 text-left text-[12px] font-medium"
+                        style={{ ...offStyle(off.color), left, width, top, height: BAR_H - 4 }}
+                      >
+                        <Plane className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                        <span className="truncate">{off.techName} — Time off{off.reason ? ` · ${off.reason}` : ""}</span>
+                      </div>
+                    );
+                  }
+
+                  const job = item.job!;
                   return (
                     <button
-                      key={job.id}
+                      key={item.key}
                       type="button"
                       draggable
                       onDragStart={(e: DragEvent) => e.dataTransfer.setData("text/plain", job.id)}
@@ -205,9 +275,9 @@ export function MonthCalendar({
                       }`}
                       style={{
                         ...(job.tentative ? hatchStyle(job.technicianColor) : barStyle(job.technicianColor)),
-                        left: `calc(${(startCol / 7) * 100}% + 2px)`,
-                        width: `calc(${(span / 7) * 100}% - 4px)`,
-                        top: HEADER_H + lane * BAR_H,
+                        left,
+                        width,
+                        top,
                         height: BAR_H - 4,
                         ...(conflicts.has(job.id) ? { color: "#ef4444", fontWeight: "bold" } : {}),
                       }}

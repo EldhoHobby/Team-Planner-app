@@ -27,7 +27,7 @@ function SubmitButton() {
 export function AccountClient({
   user,
 }: {
-  user: { email: string; name: string | null };
+  user: { username: string; email: string | null; name: string | null };
 }) {
   const [state, formAction] = useActionState(changePasswordAction, {});
   const router = useRouter();
@@ -49,9 +49,15 @@ export function AccountClient({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-1">
-            <Label>Email address</Label>
-            <Input value={user.email} disabled className="bg-muted" />
+            <Label>Username</Label>
+            <Input value={user.username} disabled className="bg-muted" />
           </div>
+          {user.email && (
+            <div className="space-y-1">
+              <Label>Email address</Label>
+              <Input value={user.email} disabled className="bg-muted" />
+            </div>
+          )}
           {user.name && (
             <div className="space-y-1">
               <Label>Name</Label>

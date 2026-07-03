@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/db/client";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
-import { destroyAllSessions } from "@/lib/auth/session";
+import { destroyAllSessions, getSessionActor } from "@/lib/auth/session";
 
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required"),
@@ -26,6 +26,13 @@ export async function changePasswordAction(
   formData: FormData,
 ): Promise<ChangePasswordState> {
   const user = await requireUser();
+
+  // "View as" guard: never change the impersonated person's password. Passwords
+  // aren't part of UI testing; exit View as (or use the admin reset link) instead.
+  const actor = await getSessionActor();
+  if (actor?.impersonating) {
+    return { error: "Password can't be changed while using View as. Exit View as first." };
+  }
 
   const parsed = ChangePasswordSchema.safeParse(Object.fromEntries(formData.entries()));
   if (!parsed.success) {

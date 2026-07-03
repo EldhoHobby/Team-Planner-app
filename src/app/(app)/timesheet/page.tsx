@@ -34,7 +34,7 @@ export default async function TimesheetPage({
 
   return (
     <TimesheetClient
-      userName={user.name ?? user.email}
+      userName={user.name ?? user.email ?? user.username}
       empNo={user.empNo ?? ""}
       data={data}
       weeks={weeks}

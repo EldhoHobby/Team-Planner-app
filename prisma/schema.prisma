@@ -28,21 +28,28 @@ model Organization {
   events      CalendarEvent[]
   timeOff     TimeOff[]
   attachments Attachment[]
-  technicians Technician[]
   techTimeOff TechnicianTimeOff[]
   holidays    Holiday[]
   auditLogs   AuditLog[]
   timesheets  Timesheet[]
+  techTasks   TechTask[]
+  managerLinks ManagerLink[]
+  workGroups   WorkGroup[]
 }
 
 model User {
   id           String   @id @default(cuid())
-  email        String   @unique
+  username     String   @unique // primary login key (lowercase; ^[a-z0-9._-]{3,32}$)
+  email        String?  @unique // optional contact address (Postgres allows many NULLs)
   name         String?
   passwordHash String
   isActive     Boolean  @default(true)
   theme        String? // "light" | "dark" — per-user UI theme (null = follow system)
   empNo        String? // employment ID, shown on the timesheet (Emp No #)
+  // ── Scheduling attributes (a person IS a technician — one unified record) ──
+  color        String   @default("#64748b") // colour on the schedule board
+  schedulable  Boolean  @default(true) // appears on the board / can be assigned jobs
+  archived     Boolean  @default(false) // soft-delete: hidden everywhere, history kept
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -54,8 +61,32 @@ model User {
   timeOff         TimeOff[]
   uploads         Attachment[]
   invitesSent     Invitation[]         @relation("InvitedBy")
-  technician      Technician?
+  jobs            Task[]               @relation("JobAssignee")
+  timeOffBlocks   TechnicianTimeOff[]
   timesheets      Timesheet[]
+  techTasks       TechTask[]
+  managedLinks    ManagerLink[]        @relation("MgrLinkManager")
+  managerLinks    ManagerLink[]        @relation("MgrLinkMember")
+  workGroups      WorkGroupMembership[]
+  actingSessions  Session[]            @relation("SessionActingAs")
+}
+
+// Extra reporting lines beyond a person's home department — for the few people
+// who also answer to a manager elsewhere. Department managers already see their
+// whole department; this covers the exceptions. (member is seen by manager.)
+model ManagerLink {
+  id        String   @id @default(cuid())
+  orgId     String
+  managerId String
+  memberId  String
+  createdAt DateTime @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  manager User         @relation("MgrLinkManager", fields: [managerId], references: [id], onDelete: Cascade)
+  member  User         @relation("MgrLinkMember", fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([managerId, memberId])
+  @@index([orgId, memberId])
 }
 
 enum OrgRole {
@@ -81,13 +112,16 @@ model Membership {
 }
 
 model Team {
-  id        String   @id @default(cuid())
-  orgId     String
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(cuid())
+  orgId        String
+  name         String
+  parentTeamId String? // null = top-level department; set = sub-team (e.g. System Eng under Engineering)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parent      Team?            @relation("TeamTree", fields: [parentTeamId], references: [id], onDelete: SetNull)
+  children    Team[]           @relation("TeamTree")
   members     TeamMembership[]
   projects    Project[]
   events      CalendarEvent[]
@@ -95,7 +129,52 @@ model Team {
   invitations Invitation[]
 
   @@unique([orgId, name])
+  @@index([orgId, parentTeamId])
+}
+
+// ── Cross-functional pools (Field Service, Production Release, ...) ──
+// Departments (Team) are the reporting/tenancy structure; WorkGroups are the
+// scheduling/assignment structure and cut across the department tree.
+enum WorkGroupPurpose {
+  FIELD_SERVICE
+  PRODUCTION_RELEASE
+  OTHER
+}
+
+enum WorkGroupRole {
+  COORDINATOR // oversight (e.g. the System Eng Project Manager on Production Release)
+  MEMBER
+}
+
+model WorkGroup {
+  id        String           @id @default(cuid())
+  orgId     String
+  name      String
+  purpose   WorkGroupPurpose @default(FIELD_SERVICE)
+  archived  Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  org     Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members WorkGroupMembership[]
+  tasks   Task[]
+
+  @@unique([orgId, name])
   @@index([orgId])
+}
+
+model WorkGroupMembership {
+  id          String        @id @default(cuid())
+  workGroupId String
+  userId      String
+  role        WorkGroupRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
+
+  workGroup WorkGroup @relation(fields: [workGroupId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workGroupId, userId])
+  @@index([userId])
 }
 
 enum TeamRole {
@@ -123,13 +202,17 @@ model TeamMembership {
 // Server-side sessions so we can revoke. The cookie holds a random token;
 // only its SHA-256 hash is stored here, so a DB leak can't be used to log in.
 model Session {
-  id        String   @id @default(cuid())
-  userId    String
-  tokenHash String   @unique
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id             String   @id @default(cuid())
+  userId         String
+  tokenHash      String   @unique
+  // "View as" (OWNER-only testing tool): when set, the app renders and acts as
+  // this user while audit logs still record the real session owner.
+  actingAsUserId String?
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user     User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actingAs User? @relation("SessionActingAs", fields: [actingAsUserId], references: [id], onDelete: SetNull)
 
   @@index([userId])
 }
@@ -250,6 +333,14 @@ enum JobType {
   EMERGENCY_SUPPORT
 }
 
+// Where a task came from: created by the person (SELF), assigned to them by
+// someone else (MANAGER), or synced in from Outlook (OUTLOOK).
+enum TaskOrigin {
+  SELF
+  MANAGER
+  OUTLOOK
+}
+
 // Field-service lifecycle, distinct from the generic TaskStatus.
 enum JobStatus {
   UNCONFIRMED
@@ -258,39 +349,20 @@ enum JobStatus {
   COMPLETED
 }
 
-// A schedulable field engineer. Org-scoped resource with a fixed display colour;
-// optionally linked to a real User account (hybrid model — login can come later).
-model Technician {
-  id        String   @id @default(cuid())
-  orgId     String
-  name      String
-  color     String   @default("#64748b") // free-form hex colour
-  active    Boolean  @default(true)
-  archived  Boolean  @default(false) // soft-delete: hidden everywhere, history kept
-  userId    String?  @unique
-  createdAt DateTime @default(now())
-
-  org     Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user    User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
-  tasks   Task[]
-  timeOff TechnicianTimeOff[]
-
-  @@unique([orgId, name])
-  @@index([orgId])
-}
-
-// Technician unavailability (PTO, training, sick) — blocks scheduling on the board.
+// Person unavailability (PTO, training, sick) — blocks scheduling on the board.
+// `technicianId` now holds a User id (a person IS a technician). Column name kept
+// so the schedule board + Jobs round-trip stay unchanged.
 model TechnicianTimeOff {
   id           String   @id @default(cuid())
   orgId        String
-  technicianId String
+  technicianId String // → User.id (the person who's off)
   startDate    DateTime
   endDate      DateTime
   reason       String?
   createdAt    DateTime @default(now())
 
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  technician Technician   @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  technician User         @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([technicianId, startDate])
   @@index([orgId])
@@ -324,11 +396,27 @@ model Task {
   durationDays   Int?
   tentative      Boolean    @default(false) // pencilled-in date → hatched on the board
   technicianId   String?
+  workGroupId    String? // which cross-functional pool the job draws from (null = org-wide)
+
+  // ── Task list (personal / assigned tasks; kind = GENERAL) ──
+  origin         TaskOrigin @default(SELF)
+  isFieldTrip    Boolean    @default(false)
+  location       String?
+  assignedById   String? // who assigned it (set for MANAGER origin)
+  // Two-way sync scaffolding for a future Outlook / Microsoft Graph connector.
+  // Populated when a connector is wired; syncDirty flags a local completion change
+  // that still needs to be pushed back to the source system.
+  externalId     String? // id in the source system (Outlook)
+  externalSource String? // "outlook_todo" | "outlook_event"
+  externalUrl    String?
+  lastSyncedAt   DateTime?
+  syncDirty      Boolean    @default(false)
 
   org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   column      BoardColumn?     @relation(fields: [columnId], references: [id], onDelete: SetNull)
-  technician  Technician?      @relation(fields: [technicianId], references: [id], onDelete: SetNull)
+  technician  User?            @relation("JobAssignee", fields: [technicianId], references: [id], onDelete: SetNull)
+  workGroup   WorkGroup?       @relation(fields: [workGroupId], references: [id], onDelete: SetNull)
   assignments TaskAssignment[]
   attachments Attachment[]
 
@@ -337,6 +425,7 @@ model Task {
   @@index([dueDate])
   @@index([orgId, kind, startDate])
   @@index([technicianId, startDate])
+  @@index([orgId, externalSource, externalId])
 }
 
 model TaskAssignment {
@@ -480,6 +569,50 @@ model TimesheetEntry {
   timesheet Timesheet @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
 
   @@index([timesheetId])
+}
+
+// ─────────────────────────── Tech task dashboard ───────────────────────────
+
+// Workflow state for a personal/tech task (matches the QEI open-items sheet).
+enum TechTaskState {
+  NEW
+  TODO
+  IN_PROGRESS
+  HOLD
+  DONE
+}
+
+// A single open-items entry owned by one person (the technician). A manager can
+// create tasks for their direct reports; the person can create their own; a
+// future Outlook connector fills OUTLOOK-origin ones. Shown on /dashboard.
+model TechTask {
+  id           String        @id @default(cuid())
+  orgId        String
+  ownerId      String // the person this task belongs to
+  createdById  String? // who created it
+  assignedById String? // who assigned it (set for MANAGER origin)
+  title        String
+  notes        String?
+  priority     Int           @default(3) // 1 = highest, like the sheet
+  targetDate   DateTime? // targeted complete date (null = TBD)
+  state        TechTaskState @default(NEW)
+  completedAt  DateTime? // when it moved to DONE (drives week-by-week grouping)
+  origin       TaskOrigin    @default(SELF)
+  location     String?
+  // Two-way sync scaffolding for a future Outlook / Microsoft Graph connector.
+  externalId     String?
+  externalSource String? // "outlook_todo" | "outlook_event"
+  externalUrl    String?
+  lastSyncedAt   DateTime?
+  syncDirty      Boolean     @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, ownerId, state])
+  @@index([orgId, externalSource, externalId])
 }
 
 // Change-history trail for jobs, technicians, etc. (what / when / who).

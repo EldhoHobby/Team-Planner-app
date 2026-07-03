@@ -1,7 +1,7 @@
 import type { AuditEntry } from "../schedule/types";
-import type { TaskStatus, TaskPriority } from "@prisma/client";
+import type { TaskStatus, TaskPriority, TaskOrigin } from "@prisma/client";
 
-export type { TaskStatus, TaskPriority, AuditEntry };
+export type { TaskStatus, TaskPriority, TaskOrigin, AuditEntry };
 
 export type Assignee = {
   id: string;
@@ -21,6 +21,9 @@ export type TaskRow = {
   projectName: string;
   teamId: string;
   assignees: Assignee[];
+  origin: TaskOrigin;
+  isFieldTrip: boolean;
+  location: string | null;
   createdAt: string;
 };
 

@@ -57,6 +57,15 @@ const selectClass =
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
+/**
+ * Today's date in the USER'S timezone (not UTC). The board's dates are UTC
+ * midnights, so using the UTC date for "today" marked the wrong day for anyone
+ * west of UTC in the evening / east of UTC in the morning.
+ */
+function localTodayYmd(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
 function parseYmd(s: string): Date {
   return new Date(`${s}T00:00:00.000Z`);
 }
@@ -88,11 +97,17 @@ export function ScheduleClient({
   technicians,
   timeOff,
   holidays,
+  defaultTechIds,
+  initialDate,
 }: {
   jobs: JobRow[];
   technicians: TechnicianOption[];
   timeOff: TechTimeOff[];
   holidays: HolidayLite[];
+  /** Personal default for the tech filter: null = all (admins); ids = member/manager scope. */
+  defaultTechIds: string[] | null;
+  /** Deep-link (e.g. from the dashboard): open the board at this date. */
+  initialDate?: string | null;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -117,7 +132,7 @@ export function ScheduleClient({
       /* ignore */
     }
   }, [view]);
-  const [anchor, setAnchor] = useState<Date>(() => toUtcMidnight(new Date()));
+  const [anchor, setAnchor] = useState<Date>(() => parseYmd(initialDate || localTodayYmd()));
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
@@ -128,8 +143,24 @@ export function ScheduleClient({
     setSelected((sel) => (sel ? (propJobs.find((j) => j.id === sel.id) ?? null) : null));
   }, [propJobs]);
 
-  // Filters
-  const [fTech, setFTech] = useState<string>("ALL");
+  // Filters. Technician filter is a checkbox multi-select: null = everyone;
+  // otherwise a set of technician ids (plus "UNASSIGNED"). Initialised to the
+  // viewer's personal scope (self for members, team for managers) — changeable.
+  const [fTechSel, setFTechSel] = useState<Set<string> | null>(() =>
+    defaultTechIds ? new Set(defaultTechIds) : null,
+  );
+  // When the personal default CHANGES (e.g. "View as" switched to another person,
+  // whose scope the server recomputes), re-apply it. Manual filter changes are
+  // left alone otherwise — we only react to a different default arriving.
+  const defaultKey = defaultTechIds ? [...defaultTechIds].sort().join(",") : "__ALL__";
+  const lastDefaultKey = useRef(defaultKey);
+  useEffect(() => {
+    if (lastDefaultKey.current !== defaultKey) {
+      lastDefaultKey.current = defaultKey;
+      setFTechSel(defaultTechIds ? new Set(defaultTechIds) : null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultKey]);
   const [fType, setFType] = useState<string>("ALL");
   const [fSo, setFSo] = useState<string>("ALL");
   const [fStatus, setFStatus] = useState<string>("ALL");
@@ -184,7 +215,7 @@ export function ScheduleClient({
     [weekStart],
   );
   const weekEnd = weekDays[6];
-  const todayYmd = ymd(toUtcMidnight(new Date()));
+  const todayYmd = localTodayYmd();
 
   // Time-off index: technicianId → list of [startMs, endMs]
   const offByTech = useMemo(() => {
@@ -270,13 +301,18 @@ export function ScheduleClient({
   const matchesStatus = (j: JobRow, status: string) =>
     status === "ALL" || (status === "TENTATIVE" ? j.tentative : j.jobStatus === status);
 
+  const matchesTech = (j: JobRow) =>
+    fTechSel === null ||
+    (j.technicianId ? fTechSel.has(j.technicianId) : fTechSel.has("UNASSIGNED"));
+
   const matches = (j: JobRow) =>
-    (fTech === "ALL" || (fTech === "UNASSIGNED" ? !j.technicianId : j.technicianId === fTech)) &&
+    matchesTech(j) &&
     (fType === "ALL" || j.jobType === fType) &&
     (fSo === "ALL" || j.soNumber === fSo) &&
     matchesStatus(j, fStatus);
 
-  const visible = useMemo(() => jobs.filter(matches), [jobs, fTech, fType, fSo, fStatus]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const visible = useMemo(() => jobs.filter(matches), [jobs, fTechSel, fType, fSo, fStatus]);
   const scheduled = visible.filter((j) => j.startDate);
   const unscheduled = visible.filter((j) => !j.startDate);
   const tentativeCount = visible.filter((j) => j.tentative).length;
@@ -302,7 +338,12 @@ export function ScheduleClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, panelStatus, panelSort]);
 
-  const overbooked = technicians.filter(
+  // Technicians currently in view (respects the checkbox filter).
+  const visibleTechs = technicians.filter(
+    (t) => t.active && (fTechSel === null || fTechSel.has(t.id)),
+  );
+
+  const overbooked = visibleTechs.filter(
     (t) => (capacity.get(t.id) ?? 0) > capacityDenom,
   ).length;
 
@@ -321,8 +362,8 @@ export function ScheduleClient({
       .map((t) => ({ id: t.id, name: `${t.name} (inactive)`, color: t.color, droppable: false, inactive: true })),
     { id: null, name: "Unassigned", color: "slate", droppable: true },
   ];
-  if (fTech !== "ALL") {
-    rows = rows.filter((r) => (fTech === "UNASSIGNED" ? r.id === null : r.id === fTech));
+  if (fTechSel !== null) {
+    rows = rows.filter((r) => (r.id === null ? fTechSel.has("UNASSIGNED") : fTechSel.has(r.id)));
   }
 
   // ── Optimistic move ──
@@ -442,7 +483,7 @@ export function ScheduleClient({
             </button>
           </div>
           {/* Standalone Today */}
-          <Button variant="outline" size="sm" onClick={() => setAnchor(toUtcMidnight(new Date()))}>
+          <Button variant="outline" size="sm" onClick={() => setAnchor(parseYmd(localTodayYmd()))}>
             Today
           </Button>
           {/* Arrows framing the date label: [ < ]  Month Year  [ > ] */}
@@ -482,13 +523,7 @@ export function ScheduleClient({
           <Stat label="conflicts" value={conflicts.size} tone={conflicts.size ? "bad" : undefined} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <select className={selectClass} value={fTech} onChange={(e) => setFTech(e.target.value)} aria-label="Filter technician">
-            <option value="ALL">All technicians</option>
-            <option value="UNASSIGNED">Unassigned</option>
-            {technicians.filter((t) => t.active).map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
+          <TechFilter technicians={technicians} selected={fTechSel} onChange={setFTechSel} />
           <select className={selectClass} value={fType} onChange={(e) => setFType(e.target.value)} aria-label="Filter job type">
             <option value="ALL">All types</option>
             {Object.entries(JOB_TYPE_LABELS).map(([k, v]) => (
@@ -521,7 +556,7 @@ export function ScheduleClient({
         <span className="text-xs font-medium text-muted-foreground">
           {view === "calendar" ? "This month:" : "This week:"}
         </span>
-        {technicians.filter((t) => t.active).map((t) => {
+        {visibleTechs.map((t) => {
           const booked = capacity.get(t.id) ?? 0;
           const full = booked >= capacityDenom;
           const heavy = booked === capacityDenom - 1;
@@ -599,8 +634,9 @@ export function ScheduleClient({
               conflicts={warnings}
               holidays={holidayMap}
               technicians={technicians}
-              fTech={fTech}
-              isOffOnDay={isOffOnDay}
+              selectedTechs={fTechSel}
+              timeOff={timeOff}
+              todayYmd={todayYmd}
               onOpenJob={setSelected}
               onDropDay={moveDate}
               onClearDate={(jobId) => moveDate(jobId, null)}
@@ -616,11 +652,11 @@ export function ScheduleClient({
                   return (
                     <div
                       key={i}
-                      title={holiday ? `Holiday: ${holiday}` : undefined}
-                      className={`border-r px-2 py-2 text-center text-xs ${holiday ? "bg-amber-100/70" : weekend ? "bg-muted/40" : ""}`}
+                      title={holiday ? `Holiday: ${holiday}` : isToday ? "Today" : undefined}
+                      className={`border-r px-2 py-2 text-center text-xs ${isToday ? "border-b-2 border-b-primary bg-primary/10" : holiday ? "bg-amber-100/70" : weekend ? "bg-muted/40" : ""}`}
                     >
-                      <div className="font-medium">{DAY_LABELS[i]}</div>
-                      <div className={isToday ? "font-semibold text-primary" : "text-muted-foreground"}>{d.getUTCDate()}</div>
+                      <div className={isToday ? "font-semibold text-primary" : "font-medium"}>{DAY_LABELS[i]}</div>
+                      <div className={isToday ? "inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 font-bold text-primary-foreground" : "text-muted-foreground"}>{d.getUTCDate()}</div>
                       {holiday ? (
                         <div className="truncate text-[10px] font-medium leading-tight text-amber-700" title={holiday}>{holiday}</div>
                       ) : null}
@@ -646,10 +682,11 @@ export function ScheduleClient({
                           const weekend = i === 0 || i === 6;
                           const off = isOffOnDay(row.id, d);
                           const holiday = holidayOn(d);
+                          const isToday = ymd(d) === todayYmd;
                           return (
                             <div
                               key={i}
-                              className={`border-r ${off ? "bg-red-100/70" : holiday ? "bg-amber-100/60" : weekend ? "bg-muted/30" : ""}`}
+                              className={`border-r ${off ? "bg-red-100/70" : holiday ? "bg-amber-100/60" : isToday ? "bg-primary/5 shadow-[inset_2px_0_0_hsl(var(--primary)),inset_-2px_0_0_hsl(var(--primary))]" : weekend ? "bg-muted/30" : ""}`}
                               title={off ? `${row.name} — time off` : holiday ? `Holiday: ${holiday}` : undefined}
                               onDragOver={(e) => row.droppable && e.preventDefault()}
                               onDrop={(e) => {
@@ -717,6 +754,103 @@ export function ScheduleClient({
       {selected && (
         <JobEditor job={selected} technicians={technicians} onClose={() => setSelected(null)} />
       )}
+    </div>
+  );
+}
+
+/** Technician filter: compact button opening a checkbox popover (multi-select). */
+function TechFilter({
+  technicians,
+  selected,
+  onChange,
+}: {
+  technicians: TechnicianOption[];
+  selected: Set<string> | null; // null = everyone
+  onChange: (next: Set<string> | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const active = technicians.filter((t) => t.active);
+  const isAll = selected === null;
+  const count = selected?.size ?? 0;
+  const label = isAll
+    ? "All technicians"
+    : count === 0
+      ? "No technicians"
+      : count === 1
+        ? (selected!.has("UNASSIGNED")
+            ? "Unassigned"
+            : active.find((t) => selected!.has(t.id))?.name ?? "1 selected")
+        : `${count} selected`;
+
+  const toggle = (id: string) => {
+    // Starting from "All", a click narrows to just that one — feels natural.
+    const next = selected === null ? new Set<string>() : new Set(selected);
+    if (selected === null) next.add(id);
+    else if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange(next);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        aria-label="Filter technicians"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={`${selectClass} flex items-center gap-1 ${!isAll ? "border-primary/60 font-medium" : ""}`}
+      >
+        {label}
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      {open ? (
+        <div className="absolute right-0 z-30 mt-1 w-56 rounded-md border bg-background p-2 shadow-lg">
+          <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs font-medium hover:bg-muted">
+            <input
+              type="checkbox"
+              checked={isAll}
+              onChange={() => onChange(isAll ? new Set() : null)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            All technicians
+          </label>
+          <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted">
+            <input
+              type="checkbox"
+              checked={isAll || (selected?.has("UNASSIGNED") ?? false)}
+              onChange={() => toggle("UNASSIGNED")}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            Unassigned
+          </label>
+          <div className="my-1 border-t" />
+          <div className="max-h-64 overflow-y-auto">
+            {active.map((t) => (
+              <label key={t.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted">
+                <input
+                  type="checkbox"
+                  checked={isAll || (selected?.has(t.id) ?? false)}
+                  onChange={() => toggle(t.id)}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                <span className="h-2 w-2 shrink-0 rounded-full" style={dotStyle(t.color)} />
+                <span className="truncate">{t.name}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

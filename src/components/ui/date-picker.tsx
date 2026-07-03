@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { CalendarIcon, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +45,12 @@ export function DatePicker({
   };
 
   const [open, setOpen] = useState(false);
+  // Fixed-position coordinates so the popover is never clipped by scrollable
+  // ancestors (e.g. the dashboard's overflow-x-auto tables). Computed on open.
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const POP_W = 256; // w-64
+  const POP_H = 340; // approximate popover height
   const init = value ? new Date(`${value}T00:00:00`) : new Date();
   const [year, setYear] = useState(init.getFullYear());
   const [month, setMonth] = useState(init.getMonth()); // 0–11
@@ -79,6 +85,15 @@ export function DatePicker({
         const d = value ? new Date(`${value}T00:00:00`) : new Date();
         setYear(d.getFullYear());
         setMonth(d.getMonth());
+        // Anchor the fixed popover to the button, flipping above/below and
+        // clamping horizontally so it always stays fully on screen.
+        const r = btnRef.current?.getBoundingClientRect();
+        if (r) {
+          const below = window.innerHeight - r.bottom;
+          const top = below >= POP_H || r.top < POP_H ? r.bottom + 4 : r.top - POP_H - 4;
+          const left = Math.max(8, Math.min(r.left, window.innerWidth - POP_W - 8));
+          setPos({ top: Math.max(8, top), left });
+        }
       }
       return next;
     });
@@ -88,6 +103,7 @@ export function DatePicker({
       {name ? <input type="hidden" name={name} value={value} /> : null}
       <button
         type="button"
+        ref={btnRef}
         onClick={toggle}
         className={cn(
           "flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -101,8 +117,8 @@ export function DatePicker({
       {open ? (
         <>
           <div className="fixed inset-0 z-40" aria-hidden onClick={() => setOpen(false)} />
-          {/* Opens upward so it never hides behind fields below it. */}
-          <div className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded-md border bg-card p-2 shadow-lg">
+          {/* position:fixed → never clipped by overflow containers (tables etc.) */}
+          <div className="fixed z-50 w-64 rounded-md border bg-card p-2 shadow-lg" style={{ top: pos.top, left: pos.left }}>
             <div className="mb-1 flex items-center justify-between">
               <button type="button" aria-label="Previous month" className="rounded p-1 hover:bg-muted" onClick={() => shift(-1)}>
                 <ChevronLeft className="h-4 w-4" />

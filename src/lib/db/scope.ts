@@ -12,6 +12,8 @@ import { prisma } from "./client";
 
 export interface TenantContext {
   userId: string;
+  /** The real session owner when "view as" is active (differs from userId). */
+  realUserId?: string;
   orgId: string;
   /** Team ids the user belongs to within orgId. Empty = no team-scoped access. */
   teamIds: string[];
@@ -71,7 +73,11 @@ export class TenantScope {
  * features (holiday/technician management, the admin data import) remain gated on
  * `isOrgAdmin`. Edits are still recorded to the audit log with the actor.
  */
-export async function buildScope(userId: string, orgId: string): Promise<TenantScope> {
+export async function buildScope(
+  userId: string,
+  orgId: string,
+  realUserId?: string,
+): Promise<TenantScope> {
   const membership = await prisma.membership.findUnique({
     where: { userId_orgId: { userId, orgId } },
   });
@@ -88,6 +94,7 @@ export async function buildScope(userId: string, orgId: string): Promise<TenantS
 
   return new TenantScope({
     userId,
+    realUserId: realUserId && realUserId !== userId ? realUserId : undefined,
     orgId,
     teamIds: orgTeams.map((t) => t.id),
     isOrgAdmin: membership.role === "OWNER" || membership.role === "ADMIN",

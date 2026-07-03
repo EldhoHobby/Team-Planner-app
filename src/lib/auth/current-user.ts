@@ -1,7 +1,7 @@
 import type { User } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { buildScope, type TenantScope } from "@/lib/db/scope";
-import { getSessionUser } from "./session";
+import { getSessionUser, getSessionActor } from "./session";
 
 /** Thrown when an unauthenticated caller hits a protected path. */
 export class UnauthorizedError extends Error {
@@ -42,7 +42,9 @@ export async function requireUser(): Promise<User> {
 export async function requireScope(
   orgId?: string,
 ): Promise<{ user: User; scope: TenantScope }> {
-  const user = await requireUser();
+  const actor = await getSessionActor();
+  if (!actor) throw new UnauthorizedError();
+  const user = actor.user; // effective user ("view as" target while active)
 
   const membership = orgId
     ? await prisma.membership.findUnique({
@@ -57,6 +59,8 @@ export async function requireScope(
     throw new ForbiddenError("No organization membership");
   }
 
-  const scope = await buildScope(user.id, membership.orgId);
+  // Pass the real session owner so audit logs attribute impersonated actions
+  // to the admin ("acting as <user>") rather than the user themselves.
+  const scope = await buildScope(user.id, membership.orgId, actor.realUser.id);
   return { user, scope };
 }

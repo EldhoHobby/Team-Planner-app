@@ -30,18 +30,29 @@ export async function createSession(userId: string): Promise<void> {
 }
 
 /**
- * Resolve the current user from the session cookie, or null. Expired sessions
- * are cleaned up on read. This is the single source of truth for "who is the
- * caller" — everything else (requireUser, scope) builds on it.
+ * The resolved session identity. `user` is the EFFECTIVE user (the impersonated
+ * person while "view as" is active), `realUser` is the session owner. They're
+ * the same object when not impersonating.
  */
-export async function getSessionUser(): Promise<User | null> {
+export interface SessionActor {
+  user: User;
+  realUser: User;
+  impersonating: boolean;
+}
+
+/**
+ * Resolve the full session actor (real + effective user), or null. Expired
+ * sessions are cleaned up on read. "View as" self-heals: if the target was
+ * archived/deactivated, impersonation is dropped instead of locking the owner out.
+ */
+export async function getSessionActor(): Promise<SessionActor | null> {
   const jar = await cookies();
   const token = jar.get(COOKIE_NAME)?.value;
   if (!token) return null;
 
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashToken(token) },
-    include: { user: true },
+    include: { user: true, actingAs: true },
   });
 
   if (!session) return null;
@@ -53,7 +64,38 @@ export async function getSessionUser(): Promise<User | null> {
 
   if (!session.user.isActive) return null;
 
-  return session.user;
+  if (session.actingAs && session.actingAs.isActive && !session.actingAs.archived) {
+    return { user: session.actingAs, realUser: session.user, impersonating: true };
+  }
+  if (session.actingAsUserId) {
+    // Target vanished/deactivated — drop the impersonation silently.
+    await prisma.session
+      .update({ where: { id: session.id }, data: { actingAsUserId: null } })
+      .catch(() => {});
+  }
+  return { user: session.user, realUser: session.user, impersonating: false };
+}
+
+/**
+ * The EFFECTIVE current user (impersonated person while "view as" is active).
+ * This is the single source of truth for "who is the caller" — everything else
+ * (requireUser, scope, every page) builds on it, so the whole app renders and
+ * acts as the selected person automatically.
+ */
+export async function getSessionUser(): Promise<User | null> {
+  const actor = await getSessionActor();
+  return actor?.user ?? null;
+}
+
+/** Start/stop "view as" on the current session row. Caller must authorize. */
+export async function setSessionActingAs(actingAsUserId: string | null): Promise<void> {
+  const jar = await cookies();
+  const token = jar.get(COOKIE_NAME)?.value;
+  if (!token) return;
+  await prisma.session.updateMany({
+    where: { tokenHash: hashToken(token) },
+    data: { actingAsUserId },
+  });
 }
 
 /** Revoke the current session (logout): delete the row and clear the cookie. */

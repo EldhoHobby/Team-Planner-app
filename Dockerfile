@@ -36,7 +36,9 @@ COPY --from=builder /app/package.json ./package.json
 # Sync schema -> database. `--accept-data-loss` is required by `db push` to apply
 # schema changes non-interactively (dev workflow). Swap to `migrate deploy` once
 # versioned migrations are committed — that removes this flag and adds review.
-CMD ["npx", "prisma", "db", "push", "--skip-generate", "--accept-data-loss"]
+# Pre-push SQL backfills User.username on existing databases (idempotent), then
+# db push syncs the schema.
+CMD ["sh", "-c", "npx prisma db execute --file prisma/pre-push.sql --schema prisma/schema.prisma && npx prisma db push --skip-generate --accept-data-loss"]
 
 # 4. Runtime image — slim standalone server. No Prisma CLI here; the migrator
 #    service owns schema sync. Only the generated client + query engine are

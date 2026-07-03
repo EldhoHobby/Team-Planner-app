@@ -19,6 +19,7 @@ import type {
   TaskFormState,
   TaskStatus,
   TaskPriority,
+  TaskOrigin,
   AuditEntry,
 } from "./types";
 
@@ -54,6 +55,33 @@ const PRIORITY_COLORS: Record<TaskPriority, string> = {
   HIGH: "bg-orange-100 text-orange-700",
   URGENT: "bg-red-100 text-red-700",
 };
+
+// Task origin: created by you, assigned to you, or synced from Outlook.
+const ORIGIN_LABELS: Record<TaskOrigin, string> = {
+  SELF: "Self",
+  MANAGER: "Assigned",
+  OUTLOOK: "Outlook",
+};
+const ORIGIN_COLORS: Record<TaskOrigin, string> = {
+  SELF: "bg-slate-100 text-slate-700",
+  MANAGER: "bg-purple-100 text-purple-700",
+  OUTLOOK: "bg-sky-100 text-sky-700",
+};
+
+function OriginChip({ origin }: { origin: TaskOrigin }) {
+  return (
+    <span
+      title={
+        origin === "MANAGER" ? "Assigned by someone else"
+          : origin === "OUTLOOK" ? "Synced from Outlook"
+          : "Created by you"
+      }
+      className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium", ORIGIN_COLORS[origin])}
+    >
+      {ORIGIN_LABELS[origin]}
+    </span>
+  );
+}
 
 // ─── Small reusable chips ───
 
@@ -345,6 +373,30 @@ function TaskForm({
           />
         </div>
 
+        {/* Field trip + location */}
+        <div className="grid grid-cols-2 items-end gap-4">
+          <label className="flex h-9 items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="isFieldTrip"
+              defaultChecked={initialTask?.isFieldTrip}
+              className="h-4 w-4 rounded border-input accent-primary"
+            />
+            Field trip
+          </label>
+          <div className="space-y-2">
+            <Label htmlFor="task-location">
+              Location <span className="font-normal text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="task-location"
+              name="location"
+              placeholder="Site / address"
+              defaultValue={initialTask?.location ?? undefined}
+            />
+          </div>
+        </div>
+
         {/* Assignees */}
         {availableAssignees.length > 0 && (
           <div className="space-y-2">
@@ -472,13 +524,20 @@ function TaskRow({
         >
           {task.title}
         </button>
-        <p className="truncate text-xs text-muted-foreground">
-          {task.projectName}
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          {task.isFieldTrip ? (
+            <span className="shrink-0 rounded bg-indigo-100 px-1 text-[10px] font-medium text-indigo-700">Field trip</span>
+          ) : null}
+          <span className="truncate">
+            {task.projectName}
+            {task.location ? ` · ${task.location}` : ""}
+          </span>
         </p>
       </div>
 
       {/* Chips */}
       <div className="hidden items-center gap-2 sm:flex">
+        <OriginChip origin={task.origin} />
         <StatusChip status={task.status} />
         <PriorityChip priority={task.priority} />
       </div>
@@ -531,23 +590,46 @@ function FilterBar({
   statusFilter,
   priorityFilter,
   projectFilter,
+  originFilter,
+  mine,
   onStatus: setStatus,
   onPriority: setPriority,
   onProject: setProject,
+  onOrigin: setOrigin,
+  onMine: setMine,
 }: {
   projects: ProjectOption[];
   statusFilter: string;
   priorityFilter: string;
   projectFilter: string;
+  originFilter: string;
+  mine: boolean;
   onStatus: (v: string) => void;
   onPriority: (v: string) => void;
   onProject: (v: string) => void;
+  onOrigin: (v: string) => void;
+  onMine: (v: boolean) => void;
 }) {
   const filterSelect =
     "h-8 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-  const hasFilter = statusFilter || priorityFilter || projectFilter;
+  const hasFilter = statusFilter || priorityFilter || projectFilter || originFilter || mine;
   return (
     <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2">
+      <label className="flex items-center gap-1.5 rounded-md border border-input px-2 py-1 text-xs">
+        <input
+          type="checkbox"
+          checked={mine}
+          onChange={(e) => setMine(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-input accent-primary"
+        />
+        Assigned to me
+      </label>
+      <select value={originFilter} onChange={(e) => setOrigin(e.target.value)} className={filterSelect}>
+        <option value="">All origins</option>
+        <option value="SELF">Self</option>
+        <option value="MANAGER">Assigned</option>
+        <option value="OUTLOOK">Outlook</option>
+      </select>
       <select
         value={statusFilter}
         onChange={(e) => setStatus(e.target.value)}
@@ -590,6 +672,8 @@ function FilterBar({
             setStatus("");
             setPriority("");
             setProject("");
+            setOrigin("");
+            setMine(false);
           }}
           className="text-xs text-muted-foreground hover:text-foreground"
         >
@@ -607,15 +691,19 @@ export function TasksClient({
   projects,
   teams,
   teamMembers,
+  currentUserId,
 }: {
   tasks: TaskRow[];
   projects: ProjectOption[];
   teams: { id: string; name: string }[];
   teamMembers: TeamMember[];
+  currentUserId: string;
 }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
+  const [originFilter, setOriginFilter] = useState("");
+  const [mine, setMine] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editTask, setEditTask] = useState<TaskRow | null>(null);
 
@@ -623,7 +711,9 @@ export function TasksClient({
     (t) =>
       (!statusFilter || t.status === statusFilter) &&
       (!priorityFilter || t.priority === priorityFilter) &&
-      (!projectFilter || t.projectId === projectFilter),
+      (!projectFilter || t.projectId === projectFilter) &&
+      (!originFilter || t.origin === originFilter) &&
+      (!mine || t.assignees.some((a) => a.id === currentUserId)),
   );
 
   const noProjects = projects.length === 0;
@@ -650,9 +740,13 @@ export function TasksClient({
             statusFilter={statusFilter}
             priorityFilter={priorityFilter}
             projectFilter={projectFilter}
+            originFilter={originFilter}
+            mine={mine}
             onStatus={setStatusFilter}
             onPriority={setPriorityFilter}
             onProject={setProjectFilter}
+            onOrigin={setOriginFilter}
+            onMine={setMine}
           />
         )}
 
@@ -697,6 +791,8 @@ export function TasksClient({
                     setStatusFilter("");
                     setPriorityFilter("");
                     setProjectFilter("");
+                    setOriginFilter("");
+                    setMine(false);
                   }}
                   className="text-sm text-primary hover:underline"
                 >

@@ -9,7 +9,7 @@
 
 import ExcelJS from "exceljs";
 import { z } from "zod";
-import type { JobType, JobStatus, TaskPriority } from "@prisma/client";
+import type { JobType, JobStatus, TaskPriority, TechTaskState } from "@prisma/client";
 import { isValidColor, toHex, DEFAULT_HEX } from "@/lib/scheduling/colors";
 import { toUtcMidnight } from "@/lib/scheduling/calc";
 
@@ -75,7 +75,7 @@ export const PRIORITY_BY_LABEL: Record<string, TaskPriority> = {
 // name (no technicianId); no endDate (derived from start + duration).
 export const JOBS_COLUMNS = [
   "id", "soNumber", "customer", "title", "scope", "jobType", "jobStatus",
-  "hardware", "priority", "technician", "project", "startDate",
+  "hardware", "priority", "technician", "workGroup", "project", "startDate",
   "durationDays", "tentative",
 ] as const;
 
@@ -127,9 +127,69 @@ export const TechnicianRowSchema = z.object({
 });
 export type TechnicianRow = z.infer<typeof TechnicianRowSchema>;
 
+// Tech-task (dashboard "My tasks") state labels for the Excel round-trip.
+export const TECH_TASK_STATE_BY_LABEL: Record<string, TechTaskState> = {
+  new: "NEW",
+  "to do": "TODO",
+  todo: "TODO",
+  "in progress": "IN_PROGRESS",
+  in_progress: "IN_PROGRESS",
+  hold: "HOLD",
+  done: "DONE",
+};
+
+// Dashboard "My Tasks" sheet — full round-trip. Owner is referenced by
+// username/name/email; completedAt is stamped by the importer on DONE.
+export const TechTaskRowSchema = z.object({
+  id: trimmed,
+  owner: trimmed.refine(nonEmpty("owner is required"), "owner is required"),
+  title: trimmed.refine(nonEmpty("title is required"), "title is required"),
+  priority: z.string().optional().transform((s) => {
+    const n = Number(s);
+    return s && Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+  }),
+  state: z.string().optional().transform((s) =>
+    s ? (TECH_TASK_STATE_BY_LABEL[s.trim().toLowerCase()] ?? "NEW") : "NEW",
+  ) as z.ZodType<TechTaskState>,
+  targetDate: dateField,
+  location: optStr,
+  notes: optStr,
+});
+export type TechTaskSheetRow = z.infer<typeof TechTaskRowSchema>;
+
+// People sheet — now IMPORTABLE: create (blank id) or update (known id) a person
+// with all their settings. Password/login secrets never round-trip; new people
+// get a placeholder password and an admin hands them a set-password link from
+// the People page. Color blank → auto-generated. workGroups is ";"-separated names.
+export const PersonRowSchema = z.object({
+  id: trimmed,
+  username: trimmed, // blank on create → auto-derived from email/name
+  email: optStr,
+  name: trimmed.refine(nonEmpty("name is required"), "name is required"),
+  orgRole: z.string().optional().transform((s) => {
+    const v = (s ?? "").trim().toUpperCase();
+    return v === "ADMIN" || v === "OWNER" ? v : "MEMBER";
+  }) as z.ZodType<"OWNER" | "ADMIN" | "MEMBER">,
+  department: trimmed, // department by name ("" = none)
+  deptRole: z.string().optional().transform((s) =>
+    (s ?? "").trim().toUpperCase() === "MANAGER" ? "MANAGER" : "MEMBER",
+  ) as z.ZodType<"MANAGER" | "MEMBER">,
+  color: z.string().optional().transform((s) => {
+    const v = (s ?? "").trim();
+    return v && isValidColor(v) ? toHex(v) : ""; // "" = keep/auto-generate
+  }),
+  schedulable: boolField(true),
+  archived: boolField(false),
+  workGroups: z.string().optional().transform((s) =>
+    (s ?? "").split(";").map((x) => x.trim()).filter(Boolean),
+  ),
+});
+export type PersonRow = z.infer<typeof PersonRowSchema>;
+
 export const TeamRowSchema = z.object({
   id: trimmed,
   name: trimmed.refine(nonEmpty("name is required"), "name is required"),
+  parent: trimmed, // parent department by name ("" = top level)
 });
 export type TeamRow = z.infer<typeof TeamRowSchema>;
 
@@ -176,6 +236,7 @@ export const JobRowSchema = z.object({
     s ? (PRIORITY_BY_LABEL[s.trim().toLowerCase()] ?? "MEDIUM") : "MEDIUM",
   ) as z.ZodType<TaskPriority>,
   technician: trimmed,
+  workGroup: trimmed, // cross-functional pool by name ("" = none)
   startDate: dateField,
   durationDays: z.string().optional().transform((s) => {
     const n = Number(s);
