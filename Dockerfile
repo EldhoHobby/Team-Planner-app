@@ -6,7 +6,10 @@ WORKDIR /app
 # libc6-compat/openssl for Prisma engines; toolchain for native modules (argon2).
 RUN apk add --no-cache libc6-compat openssl python3 make g++
 COPY package.json package-lock.json* ./
-RUN npm ci
+# npm install (not ci): new deps are added by editing package.json directly on
+# this machine, which has no npm to regenerate the lockfile. install updates the
+# lock inside the build instead of failing on the mismatch.
+RUN npm install --no-audit --no-fund
 
 # 2. Build the app (also generates the Prisma client)
 FROM node:22-alpine AS builder

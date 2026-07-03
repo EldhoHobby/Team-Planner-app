@@ -31,6 +31,7 @@ model Organization {
   techTimeOff TechnicianTimeOff[]
   holidays    Holiday[]
   auditLogs   AuditLog[]
+  emailLogs   EmailIngestLog[]
   timesheets  Timesheet[]
   techTasks   TechTask[]
   managerLinks ManagerLink[]
@@ -613,6 +614,30 @@ model TechTask {
 
   @@index([orgId, ownerId, state])
   @@index([orgId, externalSource, externalId])
+}
+
+// One row per email seen by the ingest poller — feeds the Settings → Email
+// statistics. Retention: rows older than 30 days are pruned on each pass.
+enum EmailIngestOutcome {
+  CREATED // one or more tasks were created
+  SKIPPED // no tag + unknown sender, or already imported
+  ERROR   // message could not be processed
+}
+
+model EmailIngestLog {
+  id         String             @id @default(cuid())
+  orgId      String
+  occurredAt DateTime           @default(now())
+  messageId  String? // RFC Message-ID (dedupe reference)
+  fromAddr   String?
+  subject    String?
+  outcome    EmailIngestOutcome
+  detail     String? // e.g. "task for Charles Fry", or the skip/error reason
+  taskCount  Int                @default(0)
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, occurredAt])
 }
 
 // Change-history trail for jobs, technicians, etc. (what / when / who).

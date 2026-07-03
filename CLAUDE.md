@@ -225,6 +225,15 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   shows while active. Audit logs attribute to the REAL owner with an
   "[acting as X]" suffix (`scope.ctx.realUserId`). Password change is blocked
   while impersonating.
+- **Email → task ingest:** done — polls a designated Gmail inbox over IMAP
+  (`src/lib/email/ingest.ts`, started by `src/instrumentation.ts`; manual
+  admin trigger at `POST /api/email-ingest`). "@username" tags in subject/body
+  create a dashboard TechTask per tagged person (origin MANAGER, notes carry
+  sender + body excerpt); no tag → falls back to the sender when their From
+  address matches a user; Message-ID dedupe via externalSource="email".
+  Config via EMAIL_INGEST_ENABLED / IMAP_* / EMAIL_POLL_SECONDS (Gmail app
+  password; off by default). NOTE: deps stage now runs `npm install` (not
+  `npm ci`) because the dev host has no npm to regenerate the lockfile.
 - **Remote access:** done — Caddy serves localhost + LAN IP + public DuckDNS
   domain with Let's Encrypt.
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog, audit

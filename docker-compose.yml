@@ -45,6 +45,13 @@ services:
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
       SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
       TIMESHEET_TEMPLATE_PATH: ${TIMESHEET_TEMPLATE_PATH:-/app/timesheet-template/Time_Sheet_Template.xlsm}
+      # ── Email → task ingest (Gmail via IMAP; blank = feature off) ──
+      EMAIL_INGEST_ENABLED: ${EMAIL_INGEST_ENABLED:-false}
+      IMAP_HOST: ${IMAP_HOST:-imap.gmail.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-120}
       NODE_ENV: production
     volumes:
       - uploads:/app/uploads          # task attachments, persisted on the host
