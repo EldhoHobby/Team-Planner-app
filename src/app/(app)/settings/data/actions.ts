@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
 import { runImport, resetOrgData } from "@/lib/services/data-io";
+import { writeAudit } from "@/lib/services/audit";
 import { verifyPassword } from "@/lib/auth/password";
 import type { DataIoState, ResetState } from "./types";
 
@@ -39,6 +40,12 @@ export async function applyImportAction(
   if (!buf) return { error: "Re-select the file to apply." };
   try {
     const summary = await runImport(scope, buf, true);
+    await writeAudit(scope, {
+      entity: "data",
+      entityId: "admin-import",
+      action: "imported",
+      summary: `Applied the admin Excel import: ${summary.totalCreated} created, ${summary.totalUpdated} updated.`,
+    });
     return { phase: "applied", summary };
   } catch (e) {
     if (e instanceof ForbiddenError) return { error: e.message };
@@ -65,6 +72,12 @@ export async function resetDatabaseAction(
 
   try {
     await resetOrgData(scope);
+    await writeAudit(scope, {
+      entity: "data",
+      entityId: "reset",
+      action: "reset",
+      summary: "RESET ALL DATA: wiped the organization's planning data back to fresh.",
+    });
     revalidatePath("/", "layout");
     return { done: true };
   } catch (e) {

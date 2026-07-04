@@ -6,6 +6,7 @@ import { requireUser } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/db/client";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { destroyAllSessions, getSessionActor } from "@/lib/auth/session";
+import { writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required"),
@@ -62,6 +63,17 @@ export async function changePasswordAction(
   });
 
   await destroyAllSessions(user.id);
+
+  const orgId = await resolveAuthOrgId(user.id);
+  if (orgId) {
+    await writeAuthAudit(orgId, {
+      actorId: user.id,
+      actorEmail: user.email ?? user.username,
+      action: "password-changed",
+      summary: `${user.name ?? user.username} changed their password.`,
+    });
+  }
+
   revalidatePath("/settings/account");
 
   return { success: true };

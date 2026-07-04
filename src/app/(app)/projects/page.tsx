@@ -2,6 +2,7 @@ import { requireScope } from "@/lib/auth/current-user";
 import { requireAuth } from "@/lib/auth/guard";
 import { listProjects } from "@/lib/services/projects";
 import { prisma } from "@/lib/db/client";
+import { recordPageView } from "@/lib/services/audit";
 import { ProjectsClient } from "./projects-client";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 export default async function ProjectsPage() {
   await requireAuth();
   const { scope } = await requireScope();
+  await recordPageView(scope, "Projects");
 
   const teamWhere = scope.ctx.isOrgAdmin
     ? { orgId: scope.ctx.orgId }

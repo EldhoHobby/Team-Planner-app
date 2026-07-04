@@ -14,6 +14,7 @@ import {
   LOGIN_IP_LIMIT,
   LOGIN_EMAIL_LIMIT,
 } from "@/lib/auth/rate-limit";
+import { writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 import type { LoginState } from "./types";
 
 const LoginSchema = z.object({
@@ -73,11 +74,30 @@ export async function signIn(
     // Count failures only, so normal logins never trip the limit.
     registerFailure(ipKey, WINDOW_MS);
     registerFailure(emailKey, WINDOW_MS);
+    const orgId = await resolveAuthOrgId(user?.id);
+    if (orgId) {
+      await writeAuthAudit(orgId, {
+        actorId: user?.id ?? null,
+        actorEmail: identifier,
+        entityId: user?.id,
+        action: "login-failed",
+        summary: `Failed sign-in for "${identifier}" from ${ip}${user && !user.isActive ? " (account disabled)" : ""}.`,
+      });
+    }
     return { error: "Invalid username or password." };
   }
 
   // Success — reset this account's counter.
   clearRateLimit(emailKey);
   await createSession(user.id);
+  const orgId = await resolveAuthOrgId(user.id);
+  if (orgId) {
+    await writeAuthAudit(orgId, {
+      actorId: user.id,
+      actorEmail: user.email ?? user.username,
+      action: "login",
+      summary: `${user.name ?? user.username} signed in from ${ip}.`,
+    });
+  }
   redirect("/tasks");
 }

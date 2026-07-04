@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, CalendarX, Clock, Database, FolderOpen, LayoutDashboard, ListChecks, Mail, UserRound, Users } from "lucide-react";
+import { CalendarDays, CalendarX, Clock, Database, FolderOpen, LayoutDashboard, ListChecks, Mail, ScrollText, UserRound, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -20,6 +20,7 @@ const NAV = [
   { href: "/settings/holidays", label: "Holidays", icon: CalendarX, adminOnly: true },
   { href: "/settings/data", label: "Data", icon: Database, adminOnly: true },
   { href: "/settings/email", label: "Email", icon: Mail, adminOnly: true },
+  { href: "/settings/audit", label: "Audit", icon: ScrollText, adminOnly: true },
 ] as const;
 
 export function NavSidebar({

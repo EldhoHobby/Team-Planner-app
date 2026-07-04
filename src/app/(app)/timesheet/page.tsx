@@ -7,6 +7,7 @@ import {
   weekEndingFor,
   currentWeekEnding,
 } from "@/lib/services/timesheets";
+import { recordPageView } from "@/lib/services/audit";
 import { TimesheetClient } from "./timesheet-client";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,7 @@ export default async function TimesheetPage({
 }) {
   const user = await requireAuth();
   const { scope } = await requireScope();
+  await recordPageView(scope, "Timesheet");
   const { week } = await searchParams;
 
   let weekEnding = currentWeekEnding();

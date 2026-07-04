@@ -18,6 +18,10 @@
 # local uploads (dev only; in prod this is a Docker volume)
 /uploads
 
+# database backups (host folder written by the backup sidecar)
+/backups/*.dump
+/backups/*.dump.part
+
 # misc
 .DS_Store
 *.pem

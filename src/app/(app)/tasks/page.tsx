@@ -3,6 +3,7 @@ import { requireScope } from "@/lib/auth/current-user";
 import { listTasks } from "@/lib/services/tasks";
 import { listProjects } from "@/lib/services/projects";
 import { prisma } from "@/lib/db/client";
+import { recordPageView } from "@/lib/services/audit";
 import { TasksClient } from "./tasks-client";
 import type { TaskRow, ProjectOption, TeamMember } from "./types";
 
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
 export default async function TasksPage() {
   const user = await requireAuth();
   const { scope } = await requireScope();
+  await recordPageView(scope, "Tasks");
 
   const teamWhere = scope.ctx.isOrgAdmin
     ? { orgId: scope.ctx.orgId }

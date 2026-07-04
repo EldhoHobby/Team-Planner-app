@@ -138,11 +138,21 @@ export async function updateTask(
     },
     include: TASK_INCLUDE,
   });
+  // Call out what changed where it matters for the audit trail: assignment
+  // and status changes get explicit summaries instead of a generic "updated".
+  const parts: string[] = [];
+  if (data.assigneeIds !== undefined) {
+    const names = task.assignments.map((a) => a.user.name ?? a.user.username).join(", ");
+    parts.push(names ? `assigned to ${names}` : "unassigned");
+  }
+  if (data.status !== undefined && data.status !== existing.status) {
+    parts.push(`status → ${data.status.toLowerCase().replace(/_/g, " ")}`);
+  }
   await writeAudit(scope, {
     entity: "task",
     entityId: id,
     action: "updated",
-    summary: `Updated task "${task.title}"`,
+    summary: `Updated task "${task.title}"${parts.length ? ` — ${parts.join("; ")}` : ""}`,
   });
   return task;
 }

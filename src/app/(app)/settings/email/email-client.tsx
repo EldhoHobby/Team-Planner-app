@@ -41,12 +41,14 @@ export function EmailClient({
   configured,
   mailbox,
   pollSeconds,
+  ai,
   stats,
   rows,
 }: {
   configured: boolean;
   mailbox: string | null;
   pollSeconds: number;
+  ai: { enabled: boolean; model: string };
   stats: StatBlock;
   rows: LogRow[];
 }) {
@@ -117,6 +119,23 @@ export function EmailClient({
             2. Each message&apos;s subject and body are scanned for <span className="font-medium text-foreground">@username</span> tags
             (e.g. <code className="rounded bg-muted px-1">@charles.fry</code> — usernames are shown on Settings → People). Every tagged
             person gets a dashboard task: title = the subject (tags removed), notes = sender + body excerpt, origin = &quot;Assigned&quot;.
+          </p>
+          <p>
+            {ai.enabled ? (
+              <>
+                2b. <span className="font-medium text-foreground">AI summarizer is ON</span> (local model{" "}
+                <code className="rounded bg-muted px-1">{ai.model}</code>, runs on this server — nothing leaves your network).
+                It rewrites the task with an action-oriented title and a short summary, and fills in the target date and
+                priority when the email states them. If the model is unavailable, the raw subject/excerpt is used instead
+                (the history detail says which).
+              </>
+            ) : (
+              <>
+                2b. <span className="font-medium text-foreground">AI summarizer is OFF</span> — set{" "}
+                <code className="rounded bg-muted px-1">EMAIL_AI_ENABLED=true</code> in .env to have a local model
+                (Ollama, on this server) write the task title/summary and extract target date + priority.
+              </>
+            )}
           </p>
           <p>
             3. If there&apos;s no tag, the task is assigned to the <span className="font-medium text-foreground">sender</span> — when their

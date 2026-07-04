@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/client";
 import { hashPassword } from "./password";
 import { generateToken, hashToken } from "./tokens";
 import { ForbiddenError } from "./current-user";
+import { writeAudit, writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 import type { TenantScope } from "@/lib/db/scope";
 
 const RESET_TTL_HOURS = 24;
@@ -44,6 +45,17 @@ export async function createAdminResetLink(
     },
   });
 
+  const target = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { name: true, username: true },
+  });
+  await writeAudit(scope, {
+    entity: "auth",
+    entityId: targetUserId,
+    action: "reset-link-created",
+    summary: `Issued a password reset link for ${target?.name ?? target?.username ?? targetUserId}.`,
+  });
+
   return { token, link: resetLink(token) };
 }
 
@@ -74,6 +86,21 @@ export async function resetPassword(
       data: { usedAt: new Date() },
     });
     await tx.session.deleteMany({ where: { userId: rec.userId } });
+    return rec.userId;
+  }).then(async (userId) => {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, username: true, email: true },
+    });
+    const orgId = await resolveAuthOrgId(userId);
+    if (user && orgId) {
+      await writeAuthAudit(orgId, {
+        actorId: user.id,
+        actorEmail: user.email ?? user.username,
+        action: "reset-completed",
+        summary: `${user.name ?? user.username} set a new password via a reset link.`,
+      });
+    }
   });
 }
 

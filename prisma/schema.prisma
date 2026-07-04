@@ -614,6 +614,10 @@ model TechTask {
 
   @@index([orgId, ownerId, state])
   @@index([orgId, externalSource, externalId])
+  // Dedupe backstop for email ingest (and future sync connectors): one task per
+  // person per external item, enforced even across concurrent ingest passes.
+  // Rows with NULL externalId are exempt (Postgres treats NULLs as distinct).
+  @@unique([orgId, ownerId, externalSource, externalId])
 }
 
 // One row per email seen by the ingest poller — feeds the Settings → Email
@@ -655,6 +659,7 @@ model AuditLog {
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([orgId, entity, entityId])
+  @@index([orgId, createdAt]) // audit page: newest-first browsing + retention prune
 }
 
 // Metadata in Postgres; bytes on the local uploads volume. Downloads are

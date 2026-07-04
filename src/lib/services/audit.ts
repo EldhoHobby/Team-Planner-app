@@ -78,3 +78,70 @@ export function listAudit(scope: TenantScope, entity: string, entityId: string) 
     take: 100,
   });
 }
+
+/**
+ * Audit writer for pre-scope contexts (login/logout/reset run before a
+ * TenantScope exists). Same best-effort contract as writeAudit.
+ */
+export async function writeAuthAudit(
+  orgId: string,
+  entry: { actorId?: string | null; actorEmail?: string | null; entityId?: string; action: string; summary: string },
+): Promise<void> {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        orgId,
+        actorId: entry.actorId ?? null,
+        actorEmail: entry.actorEmail ?? null,
+        entity: "auth",
+        entityId: entry.entityId ?? entry.actorId ?? "unknown",
+        action: entry.action,
+        summary: entry.summary.slice(0, 500),
+      },
+    });
+  } catch {
+    /* never let logging break auth */
+  }
+}
+
+/**
+ * Resolve the org to attribute an auth event to: the user's first membership,
+ * falling back to the first org (single-org deployment — same assumption as
+ * email ingest) for unknown identifiers. Null only when no org exists yet.
+ */
+export async function resolveAuthOrgId(userId?: string | null): Promise<string | null> {
+  try {
+    if (userId) {
+      const m = await prisma.membership.findFirst({ where: { userId }, select: { orgId: true } });
+      if (m) return m.orgId;
+    }
+    const org = await prisma.organization.findFirst({ select: { id: true } });
+    return org?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Section-open tracking. Coalesced per person+section: revisits within the
+ * window update the existing row's timestamp instead of flooding the log.
+ */
+export function recordPageView(scope: TenantScope, section: string): Promise<void> {
+  return writeAudit(
+    scope,
+    { entity: "page", entityId: section.toLowerCase(), action: "viewed", summary: `Opened ${section}` },
+    { coalesceMs: 15 * 60 * 1000 },
+  );
+}
+
+export const AUDIT_RETENTION_DAYS = 30;
+
+/** Delete audit entries older than the retention window (all orgs). Best-effort. */
+export async function pruneAuditLog(): Promise<void> {
+  try {
+    const cutoff = new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    await prisma.auditLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  } catch {
+    /* ignore — next run retries */
+  }
+}

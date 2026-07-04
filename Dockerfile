@@ -19,6 +19,9 @@ RUN apk add --no-cache libc6-compat openssl git
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
+# Unit tests gate the build: a failing test fails `docker compose build`.
+# (The dev host has no npm — this is where tests run.)
+RUN npm run test
 # Stamp the version, build date (MM/DD/YYYY), and Git hash into the bundle.
 # Next.js inlines NEXT_PUBLIC_* at build, so the values are frozen.
 RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%m/%d/%Y)" \
@@ -28,20 +31,18 @@ RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%m/%d/%Y)" \
 
 # 3. Migrator image — keeps the FULL node_modules so the Prisma CLI (and all of
 #    its transitive deps) work. Used by the one-shot `migrate` compose service to
-#    run `prisma db push` before the app starts. Kept separate so the app image
-#    stays slim.
+#    apply versioned migrations before the app starts. Kept separate so the app
+#    image stays slim.
 FROM node:22-alpine AS migrator
 WORKDIR /app
 RUN apk add --no-cache libc6-compat openssl
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package.json ./package.json
-# Sync schema -> database. `--accept-data-loss` is required by `db push` to apply
-# schema changes non-interactively (dev workflow). Swap to `migrate deploy` once
-# versioned migrations are committed — that removes this flag and adds review.
-# Pre-push SQL backfills User.username on existing databases (idempotent), then
-# db push syncs the schema.
-CMD ["sh", "-c", "npx prisma db execute --file prisma/pre-push.sql --schema prisma/schema.prisma && npx prisma db push --skip-generate --accept-data-loss"]
+# Versioned schema sync: pre-push.sql data fixes → baseline old db-push
+# databases once → `prisma migrate deploy` (reviewed SQL in prisma/migrations/;
+# no --accept-data-loss). See prisma/migrate.sh.
+CMD ["sh", "prisma/migrate.sh"]
 
 # 4. Runtime image — slim standalone server. No Prisma CLI here; the migrator
 #    service owns schema sync. Only the generated client + query engine are

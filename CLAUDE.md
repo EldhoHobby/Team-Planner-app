@@ -103,6 +103,7 @@ src/lib/auth/                      # password, tokens, session (+ "view as" acto
 src/lib/users.ts                   # displayHandle() + username helpers (pure, client-safe)
 src/lib/invitations/               # invitation service
 src/lib/email/ingest.ts            # Gmail IMAP → dashboard-task poller (+ 30-day stats log)
+src/lib/email/summarize.ts         # local AI (Ollama) email → task title/summary/date/priority
 src/instrumentation.ts             # server boot hook — starts the email poller
 src/lib/services/                  # business logic — tasks, tech-tasks (dashboard),
                                    #   projects, people, work-groups, field-service (jobs),
@@ -161,9 +162,15 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
 
 ## Gotchas (learned the hard way)
 
-- **Schema changes:** edit `prisma/schema.prisma`, then rebuild — the `migrate`
-  service applies them via `db push`. The `--accept-data-loss` flag is required
-  for non-interactive `db push`; safe while tables are empty/dev.
+- **Schema changes (versioned migrations):** edit `prisma/schema.prisma`, then
+  GENERATE A MIGRATION (the host has no npm — use the migrate image):
+  `docker compose run --rm --no-deps --entrypoint sh migrate -c "npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --script" > prisma/migrations/<YYYYMMDDHHMMSS>_<name>/migration.sql`
+  (create the folder first; run via Git Bash so the redirect writes UTF-8, and
+  note the image bakes in `prisma/` at build time — rebuild `migrate` first if
+  the schema changed since the last build). Then rebuild: the `migrate` service
+  runs `prisma/migrate.sh` → pre-push.sql fixes → one-time baseline of old
+  `db push` databases (`migrate resolve --applied 0_init`) → `migrate deploy`.
+  NEVER hand-edit an applied migration; add a new one.
 - **Prisma + standalone:** the slim runtime image can't run the Prisma CLI (missing
   deps). Schema sync runs in the separate `migrate` image (full `node_modules`),
   NOT in the app entrypoint. Keep it that way.
@@ -226,6 +233,23 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   (`data-io.ts`), upsert-by-id with change detection + preview.
 - **Observability & Build:** done — comprehensive **audit logging** for all
   domain mutations; automated application **versioning** (Git hash + date).
+- **Admin audit trail (30-day):** done — EVERYTHING a user does is audited:
+  domain mutations (via `writeAudit`), auth events (login / failed login with
+  IP / logout / password change / reset link issued+used / invitation
+  created+revoked+accepted / view-as start+stop, via `writeAuthAudit` +
+  `resolveAuthOrgId` in `src/lib/services/audit.ts` — pre-scope contexts),
+  Excel exports/imports + timesheet generation + admin data RESET + manual
+  email checks, dashboard TechTask CRUD (updates coalesce 5 min; state changes
+  logged explicitly), and explicit assignee/status change summaries on generic
+  tasks. Admin-only viewer at **`/settings/audit`** (nav "Audit"): 30-day
+  stats, person/area/action/date filters + debounced text search (URL
+  params → server refetch), 200-row table, LIVE auto-refresh
+  (router.refresh every 10 s while the tab is visible) and an admin
+  "Clear log" button (inline confirm; the wipe itself is logged as the
+  first entry of the fresh log — `clearAuditLogAction` in
+  `settings/audit/actions.ts`). Retention: `pruneAuditLog()`
+  (30 days) runs daily via `src/instrumentation.ts` + on every audit page
+  visit. New index `@@index([orgId, createdAt])` on AuditLog.
 - **View as (impersonation):** done — OWNER-only testing tool. Sidebar dropdown
   (`ViewAsPicker` in `src/components/view-as.tsx`, actions in
   `src/lib/auth/view-as-actions.ts`) sets `Session.actingAsUserId`;
@@ -239,19 +263,48 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   admin trigger at `POST /api/email-ingest`). "@username" tags in subject/body
   create a dashboard TechTask per tagged person (origin MANAGER, notes carry
   sender + body excerpt); no tag → falls back to the sender when their From
-  address matches a user; Message-ID dedupe via externalSource="email".
+  address matches a user; Message-ID dedupe via externalSource="email" —
+  per-owner, backstopped by a DB unique constraint (orgId, ownerId,
+  externalSource, externalId) + a per-process single-pass guard; IMAP ops run
+  in UID mode; failed messages are marked \Seen (attempted once, error kept in
+  the history) — `prisma/pre-push.sql` de-dupes legacy rows before db push.
   Config via EMAIL_INGEST_ENABLED / IMAP_* / EMAIL_POLL_SECONDS (Gmail app
   password; off by default). NOTE: deps stage now runs `npm install` (not
   `npm ci`) because the dev host has no npm to regenerate the lockfile.
+- **Local AI email summarizer:** done — optional, fully on-prem. An `ollama`
+  service (+ one-shot `ollama-init` model pull, gated on the flag) runs on the
+  internal Compose network; `src/lib/email/summarize.ts` calls it with a JSON
+  schema (structured output) to produce an action title, 2–4 sentence summary,
+  and optional target date + priority (today's date is passed so "by Friday"
+  resolves). Ingest uses the AI draft when available and falls back to the raw
+  subject/excerpt on ANY failure (null contract); the EmailIngestLog detail
+  records which path ran. Config: EMAIL_AI_ENABLED / EMAIL_AI_MODEL
+  (default qwen2.5:3b-instruct, ~2 GB, CPU-friendly) / OLLAMA_URL. Settings →
+  Email shows the AI status in "how it works".
 - **Remote access:** done — Caddy serves localhost + LAN IP + public DuckDNS
   domain with Let's Encrypt.
-- **Next ideas:** recurring jobs, project-linking in the New Job dialog, audit
-  logging, unit tests for the scheduling math.
+- **Kanban board:** done — the dashboard has a List | Board toggle (persisted
+  in localStorage as `dashboard.view`). Board = one column per TechTask state,
+  cards for all visible people (owner chip, priority, target-date cues), native
+  HTML5 drag-and-drop between columns with optimistic state moves
+  (`src/app/(app)/dashboard/kanban-board.tsx`); DONE column shows the last
+  7 days only. Jobs remain list/pool-only.
+- **Production hardening:** done — (1) **versioned migrations**: baseline
+  `prisma/migrations/0_init` + `migration_lock.toml`; `prisma/migrate.sh`
+  (pre-push.sql → auto-baseline old db-push DBs via `migrate-state.js` →
+  `migrate deploy`) is the migrate image CMD — see the schema-change gotcha
+  above. (2) **Unit tests**: vitest suites for `scheduling/calc`,
+  `scheduling/colors`, `users` run in the Docker builder stage
+  (`RUN npm run test`) so a failing test fails the build. (3) **Backups**:
+  `backup` compose sidecar dumps `pg_dump -Fc` to `./backups` at startup +
+  every 24 h, prunes after `BACKUP_KEEP_DAYS` (14); restore one-liner is
+  documented in README (the db container also mounts ./backups read-only).
+- **Next ideas:** recurring jobs, project-linking in the New Job dialog,
+  daily agenda email, AI scheduling suggestions, reports page, customers
+  directory.
 
 ## TODO before production
 
-- Switch schema sync from `db push` to versioned **`prisma migrate deploy`** with
-  committed migrations (update the `migrate` image CMD).
 - Consider Postgres Row-Level Security as defense-in-depth on top of `TenantScope`.
-- Audit logging; if exposing publicly, harden further (the in-memory rate limiter
-  resets per-process — a multi-instance deploy needs a shared store).
+- If exposing publicly, harden further (the in-memory rate limiter resets
+  per-process — a multi-instance deploy needs a shared store).

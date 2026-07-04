@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireScope, ForbiddenError, UnauthorizedError } from "@/lib/auth/current-user";
 import { ingestOnce, emailIngestEnabled } from "@/lib/email/ingest";
+import { writeAudit } from "@/lib/services/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,12 @@ export async function POST() {
       );
     }
     const result = await ingestOnce();
+    await writeAudit(scope, {
+      entity: "email",
+      entityId: "inbox",
+      action: "check-now",
+      summary: `Triggered "Check mail now": ${result.processed} processed, ${result.created} task(s) created.`,
+    });
     return NextResponse.json(result);
   } catch (e) {
     if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

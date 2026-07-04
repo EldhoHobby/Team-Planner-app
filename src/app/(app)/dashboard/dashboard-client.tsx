@@ -3,7 +3,8 @@
 import { useEffect, useState, useTransition, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Plus, X, Trash2, ChevronDown, ChevronRight, CalendarClock, AlertTriangle } from "lucide-react";
+import { Plus, X, Trash2, ChevronDown, ChevronRight, CalendarClock, AlertTriangle, List, LayoutGrid } from "lucide-react";
+import { KanbanBoard } from "./kanban-board";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,15 +25,15 @@ import type {
   TaskOrigin,
 } from "@/lib/services/tech-tasks";
 
-const STATES: TechTaskState[] = ["NEW", "TODO", "IN_PROGRESS", "HOLD", "DONE"];
-const STATE_LABELS: Record<TechTaskState, string> = {
+export const STATES: TechTaskState[] = ["NEW", "TODO", "IN_PROGRESS", "HOLD", "DONE"];
+export const STATE_LABELS: Record<TechTaskState, string> = {
   NEW: "New",
   TODO: "To Do",
   IN_PROGRESS: "In Progress",
   HOLD: "Hold",
   DONE: "Done",
 };
-const STATE_COLORS: Record<TechTaskState, string> = {
+export const STATE_COLORS: Record<TechTaskState, string> = {
   NEW: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
   TODO: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
   IN_PROGRESS: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300",
@@ -48,7 +49,7 @@ const STATE_ROW_TINT: Record<TechTaskState, string> = {
   DONE: "bg-green-50/60 dark:bg-green-950/30",
 };
 
-const ORIGIN_LABELS: Record<TaskOrigin, string> = {
+export const ORIGIN_LABELS: Record<TaskOrigin, string> = {
   SELF: "Self",
   MANAGER: "Assigned",
   OUTLOOK: "Outlook",
@@ -75,9 +76,9 @@ function fmtDate(iso: string | null): string {
   });
 }
 
-type DueStatus = "overdue" | "soon" | "none";
+export type DueStatus = "overdue" | "soon" | "none";
 /** Compare calendar days: overdue if target < today, "soon" if within 2 days. */
-function dueStatus(targetIso: string | null, state: TechTaskState): DueStatus {
+export function dueStatus(targetIso: string | null, state: TechTaskState): DueStatus {
   if (!targetIso || state === "DONE") return "none";
   const now = new Date();
   const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
@@ -164,6 +165,19 @@ export function DashboardClient({
   const [createOpen, setCreateOpen] = useState(false);
   const [createOwner, setCreateOwner] = useState(currentUserId);
 
+  // List | Board view, remembered per browser (restored after mount so the
+  // server-rendered HTML matches the first client render — no hydration mismatch).
+  const [view, setView] = useState<"list" | "board">("list");
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("dashboard.view") === "board") setView("board");
+    } catch { /* ignore */ }
+  }, []);
+  const switchView = (v: "list" | "board") => {
+    setView(v);
+    try { localStorage.setItem("dashboard.view", v); } catch { /* ignore */ }
+  };
+
   const refresh = () => router.refresh();
   const openNew = (ownerId: string) => {
     setCreateOwner(ownerId);
@@ -190,6 +204,27 @@ export function DashboardClient({
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* List | Board toggle */}
+          <div className="flex overflow-hidden rounded-md border">
+            <button
+              onClick={() => switchView("list")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${
+                view === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+              }`}
+              title="List view"
+            >
+              <List className="h-3.5 w-3.5" /> List
+            </button>
+            <button
+              onClick={() => switchView("board")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${
+                view === "board" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+              }`}
+              title="Board view"
+            >
+              <LayoutGrid className="h-3.5 w-3.5" /> Board
+            </button>
+          </div>
           {overdueCount > 0 ? (
             <button
               onClick={() => scrollToDue("overdue")}
@@ -208,15 +243,17 @@ export function DashboardClient({
               <CalendarClock className="h-3.5 w-3.5" /> {soonCount} due soon
             </button>
           ) : null}
-          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={showDone}
-              onChange={(e) => setShowDone(e.target.checked)}
-              className="h-3.5 w-3.5 accent-primary"
-            />
-            Show completed
-          </label>
+          {view === "list" ? (
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={showDone}
+                onChange={(e) => setShowDone(e.target.checked)}
+                className="h-3.5 w-3.5 accent-primary"
+              />
+              Show completed
+            </label>
+          ) : null}
           <Button size="sm" onClick={() => openNew(currentUserId)}>
             <Plus className="mr-1.5 h-4 w-4" />
             New item
@@ -224,9 +261,13 @@ export function DashboardClient({
         </div>
       </div>
 
-      {data.groups.map((g) => (
-        <OwnerSection key={g.owner.id} group={g} showDone={showDone} onAdd={openNew} refresh={refresh} />
-      ))}
+      {view === "board" ? (
+        <KanbanBoard groups={data.groups} />
+      ) : (
+        data.groups.map((g) => (
+          <OwnerSection key={g.owner.id} group={g} showDone={showDone} onAdd={openNew} refresh={refresh} />
+        ))
+      )}
 
       {/* Extra breathing room so the shared pool reads as separate from people. */}
       <div className="pt-6">

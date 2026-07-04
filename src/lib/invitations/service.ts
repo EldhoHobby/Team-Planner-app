@@ -5,6 +5,7 @@ import { generateToken, hashToken } from "@/lib/auth/tokens";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { uniqueUsername } from "@/lib/auth/username";
+import { writeAudit, writeAuthAudit } from "@/lib/services/audit";
 
 const INVITE_TTL_DAYS = 7;
 const INVITE_TTL_MS = INVITE_TTL_DAYS * 24 * 60 * 60 * 1000;
@@ -75,6 +76,13 @@ export async function createInvitation(
     },
   });
 
+  await writeAudit(scope, {
+    entity: "invitation",
+    entityId: email,
+    action: "created",
+    summary: `Invited ${email} (${input.orgRole.toLowerCase()}).`,
+  });
+
   return { token, link: inviteLink(token) };
 }
 
@@ -93,10 +101,22 @@ export async function revokeInvitation(
   invitationId: string,
 ): Promise<void> {
   await assertCanInvite(scope); // org admins; managers handled per-team elsewhere
+  const invite = await prisma.invitation.findFirst({
+    where: { id: invitationId, orgId: scope.ctx.orgId, status: "PENDING" },
+    select: { email: true },
+  });
   await prisma.invitation.updateMany({
     where: { id: invitationId, orgId: scope.ctx.orgId, status: "PENDING" },
     data: { status: "REVOKED" },
   });
+  if (invite) {
+    await writeAudit(scope, {
+      entity: "invitation",
+      entityId: invite.email,
+      action: "revoked",
+      summary: `Revoked the invitation for ${invite.email}.`,
+    });
+  }
 }
 
 /**
@@ -146,6 +166,14 @@ export async function acceptInvitation(
       data: { status: "ACCEPTED" },
     });
 
+    return { user, orgId: invite.orgId };
+  }).then(async ({ user, orgId }) => {
+    await writeAuthAudit(orgId, {
+      actorId: user.id,
+      actorEmail: user.email ?? user.username,
+      action: "invite-accepted",
+      summary: `${user.name ?? user.username} accepted their invitation and created an account.`,
+    });
     return user;
   });
 }

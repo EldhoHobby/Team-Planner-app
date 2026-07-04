@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
+import { writeAudit } from "@/lib/services/audit";
 import type { TechTaskState, TaskOrigin, JobType, JobStatus } from "@prisma/client";
 
 export type { TechTaskState, TaskOrigin };
@@ -286,7 +287,7 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
   await assertCanManageOwner(scope, input.ownerId);
   const isSelf = input.ownerId === scope.ctx.userId;
   const state = input.state ?? "NEW";
-  return prisma.techTask.create({
+  const task = await prisma.techTask.create({
     data: {
       orgId: scope.ctx.orgId,
       ownerId: input.ownerId,
@@ -302,6 +303,16 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
       location: input.location?.trim() || null,
     },
   });
+  const owner = isSelf
+    ? null
+    : await prisma.user.findUnique({ where: { id: input.ownerId }, select: { name: true, username: true } });
+  await writeAudit(scope, {
+    entity: "techtask",
+    entityId: task.id,
+    action: "created",
+    summary: `Added dashboard task "${task.title}"${owner ? ` for ${owner.name ?? owner.username}` : ""}`,
+  });
+  return task;
 }
 
 export async function updateTechTask(scope: TenantScope, id: string, input: UpdateTechTaskInput) {
@@ -317,7 +328,7 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
     else if (existing.state === "DONE") completedAt = null;
   }
 
-  return prisma.techTask.update({
+  const task = await prisma.techTask.update({
     where: { id },
     data: {
       ...(input.title !== undefined ? { title: input.title.trim() } : {}),
@@ -331,6 +342,19 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
       ...(stateChanged && existing.externalId ? { syncDirty: true } : {}),
     },
   });
+  // Inline cells auto-save on blur — coalesce rapid edits into one entry, but
+  // call out state changes explicitly (they matter for the trail).
+  await writeAudit(
+    scope,
+    {
+      entity: "techtask",
+      entityId: id,
+      action: "updated",
+      summary: `Updated dashboard task "${task.title}"${stateChanged ? ` — state → ${task.state.toLowerCase().replace(/_/g, " ")}` : ""}`,
+    },
+    { coalesceMs: stateChanged ? 0 : 5 * 60 * 1000 },
+  );
+  return task;
 }
 
 /** Quick state change (e.g. mark Done from the dashboard). */
@@ -343,6 +367,12 @@ export async function deleteTechTask(scope: TenantScope, id: string): Promise<vo
   if (!existing) throw new ForbiddenError("Task not found");
   await assertCanManageOwner(scope, existing.ownerId);
   await prisma.techTask.delete({ where: { id } });
+  await writeAudit(scope, {
+    entity: "techtask",
+    entityId: id,
+    action: "deleted",
+    summary: `Deleted dashboard task "${existing.title}"`,
+  });
 }
 
 // Reporting lines now live in People settings (department managers + ManagerLink

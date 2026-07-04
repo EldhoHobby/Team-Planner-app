@@ -1,10 +1,14 @@
 import { requireAuth } from "@/lib/auth/guard";
+import { requireScope } from "@/lib/auth/current-user";
+import { recordPageView } from "@/lib/services/audit";
 import { AccountClient } from "./account-client";
 
 export const dynamic = "force-dynamic";
 
 export default async function AccountPage() {
   const user = await requireAuth();
+  const { scope } = await requireScope();
+  await recordPageView(scope, "Account");
 
   return (
     <main className="mx-auto max-w-2xl p-6">

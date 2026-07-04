@@ -8,6 +8,7 @@ import {
 } from "@/lib/services/field-service";
 import { listTechTimeOff } from "@/lib/services/technicians";
 import { listHolidays } from "@/lib/services/holidays";
+import { recordPageView } from "@/lib/services/audit";
 import { ScheduleClient } from "./schedule-client";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 
@@ -56,6 +57,7 @@ export default async function SchedulePage({
 }) {
   await requireAuth();
   const { user, scope } = await requireScope();
+  await recordPageView(scope, "Schedule");
   const params = await searchParams;
 
   // Optionally seed a demo crew on first visit (opt-in via SEED_DEFAULT_TECHNICIANS;

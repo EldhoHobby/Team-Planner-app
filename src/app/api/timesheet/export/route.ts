@@ -1,5 +1,6 @@
 import { requireScope } from "@/lib/auth/current-user";
 import { generateTimesheetXlsx, weekEndingFor, currentWeekEnding } from "@/lib/services/timesheets";
+import { writeAudit } from "@/lib/services/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,12 @@ export async function GET(req: Request) {
 
   try {
     const { buffer, filename } = await generateTimesheetXlsx(scope, weekEnding);
+    await writeAudit(scope, {
+      entity: "data",
+      entityId: "timesheet-export",
+      action: "exported",
+      summary: `Generated the timesheet for week ending ${weekEnding.toISOString().slice(0, 10)}.`,
+    });
     return new Response(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

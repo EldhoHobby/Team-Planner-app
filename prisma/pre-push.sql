@@ -30,3 +30,23 @@ BEGIN
     WHERE u.id = base.id;
   END IF;
 END $$;
+
+-- 2. Remove duplicate email-ingest tasks (created by the old race-prone dedupe)
+--    so db push can apply the UNIQUE(orgId, ownerId, externalSource, externalId)
+--    constraint on TechTask. Keeps the oldest row of each duplicate group.
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'TechTask') THEN
+    DELETE FROM "TechTask" t
+    USING "TechTask" keep
+    WHERE t."orgId" = keep."orgId"
+      AND t."ownerId" = keep."ownerId"
+      AND t."externalSource" = keep."externalSource"
+      AND t."externalId" = keep."externalId"
+      AND t."externalId" IS NOT NULL
+      AND t."externalSource" IS NOT NULL
+      AND (t."createdAt" > keep."createdAt"
+           OR (t."createdAt" = keep."createdAt" AND t.id > keep.id));
+  END IF;
+END $$;

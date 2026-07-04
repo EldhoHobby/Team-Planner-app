@@ -8,6 +8,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db/client";
 import { getSessionActor, setSessionActingAs } from "./session";
+import { writeAuthAudit } from "@/lib/services/audit";
 
 type Result = { error?: string; success?: boolean };
 
@@ -36,10 +37,17 @@ export async function startViewAs(input: { userId: string }): Promise<Result> {
       archived: false,
       memberships: { some: { orgId: auth.orgId } },
     },
-    select: { id: true },
+    select: { id: true, name: true, username: true },
   });
   if (!target) return { error: "That person is not available to view as." };
   await setSessionActingAs(target.id);
+  const owner = auth.actor.realUser;
+  await writeAuthAudit(auth.orgId, {
+    actorId: owner.id,
+    actorEmail: owner.email ?? owner.username,
+    action: "view-as-started",
+    summary: `${owner.name ?? owner.username} started viewing as ${target.name ?? target.username}.`,
+  });
   revalidatePath("/", "layout");
   return { success: true };
 }
@@ -47,7 +55,17 @@ export async function startViewAs(input: { userId: string }): Promise<Result> {
 export async function stopViewAs(): Promise<Result> {
   const auth = await requireRealOwner();
   if (!auth) return { error: "Only the owner can use View as." };
+  const wasImpersonating = auth.actor.impersonating;
   await setSessionActingAs(null);
+  if (wasImpersonating) {
+    const owner = auth.actor.realUser;
+    await writeAuthAudit(auth.orgId, {
+      actorId: owner.id,
+      actorEmail: owner.email ?? owner.username,
+      action: "view-as-stopped",
+      summary: `${owner.name ?? owner.username} stopped viewing as ${auth.actor.user.name ?? auth.actor.user.username}.`,
+    });
+  }
   revalidatePath("/", "layout");
   return { success: true };
 }

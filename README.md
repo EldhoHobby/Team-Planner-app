@@ -45,8 +45,24 @@ quick brief + conventions.
   inbox (IMAP + app password); "@username" tags in an email create dashboard
   tasks. Admin page has a Check-mail-now button, 30-day statistics and
   per-email history. Configure via `EMAIL_INGEST_ENABLED` / `IMAP_*` in `.env`.
+- **Local AI summarizer** (optional) — with `EMAIL_AI_ENABLED=true`, a local
+  Ollama model (bundled `ollama` container, default `qwen2.5:3b-instruct`,
+  ~2 GB one-time download, runs on CPU) rewrites each ingested email into an
+  action-oriented task title + summary and extracts the target date/priority
+  when stated. Fully on-prem — no cloud calls, no cost; if the model is down,
+  ingest falls back to the raw subject/excerpt.
 - **View as** — OWNER-only sidebar dropdown to render and use the whole app as
   any person (testing tool); audit logs still record the real actor.
+- **Kanban board** — a List | Board toggle on the dashboard; drag task cards
+  between state columns (New / To Do / In Progress / Hold / Done).
+- **Automatic backups** — a sidecar dumps the database to `./backups` at
+  startup and nightly, keeping `BACKUP_KEEP_DAYS` (default 14) days. Restore:
+  `docker compose exec db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump`
+- **Audit trail** (`/settings/audit`) — admin-only history of everything done
+  in the app for the last 30 days: sign-ins/outs, failed login attempts,
+  every data change, imports/exports, and View-as sessions. Filter by person,
+  area, action and date, or text-search the descriptions. Entries older than
+  30 days are deleted automatically.
 - **Auth & Account** — first-run setup wizard, username (or email) login,
   route guard, **rate-limiting** on login + reset, and **Account Settings**
   (password change). Admin-only pages are hidden from non-admin navigation.

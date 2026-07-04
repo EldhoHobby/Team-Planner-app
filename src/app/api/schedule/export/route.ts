@@ -1,5 +1,6 @@
 import { requireScope } from "@/lib/auth/current-user";
 import { buildJobsWorkbook } from "@/lib/services/data-io";
+import { writeAudit } from "@/lib/services/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,12 @@ export async function GET() {
   try {
     const { scope } = await requireScope();
     const data = await buildJobsWorkbook(scope);
+    await writeAudit(scope, {
+      entity: "data",
+      entityId: "schedule-export",
+      action: "exported",
+      summary: "Downloaded the schedule (Jobs) Excel export.",
+    });
     const date = new Date().toISOString().slice(0, 10);
     return new Response(Buffer.from(data as ArrayBuffer), {
       headers: {

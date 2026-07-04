@@ -13,7 +13,7 @@ import {
   deleteJob,
 } from "@/lib/services/field-service";
 import { runJobsImport } from "@/lib/services/data-io";
-import { listAudit } from "@/lib/services/audit";
+import { listAudit, writeAudit } from "@/lib/services/audit";
 import type { TaskFormState } from "./types";
 import type { JobFormState, ImportState, AuditEntry } from "../schedule/types";
 
@@ -329,6 +329,12 @@ export async function importScheduleXlsxAction(
   try {
     const buf = await (file as File).arrayBuffer();
     const summary = await runJobsImport(scope, buf, true);
+    await writeAudit(scope, {
+      entity: "data",
+      entityId: "schedule-import",
+      action: "imported",
+      summary: `Applied the schedule (Jobs) Excel import: ${summary.totalCreated} created, ${summary.totalUpdated} updated.`,
+    });
     revalidatePath("/schedule");
     const r = summary.results[0];
     const note = r && r.errors.length
