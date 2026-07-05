@@ -99,9 +99,15 @@ Do **not** copy `.env` — create it fresh on the host (secrets shouldn't ride o
    DB_PASSWORD=$dbpw
    SESSION_SECRET=$secret
    APP_URL=https://planner.localhost:8443
+   HTTPS_PORT=8443
    MAX_UPLOAD_MB=10
+   BACKUP_KEEP_DAYS=14
    "@ | Set-Content -Path .\.env -Encoding ascii
    ```
+
+   > `HTTPS_PORT` is the published host port (default 8443 — Windows often
+   > reserves 443 for IIS/HTTP.sys). Email ingest and the AI summarizer need
+   > internet, so leave them unset on this host — they're off by default.
 
    > Keep this `.env` safe — it holds the DB password and session secret. If you ever
    > recreate it with a different `DB_PASSWORD`, the existing database volume won't match
@@ -135,8 +141,16 @@ Do **not** copy `.env` — create it fresh on the host (secrets shouldn't ride o
    docker compose -f docker-compose.offline.yml ps
    ```
 
-   You want `app`, `proxy`, `db` **running** (db "healthy") and `migrate` **exited (0)** —
-   `migrate` is a one-shot that builds the DB schema and stops; that's correct.
+   You want `app`, `proxy`, `db`, `backup` **running** (db "healthy") and `migrate`
+   **exited (0)** — `migrate` is a one-shot that applies the versioned migrations
+   and stops; on a fresh database its log shows `database state = fresh` then
+   applies `0_init`. The `backup` sidecar dumps the database to
+   `C:\TeamPlanner\backups` at startup and every 24 h (create the folder first:
+   `mkdir backups`).
+
+   > **Starting fresh on a host that already ran the app:** wipe the old data
+   > volumes FIRST (this permanently deletes the previous database + uploads):
+   > `docker compose -f docker-compose.offline.yml down -v`, then `up -d`.
 
 6. **Open the firewall** for the published port (Administrator PowerShell):
 
@@ -251,7 +265,11 @@ docker compose -f docker-compose.offline.yml up -d
 > volume survives `docker compose down`; it's only deleted by `docker compose down -v`
 > or removing the volume explicitly — so avoid `-v` unless you intend to wipe.
 
-### Optional: scheduled daily backup
+### Optional: scheduled daily backup (legacy — usually unnecessary now)
+
+> The stack now includes a `backup` sidecar that dumps to `C:\TeamPlanner\backups`
+> automatically every 24 h and prunes old dumps. The scheduled task below is only
+> useful if you want a second, independent schedule.
 
 Save this as `C:\TeamPlanner\backup-db.ps1`:
 

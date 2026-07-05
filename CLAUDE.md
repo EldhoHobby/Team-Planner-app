@@ -182,6 +182,9 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
 - **PowerShell:** the user is on Windows PowerShell 5.1 — chain commands with `;`,
   not `&&`.
 - **`public/` must exist** (has a `.gitkeep`) — the Dockerfile copies it.
+- **Every release: bump `package.json` "version"** — it's manual and shown in
+  the sidebar footer (with the git hash + build date, stamped in US Eastern
+  time via TZ in the Dockerfile). Bump it whenever building a deploy bundle.
 
 ## Status & roadmap
 

@@ -15,16 +15,17 @@ RUN npm install --no-audit --no-fund
 FROM node:22-alpine AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN apk add --no-cache libc6-compat openssl git
+RUN apk add --no-cache libc6-compat openssl git tzdata
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
 # Unit tests gate the build: a failing test fails `docker compose build`.
 # (The dev host has no npm — this is where tests run.)
 RUN npm run test
-# Stamp the version, build date (MM/DD/YYYY), and Git hash into the bundle.
+# Stamp the version, build date (MM/DD/YYYY, US Eastern — matches the user's
+# calendar; UTC rolls past midnight too early), and Git hash into the bundle.
 # Next.js inlines NEXT_PUBLIC_* at build, so the values are frozen.
-RUN NEXT_PUBLIC_BUILD_DATE="$(date -u +%m/%d/%Y)" \
+RUN NEXT_PUBLIC_BUILD_DATE="$(TZ=America/New_York date +%m/%d/%Y)" \
     NEXT_PUBLIC_GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo "dev")" \
     NEXT_PUBLIC_APP_VERSION="v$(npm pkg get version | tr -d '\"')" \
     npm run build

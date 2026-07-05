@@ -15,12 +15,14 @@ services:
     image: caddy:2-alpine
     pull_policy: never
     restart: unless-stopped
-    # Only 443 is published. Port 80 is intentionally NOT mapped to the host —
+    # Only HTTPS is published. Port 80 is intentionally NOT mapped to the host —
     # offline + self-signed TLS doesn't need it (it's only for HTTP→HTTPS
     # redirects / Let's Encrypt), and Windows often has port 80 reserved by
     # HTTP.sys/IIS. Caddy still listens on 80 INSIDE the container, harmlessly.
+    # HTTPS_PORT defaults to 8443 because Windows hosts often reserve 443 too
+    # (set HTTPS_PORT=443 in .env if the host has it free).
     ports:
-      - "443:443"
+      - "${HTTPS_PORT:-8443}:443"
     environment:
       APP_DOMAIN: ${APP_DOMAIN:-planner.localhost}
     volumes:
@@ -58,6 +60,17 @@ services:
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
       SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
       TIMESHEET_TEMPLATE_PATH: ${TIMESHEET_TEMPLATE_PATH:-/app/timesheet-template/Time_Sheet_Template.xlsm}
+      # ── Email → task ingest (needs OUTBOUND internet to imap.gmail.com:993) ──
+      EMAIL_INGEST_ENABLED: ${EMAIL_INGEST_ENABLED:-false}
+      IMAP_HOST: ${IMAP_HOST:-imap.gmail.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-120}
+      # ── Local AI email summarizer (Ollama container below) ──
+      EMAIL_AI_ENABLED: ${EMAIL_AI_ENABLED:-false}
+      EMAIL_AI_MODEL: ${EMAIL_AI_MODEL:-qwen2.5:3b-instruct}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       NODE_ENV: production
     volumes:
       - uploads:/app/uploads
@@ -81,6 +94,7 @@ services:
       POSTGRES_DB: planner
     volumes:
       - db_data:/var/lib/postgresql/data
+      - ./backups:/backups:ro   # so restore is a one-liner inside this container
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U planner -d planner"]
       interval: 5s
@@ -89,11 +103,88 @@ services:
     networks:
       - internal
 
+  # Local LLM runtime for the email→task summarizer. The IMAGE must be loaded
+  # from the USB bundle (pull_policy: never); the MODEL is downloaded once by
+  # ollama-init below, which needs outbound internet (registry.ollama.ai).
+  ollama:
+    image: ollama/ollama
+    pull_policy: never
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - internal
+
+  # One-shot: downloads the summarizer model (only when the feature is on),
+  # then exits. The app does NOT wait for it — AI is optional and lazy.
+  ollama-init:
+    image: ollama/ollama
+    pull_policy: never
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      EMAIL_AI_ENABLED: ${EMAIL_AI_ENABLED:-false}
+      EMAIL_AI_MODEL: ${EMAIL_AI_MODEL:-qwen2.5:3b-instruct}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ "$${EMAIL_AI_ENABLED}" != "true" ]; then
+          echo "EMAIL_AI_ENABLED is not true — skipping model download."
+          exit 0
+        fi
+        echo "Pulling $${EMAIL_AI_MODEL}..."
+        tries=0
+        until ollama pull "$${EMAIL_AI_MODEL}"; do
+          tries=$$((tries+1))
+          if [ "$$tries" -ge 5 ]; then echo "Model pull failed after 5 attempts."; exit 1; fi
+          echo "Ollama not ready yet — retrying in 5s..."
+          sleep 5
+        done
+    depends_on:
+      - ollama
+    networks:
+      - internal
+    restart: "no"
+
+  # Nightly Postgres backups → ./backups on the host (compressed pg_dump format).
+  # Dumps once at startup, then every 24 h; prunes dumps older than
+  # BACKUP_KEEP_DAYS. Restore (into the running db):
+  #   docker compose -f docker-compose.offline.yml exec db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
+  backup:
+    image: postgres:16-alpine
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          ts=$$(date +%Y%m%d-%H%M%S)
+          if pg_dump -Fc -h db -U planner planner > "/backups/planner-$$ts.dump.part"; then
+            mv "/backups/planner-$$ts.dump.part" "/backups/planner-$$ts.dump"
+            echo "backup: wrote planner-$$ts.dump"
+          else
+            rm -f "/backups/planner-$$ts.dump.part"
+            echo "backup: pg_dump FAILED (will retry next cycle)"
+          fi
+          find /backups -name 'planner-*.dump' -mtime +$${BACKUP_KEEP_DAYS} -delete
+          sleep 86400
+        done
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
 volumes:
   db_data:
   uploads:
   caddy_data:
   caddy_config:
+  ollama_models:
 
 networks:
   web:

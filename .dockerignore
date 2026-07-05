@@ -13,6 +13,8 @@ build
 
 # image bundles / notes / misc
 *.tar
+*.tar.gz
+backups
 process.txt
 npm-debug.log*
 *.tsbuildinfo
