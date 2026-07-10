@@ -7,10 +7,16 @@ import {
   updateTechTask,
   setTechTaskState,
   deleteTechTask,
+  getTaskThread,
+  addTaskComment,
+  editTaskComment,
+  deleteTaskComment,
 } from "@/lib/services/tech-tasks";
-import type { TechTaskState } from "@/lib/services/tech-tasks";
+import type { TechTaskState, NoteRow } from "@/lib/services/tech-tasks";
 
 type State = { error?: string; success?: boolean };
+type ThreadState = { error?: string; notes?: NoteRow[] };
+type NoteState = { error?: string; note?: NoteRow };
 
 export async function createTechTaskAction(input: {
   ownerId: string;
@@ -44,6 +50,7 @@ export async function updateTechTaskAction(input: {
   targetDate?: string | null;
   state?: TechTaskState;
   location?: string;
+  ownerId?: string; // reassign to another person
 }): Promise<State> {
   const { scope } = await requireScope();
   const { id, targetDate, ...rest } = input;
@@ -69,6 +76,52 @@ export async function setTechTaskStateAction(input: { id: string; state: TechTas
   } catch (e) {
     if (e instanceof ForbiddenError) return { error: e.message };
     return { error: "Could not update the task." };
+  }
+}
+
+// ── Ticket thread (comments + change history) ──
+
+export async function getTaskThreadAction(input: { taskId: string }): Promise<ThreadState> {
+  const { scope } = await requireScope();
+  try {
+    return { notes: await getTaskThread(scope, input.taskId) };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not load the discussion." };
+  }
+}
+
+export async function addCommentAction(input: { taskId: string; body: string }): Promise<NoteState> {
+  const { scope } = await requireScope();
+  try {
+    const note = await addTaskComment(scope, input.taskId, input.body);
+    revalidatePath("/dashboard"); // refreshes the 💬 counts
+    return { note };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not post the comment." };
+  }
+}
+
+export async function editCommentAction(input: { noteId: string; body: string }): Promise<NoteState> {
+  const { scope } = await requireScope();
+  try {
+    return { note: await editTaskComment(scope, input.noteId, input.body) };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not edit the comment." };
+  }
+}
+
+export async function deleteCommentAction(input: { noteId: string }): Promise<State> {
+  const { scope } = await requireScope();
+  try {
+    await deleteTaskComment(scope, input.noteId);
+    revalidatePath("/dashboard");
+    return { success: true };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not delete the comment." };
   }
 }
 

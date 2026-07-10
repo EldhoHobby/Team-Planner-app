@@ -1,10 +1,10 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useState, type FormEvent } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createJobAction } from "../tasks/actions";
-import type { JobFormState, TechnicianOption } from "./types";
+import type { JobFormState, JobRow, TechnicianOption } from "./types";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,10 +27,13 @@ export function NewJobDialog({
   open,
   onClose,
   technicians,
+  allJobs,
 }: {
   open: boolean;
   onClose: () => void;
   technicians: TechnicianOption[];
+  /** Existing jobs — used to warn about a duplicate SO + title before creating. */
+  allJobs: JobRow[];
 }) {
   const [state, formAction] = useActionState(createJobAction, {} as JobFormState);
   const router = useRouter();
@@ -39,12 +42,14 @@ export function NewJobDialog({
   // must have a pencilled-in date to be tentative about).
   const [startDate, setStartDate] = useState("");
   const [tentative, setTentative] = useState(false);
+  const [dupError, setDupError] = useState<string | null>(null);
 
   // Reset the controlled fields each time the dialog opens.
   useEffect(() => {
     if (open) {
       setStartDate("");
       setTentative(false);
+      setDupError(null);
     }
   }, [open]);
 
@@ -55,9 +60,33 @@ export function NewJobDialog({
     }
   }, [state.success, onClose, router]);
 
+  // Hard-block creating a job that repeats the auto "(copy)" name or whose SO
+  // number + title already matches another job. No bypass — must use a unique
+  // title. (The server enforces this too; this is the instant feedback.)
+  const guardSubmit = (e: FormEvent<HTMLFormElement>) => {
+    setDupError(null);
+    const fd = new FormData(e.currentTarget);
+    const title = String(fd.get("title") ?? "").trim();
+    const so = String(fd.get("soNumber") ?? "").trim();
+    const stillCopy = /\(copy(\s+\d+)?\)\s*$/i.test(title);
+    const collides = allJobs.some(
+      (j) =>
+        (j.title ?? "").trim().toLowerCase() === title.toLowerCase() &&
+        (j.soNumber ?? "").trim().toLowerCase() === so.toLowerCase(),
+    );
+    if (stillCopy || collides) {
+      e.preventDefault(); // stop the create; the dialog stays open
+      setDupError(
+        stillCopy
+          ? `“${title}” looks like an un-renamed copy — give it a unique title.`
+          : `Another job already has SO “${so || "—"}” with the title “${title}”. Use a unique title.`,
+      );
+    }
+  };
+
   return (
     <Modal open={open} onClose={onClose} title="New job" description="Add a field-service job. Leave the date blank to drop it in the backlog.">
-      <form action={formAction} className="space-y-4">
+      <form action={formAction} onSubmit={guardSubmit} className="space-y-4">
         <div className="space-y-2">
           <Label htmlFor="title">Title</Label>
           <Input id="title" name="title" required placeholder="Commission ePAQ at Site B" />
@@ -142,6 +171,9 @@ export function NewJobDialog({
           {!startDate ? <span className="text-xs text-muted-foreground">— needs a date</span> : null}
         </label>
 
+        {dupError ? (
+          <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{dupError}</p>
+        ) : null}
         {state.error ? (
           <p role="alert" className="text-sm text-destructive">{state.error}</p>
         ) : null}

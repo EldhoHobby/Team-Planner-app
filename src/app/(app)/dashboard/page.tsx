@@ -11,5 +11,5 @@ export default async function DashboardPage() {
   const { scope } = await requireScope();
   await recordPageView(scope, "Dashboard");
   const data = await listDashboard(scope);
-  return <DashboardClient data={data} currentUserId={scope.ctx.userId} />;
+  return <DashboardClient data={data} currentUserId={scope.ctx.userId} isAdmin={scope.ctx.isOrgAdmin} />;
 }

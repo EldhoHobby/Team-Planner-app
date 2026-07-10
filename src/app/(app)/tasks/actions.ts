@@ -11,6 +11,7 @@ import {
   setJobStatus,
   setJobTentative,
   deleteJob,
+  duplicateJob,
 } from "@/lib/services/field-service";
 import { runJobsImport } from "@/lib/services/data-io";
 import { listAudit, writeAudit } from "@/lib/services/audit";
@@ -302,6 +303,19 @@ export async function listJobHistoryAction(input: { jobId: string }): Promise<Au
   }));
 }
 
+/** Copy a job into the unscheduled backlog ("(copy)" title, no dates/tech). */
+export async function duplicateJobAction(input: { jobId: string }): Promise<JobFormState> {
+  const { scope } = await requireScope();
+  try {
+    const copy = await duplicateJob(scope, input.jobId);
+    revalidatePath("/schedule");
+    return { success: true, jobId: copy.id };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not duplicate the job." };
+  }
+}
+
 export async function deleteJobAction(input: { jobId: string }): Promise<JobFormState> {
   const { scope } = await requireScope();
   try {
@@ -340,8 +354,11 @@ export async function importScheduleXlsxAction(
     const note = r && r.errors.length
       ? ` (${r.errors.slice(0, 3).join("; ")}${r.errors.length > 3 ? "…" : ""})`
       : "";
+    const warn = r?.warnings?.length
+      ? ` ⚠ ${r.warnings.length} possible duplicate(s): ${r.warnings.slice(0, 2).join("; ")}${r.warnings.length > 2 ? "…" : ""}`
+      : "";
     return {
-      message: `Imported ${summary.totalCreated} created, ${summary.totalUpdated} updated, ${r?.skipped ?? 0} skipped.${note}`,
+      message: `Imported ${summary.totalCreated} created, ${summary.totalUpdated} updated, ${r?.skipped ?? 0} skipped.${note}${warn}`,
     };
   } catch (e) {
     if (e instanceof ForbiddenError) return { error: e.message };

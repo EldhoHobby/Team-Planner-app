@@ -2,13 +2,14 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Trash2, Inbox, History } from "lucide-react";
+import { Trash2, Inbox, History, Copy } from "lucide-react";
 import {
   updateJobAction,
   rescheduleJobAction,
   setJobStatusAction,
   setJobTentativeAction,
   deleteJobAction,
+  duplicateJobAction,
   listJobHistoryAction,
 } from "../tasks/actions";
 import type { AuditEntry, JobRow, JobStatus, TechnicianOption } from "./types";
@@ -38,11 +39,17 @@ const JOB_TYPE_LABELS: Record<string, string> = {
 export function JobEditor({
   job,
   technicians,
+  allJobs,
   onClose,
+  onDuplicated,
 }: {
   job: JobRow | null;
   technicians: TechnicianOption[];
+  /** Every job in scope — used to warn about un-renamed / colliding duplicates. */
+  allJobs: JobRow[];
   onClose: () => void;
+  /** Called with the new copy's id after Duplicate — the parent reopens it. */
+  onDuplicated: (newJobId: string) => void;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -60,7 +67,9 @@ export function JobEditor({
     technicianId: "",
     jobStatus: "UNCONFIRMED" as JobStatus,
     startDate: "",
-    durationDays: 1,
+    // Kept as a STRING so the field can be emptied while typing (backspace);
+    // committed to the server only when it parses to a valid day count.
+    durationDays: "1",
     tentative: false,
   });
   useEffect(() => {
@@ -75,7 +84,7 @@ export function JobEditor({
         technicianId: job.technicianId ?? "",
         jobStatus: job.jobStatus,
         startDate: job.startDate ?? "",
-        durationDays: job.durationDays ?? 1,
+        durationDays: String(job.durationDays ?? 1),
         tentative: job.tentative,
       });
       setHistory(null);
@@ -97,21 +106,75 @@ export function JobEditor({
       setHistory(await listJobHistoryAction({ jobId: job.id }));
     });
 
+  // Duplicate into the backlog, then hand the new id to the parent so it swaps
+  // this editor over to the copy (source closes, copy opens for editing).
+  const duplicate = () =>
+    startTransition(async () => {
+      const res = await duplicateJobAction({ jobId: job.id });
+      router.refresh();
+      if (res.jobId) onDuplicated(res.jobId);
+    });
+
+  // Hard-block closing while the title is a duplicate: still the auto "(copy)"
+  // name, or an SO number + title that matches another job. No bypass — the
+  // user must give it a unique title first.
+  const [closeError, setCloseError] = useState<string | null>(null);
+  const closeGuarded = () => {
+    const title = form.title.trim();
+    const so = form.soNumber.trim();
+    const stillCopy = /\(copy(\s+\d+)?\)\s*$/i.test(title);
+    const collides = allJobs.some(
+      (j) =>
+        j.id !== job.id &&
+        (j.title ?? "").trim().toLowerCase() === title.toLowerCase() &&
+        (j.soNumber ?? "").trim().toLowerCase() === so.toLowerCase(),
+    );
+    if (stillCopy || collides) {
+      setCloseError(
+        stillCopy
+          ? `Rename this job before closing — it's still named “${title}”.`
+          : `Rename this job before closing — another job already has SO “${so || "—"}” with the title “${title}”.`,
+      );
+      return; // stay open
+    }
+    onClose();
+  };
+
   return (
     <Modal
       open={!!job}
-      onClose={onClose}
+      onClose={closeGuarded}
       title={job.title}
       description={[job.soNumber, job.customerName].filter(Boolean).join(" · ") || undefined}
+      headerActions={
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={pending}
+          title="Copy this job into the backlog and open the copy to edit"
+          onClick={duplicate}
+        >
+          <Copy className="mr-1.5 h-4 w-4" /> Duplicate
+        </Button>
+      }
     >
       <div className="space-y-4">
+        {closeError ? (
+          <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {closeError}
+          </p>
+        ) : null}
         <div className="space-y-2">
           <Label htmlFor="ed-title">Title</Label>
           <Input
             id="ed-title"
             value={form.title}
             disabled={pending}
-            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+            onChange={(e) => {
+              setCloseError(null); // renaming clears the block
+              setForm((f) => ({ ...f, title: e.target.value }));
+            }}
             onBlur={(e) => {
               const v = e.target.value.trim();
               if (v && v !== job.title) run(() => updateJobAction({ jobId: job.id, title: v }));
@@ -265,10 +328,21 @@ export function JobEditor({
               value={form.durationDays}
               disabled={pending}
               onChange={(e) => {
+                // Always accept the raw text (so backspace/clearing works);
+                // only push valid values to the server.
                 const raw = e.target.value;
+                setForm((f) => ({ ...f, durationDays: raw }));
                 const n = Number(raw);
-                setForm((f) => ({ ...f, durationDays: raw === "" ? f.durationDays : n }));
-                if (n > 0) run(() => rescheduleJobAction({ jobId: job.id, durationDays: n }));
+                if (raw !== "" && Number.isInteger(n) && n >= 1 && n <= 60) {
+                  run(() => rescheduleJobAction({ jobId: job.id, durationDays: n }));
+                }
+              }}
+              onBlur={() => {
+                // Leaving the field empty/invalid restores the saved value.
+                const n = Number(form.durationDays);
+                if (form.durationDays === "" || !Number.isInteger(n) || n < 1 || n > 60) {
+                  setForm((f) => ({ ...f, durationDays: String(job.durationDays ?? 1) }));
+                }
               }}
             />
           </div>

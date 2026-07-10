@@ -41,6 +41,10 @@ quick brief + conventions.
 - **Data** (`/settings/data`) — admin **Excel export/import** (one sheet per
   table incl. People and dashboard My Tasks; upsert-by-id,
   preview-then-confirm). See `src/lib/services/data-io.ts`.
+- **Full backup/restore** (`/settings/data`) — download the ENTIRE app as one
+  .json file (people incl. logins, departments, jobs, tasks, time off,
+  holidays, timesheets) and restore it on any install — a full-replace
+  snapshot for machine moves. Guarded by typed RESTORE + password.
 - **Email → tasks** (`/settings/email`) — the app polls a designated Gmail
   inbox (IMAP + app password); "@username" tags in an email create dashboard
   tasks. Admin page has a Check-mail-now button, 30-day statistics and
@@ -55,6 +59,9 @@ quick brief + conventions.
   any person (testing tool); audit logs still record the real actor.
 - **Kanban board** — a List | Board toggle on the dashboard; drag task cards
   between state columns (New / To Do / In Progress / Hold / Done).
+- **Task tickets** — click any dashboard task to open a GitLab-style ticket:
+  edit details, discuss in a comment thread, and see the full change history
+  (who changed what, when) — kept forever.
 - **Automatic backups** — a sidecar dumps the database to `./backups` at
   startup and nightly, keeping `BACKUP_KEEP_DAYS` (default 14) days. Restore:
   `docker compose exec db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump`

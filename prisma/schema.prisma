@@ -36,6 +36,7 @@ model Organization {
   techTasks   TechTask[]
   managerLinks ManagerLink[]
   workGroups   WorkGroup[]
+  techTaskNotes TechTaskNote[]
 }
 
 model User {
@@ -609,8 +610,9 @@ model TechTask {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
-  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  owner User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner  User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  thread TechTaskNote[] // ticket comments + change notes ("notes" scalar = details text)
 
   @@index([orgId, ownerId, state])
   @@index([orgId, externalSource, externalId])
@@ -618,6 +620,33 @@ model TechTask {
   // person per external item, enforced even across concurrent ingest passes.
   // Rows with NULL externalId are exempt (Postgres treats NULLs as distinct).
   @@unique([orgId, ownerId, externalSource, externalId])
+}
+
+// GitLab-style ticket thread on a dashboard task: user COMMENTs and system
+// CHANGE notes (who changed what, when) interleaved chronologically. Kept
+// forever (not pruned like AuditLog). authorId is a plain string — no FK — so
+// the thread survives user deletion and full-backup machine moves.
+enum NoteKind {
+  COMMENT
+  CHANGE
+}
+
+model TechTaskNote {
+  id         String    @id @default(cuid())
+  orgId      String
+  taskId     String
+  authorId   String?
+  authorName String // display name snapshot at write time
+  kind       NoteKind
+  body       String // comment text, or e.g. "state: To Do → In Progress"
+  editedAt   DateTime? // set when a comment is edited ("(edited)" marker)
+  createdAt  DateTime  @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  task TechTask     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@index([orgId])
 }
 
 // One row per email seen by the ingest poller — feeds the Settings → Email

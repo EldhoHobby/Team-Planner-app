@@ -2,9 +2,9 @@
 
 import { useActionState, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Download, CheckCircle2, AlertTriangle, Trash2 } from "lucide-react";
-import { previewImportAction, applyImportAction, resetDatabaseAction } from "./actions";
-import type { DataIoState, ResetState } from "./types";
+import { Download, CheckCircle2, AlertTriangle, Trash2, DatabaseBackup, Upload } from "lucide-react";
+import { previewImportAction, applyImportAction, resetDatabaseAction, restoreBackupAction } from "./actions";
+import type { DataIoState, ResetState, RestoreState } from "./types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +35,21 @@ export function DataClient() {
       router.refresh();
     }
   }, [resetState.done, router]);
+
+  // Full backup restore (wipe + replace from a full-backup .json).
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreState, restoreAction, restoring] = useActionState(
+    restoreBackupAction,
+    {} as RestoreState,
+  );
+  useEffect(() => {
+    if (restoreState.done) {
+      setRestoreOpen(false);
+      // If the admin's own account was replaced, their session is gone — the
+      // refresh lands on the login page, where the backup's credentials work.
+      router.refresh();
+    }
+  }, [restoreState.done, router]);
 
   const withFile = (
     action: (prev: DataIoState, fd: FormData) => Promise<DataIoState>,
@@ -118,12 +133,14 @@ export function DataClient() {
                   <>
                     <CheckCircle2 className="h-4 w-4 text-green-600" />
                     Applied: {summary.totalCreated} created, {summary.totalUpdated} updated
-                    {summary.totalErrors ? `, ${summary.totalErrors} skipped` : ""}.
+                    {summary.totalErrors ? `, ${summary.totalErrors} skipped` : ""}
+                    {summary.totalWarnings ? `, ${summary.totalWarnings} duplicate warning(s)` : ""}.
                   </>
                 ) : (
                   <>Preview: {summary.totalCreated} to create, {summary.totalUpdated} to update
                     {summary.totalUnchanged ? `, ${summary.totalUnchanged} unchanged` : ""}
-                    {summary.totalErrors ? `, ${summary.totalErrors} issue(s)` : ""}.</>
+                    {summary.totalErrors ? `, ${summary.totalErrors} issue(s)` : ""}
+                    {summary.totalWarnings ? `, ${summary.totalWarnings} duplicate warning(s)` : ""}.</>
                 )}
               </div>
 
@@ -149,10 +166,58 @@ export function DataClient() {
                         ) : null}
                       </ul>
                     ) : null}
+                    {r.warnings?.length ? (
+                      <ul className="mt-1 space-y-0.5 pl-4">
+                        {r.warnings.slice(0, 10).map((w, i) => (
+                          <li key={i} className="flex items-start gap-1 text-xs text-orange-600">
+                            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                            <span>{w}</span>
+                          </li>
+                        ))}
+                        {r.warnings.length > 10 ? (
+                          <li className="text-xs text-muted-foreground">…and {r.warnings.length - 10} more</li>
+                        ) : null}
+                      </ul>
+                    ) : null}
                   </li>
                 ))}
               </ul>
             </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Full backup — everything in one file</CardTitle>
+          <CardDescription>
+            A complete snapshot of the app: people <em>including logins</em>, departments,
+            work groups, jobs, tasks, dashboard items, time off, holidays and timesheets.
+            Restore it on any Team Planner install (e.g. moving to a new machine) — the
+            restore <strong>replaces all data</strong> with the file&apos;s contents.
+            Treat the file like a database backup: it contains password hashes.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => { window.location.href = "/api/admin/backup"; }}>
+              <DatabaseBackup className="mr-1.5 h-4 w-4" /> Download full backup (.json)
+            </Button>
+            <Button
+              variant="outline"
+              className="border-destructive text-destructive hover:bg-destructive/10"
+              onClick={() => setRestoreOpen(true)}
+            >
+              <Upload className="mr-1.5 h-4 w-4" /> Restore from backup…
+            </Button>
+          </div>
+          {restoreState.done ? (
+            <p className="flex items-center gap-2 text-sm text-green-600">
+              <CheckCircle2 className="h-4 w-4" /> {restoreState.message ?? "Backup restored."}
+              {restoreState.selfReplaced
+                ? " Your account was replaced — sign in with the credentials from the backup."
+                : ""}
+            </p>
           ) : null}
         </CardContent>
       </Card>
@@ -182,6 +247,47 @@ export function DataClient() {
           ) : null}
         </CardContent>
       </Card>
+
+      <Modal
+        open={restoreOpen}
+        onClose={() => setRestoreOpen(false)}
+        title="Restore from a full backup?"
+        description="This permanently REPLACES all current data — people (including logins), departments, jobs, tasks, time off, holidays and timesheets — with the contents of the backup file. If your own account isn't in the file, you'll be signed out and must log in with an account from the backup. This cannot be undone."
+      >
+        <form action={restoreAction} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="restore-file">Full-backup file (.json)</Label>
+            <Input id="restore-file" name="file" type="file" accept=".json,application/json" />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="restore-confirm">
+              Type <span className="font-mono font-semibold">RESTORE</span> to confirm
+            </Label>
+            <Input id="restore-confirm" name="confirm" autoComplete="off" placeholder="RESTORE" />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="restore-password">Your password</Label>
+            <Input id="restore-password" name="password" type="password" autoComplete="current-password" />
+          </div>
+
+          {restoreState.error ? (
+            <p role="alert" className="text-sm text-destructive">{restoreState.error}</p>
+          ) : null}
+
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setRestoreOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={restoring}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {restoring ? "Restoring…" : "Replace everything with this backup"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       <Modal
         open={resetOpen}

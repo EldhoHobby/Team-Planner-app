@@ -132,6 +132,7 @@ src/app/(app)/settings/email/      # admin Email→tasks page: Check-mail-now bu
                                    #   30-day stats + per-email history, how-it-works
 src/app/api/email-ingest/          # admin-only manual ingest trigger (POST)
 src/app/api/admin/export/          # scoped .xlsx config export
+src/app/api/admin/backup/          # FULL app snapshot (.json) download — see full-backup.ts
 src/app/api/schedule/export/       # scoped schedule Excel (.xlsx) export (Jobs sheet)
 src/app/api/timesheet/export/      # fills the QEI timesheet template → .xlsx download
 timesheet-template/                # QEI Time_Sheet_Template.xlsm (host-mounted in prod)
@@ -163,11 +164,14 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
 ## Gotchas (learned the hard way)
 
 - **Schema changes (versioned migrations):** edit `prisma/schema.prisma`, then
-  GENERATE A MIGRATION (the host has no npm — use the migrate image):
-  `docker compose run --rm --no-deps --entrypoint sh migrate -c "npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --script" > prisma/migrations/<YYYYMMDDHHMMSS>_<name>/migration.sql`
+  GENERATE A MIGRATION (the host has no npm — use the migrate image; diff FROM
+  the live dev DB, which sits at the last applied migration, so no shadow DB is
+  needed — `--from-migrations` would require one):
+  `docker compose run --rm --no-deps --entrypoint sh migrate -c 'npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script' > prisma/migrations/<YYYYMMDDHHMMSS>_<name>/migration.sql`
   (create the folder first; run via Git Bash so the redirect writes UTF-8, and
-  note the image bakes in `prisma/` at build time — rebuild `migrate` first if
-  the schema changed since the last build). Then rebuild: the `migrate` service
+  note the image bakes in `prisma/` at build time — REBUILD `migrate` first
+  whenever the schema changed since the last build, which also type-checks the
+  app against the new client). Then rebuild: the `migrate` service
   runs `prisma/migrate.sh` → pre-push.sql fixes → one-time baseline of old
   `db push` databases (`migrate resolve --applied 0_init`) → `migrate deploy`.
   NEVER hand-edit an applied migration; add a new one.
@@ -210,11 +214,17 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   admin in Settings → Members "Reports to") also sees each report's list, grouped by
   person. Fields follow the ops-tracker convention: integer **priority** (1=top),
   **state** (New / To Do / In Progress / Hold / Done), **target date**, **notes**,
-  optional **location**, plus an **origin** tag (SELF / MANAGER / OUTLOOK). Owner is
-  single; self + your manager can add. **Table cells are inline-editable** (priority,
-  title, location, target, notes auto-save on blur/change); **state is the only field
-  edited via a popup** ("edit window") — a dropdown, opened from the state pill. Rows
-  **sort by priority first, then target date**. Target-date cues: **red "Overdue"**
+  optional **location** (relabelled **"Contact / other details"** in the UI — DB
+  column + Excel header stay `location`), plus an **origin** tag (SELF / MANAGER /
+  OUTLOOK). Owner is single; self + your manager can add. **GitLab-style ticket
+  view**: clicking a task title (or Kanban card) opens a wide modal
+  (`dashboard/task-ticket.tsx`) with editable details plus an **Activity thread**
+  — user comments (edit own, admins delete any, "(edited)" marker) interleaved
+  with permanent system CHANGE notes ("state: To Do → In Progress", who + when;
+  `TechTaskNote` model, kind COMMENT|CHANGE, NEVER pruned, included in the full
+  backup, NOT in the Excel round-trip). List rows are slim — inline priority /
+  target / state, 💬 comment count, notes preview; title/notes/contact editing
+  lives in the ticket. Rows **sort by priority first, then target date**. Target-date cues: **red "Overdue"**
   once past due, **amber "Due soon"** within 2 days (`dueStatus` in the client).
   Completed items appear (behind "Show completed") **grouped by completion week**
   (`TechTask.completedAt`, stamped on entering DONE / cleared on leaving). The
@@ -234,6 +244,18 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   `/settings/members` routes redirect here.
 - **Admin data round-trip:** done — Excel export/import at `/settings/data`
   (`data-io.ts`), upsert-by-id with change detection + preview.
+- **Full app backup/restore:** done — `src/lib/services/full-backup.ts` +
+  `GET /api/admin/backup` + UI card on `/settings/data`. One JSON snapshot of
+  the ENTIRE org incl. Users with password hashes (logins survive a machine
+  move); restore is FULL REPLACE in one transaction (wipe org domain data →
+  upsert users by id, remove username/email collisions → insert in dependency
+  order with orgId re-stamped; Team.parentTeamId two-pass) guarded by typed
+  RESTORE + password. Excluded by design: sessions/reset tokens/invitations
+  (token-based), audit + email logs (transient), attachments (files live on
+  the uploads volume). If the restoring admin isn't in the file they're
+  signed out (documented in the UI). Format marker + version checked
+  (`BACKUP_FORMAT`/`BACKUP_VERSION` — bump on schema changes that break
+  createMany round-trip).
 - **Observability & Build:** done — comprehensive **audit logging** for all
   domain mutations; automated application **versioning** (Git hash + date).
 - **Admin audit trail (30-day):** done — EVERYTHING a user does is audited:

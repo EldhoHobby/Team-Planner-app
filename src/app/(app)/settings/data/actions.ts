@@ -3,9 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
 import { runImport, resetOrgData } from "@/lib/services/data-io";
+import { restoreFullBackup } from "@/lib/services/full-backup";
 import { writeAudit } from "@/lib/services/audit";
 import { verifyPassword } from "@/lib/auth/password";
-import type { DataIoState, ResetState } from "./types";
+import type { DataIoState, ResetState, RestoreState } from "./types";
 
 async function fileBuffer(formData: FormData): Promise<ArrayBuffer | null> {
   const f = formData.get("file");
@@ -50,6 +51,47 @@ export async function applyImportAction(
   } catch (e) {
     if (e instanceof ForbiddenError) return { error: e.message };
     return { error: "Import failed." };
+  }
+}
+
+// Danger zone: FULL-REPLACE restore from a full-backup JSON file. Wipes the
+// org's data and loads the snapshot (people incl. logins, jobs, everything).
+// Requires typing RESTORE + the admin's password.
+export async function restoreBackupAction(
+  _prev: RestoreState,
+  formData: FormData,
+): Promise<RestoreState> {
+  const { user, scope } = await requireScope();
+  if (!scope.ctx.isOrgAdmin) return { error: "Only admins can restore a backup." };
+
+  const confirm = String(formData.get("confirm") ?? "").trim();
+  const password = String(formData.get("password") ?? "");
+  if (confirm !== "RESTORE") return { error: "Type RESTORE (in capitals) to confirm." };
+  if (!password) return { error: "Enter your password to confirm." };
+  const ok = await verifyPassword(user.passwordHash, password);
+  if (!ok) return { error: "Incorrect password." };
+
+  const buf = await fileBuffer(formData);
+  if (!buf) return { error: "Choose the full-backup .json file first." };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(buf).toString("utf8"));
+  } catch {
+    return { error: "That file isn't valid JSON — is it the full-backup file?" };
+  }
+
+  try {
+    const r = await restoreFullBackup(scope, parsed);
+    revalidatePath("/", "layout");
+    return {
+      done: true,
+      selfReplaced: r.selfReplaced,
+      message: `Restored ${r.people} people, ${r.jobsAndTasks} jobs & tasks, ${r.techTasks} dashboard items.`,
+    };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: e instanceof Error ? e.message : "Restore failed — nothing was changed." };
   }
 }
 

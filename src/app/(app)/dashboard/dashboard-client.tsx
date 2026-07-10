@@ -3,8 +3,9 @@
 import { useEffect, useState, useTransition, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Plus, X, Trash2, ChevronDown, ChevronRight, CalendarClock, AlertTriangle, List, LayoutGrid } from "lucide-react";
+import { Plus, X, Trash2, ChevronDown, ChevronRight, CalendarClock, AlertTriangle, List, LayoutGrid, MessageSquare } from "lucide-react";
 import { KanbanBoard } from "./kanban-board";
+import { TaskTicket } from "./task-ticket";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -156,9 +157,11 @@ function editKeys(reset: () => void) {
 export function DashboardClient({
   data,
   currentUserId,
+  isAdmin,
 }: {
   data: DashboardData;
   currentUserId: string;
+  isAdmin: boolean;
 }) {
   const router = useRouter();
   const [showDone, setShowDone] = useState(false);
@@ -183,6 +186,24 @@ export function DashboardClient({
     setCreateOwner(ownerId);
     setCreateOpen(true);
   };
+
+  // Ticket view: track the open task by id and re-derive it from fresh server
+  // data on every render, so edits made inside the ticket stay in sync.
+  const [ticketId, setTicketId] = useState<string | null>(null);
+  let ticketTask: TechTaskRow | null = null;
+  let ticketOwner = "";
+  if (ticketId) {
+    for (const g of data.groups) {
+      const t =
+        g.open.find((x) => x.id === ticketId) ??
+        g.completedWeeks.flatMap((w) => w.tasks).find((x) => x.id === ticketId);
+      if (t) {
+        ticketTask = t;
+        ticketOwner = g.owner.isSelf ? "My tasks" : (g.owner.name ?? g.owner.email ?? "");
+        break;
+      }
+    }
+  }
 
   const hasTeam = data.groups.length > 1;
 
@@ -262,10 +283,10 @@ export function DashboardClient({
       </div>
 
       {view === "board" ? (
-        <KanbanBoard groups={data.groups} />
+        <KanbanBoard groups={data.groups} onOpenTask={setTicketId} />
       ) : (
         data.groups.map((g) => (
-          <OwnerSection key={g.owner.id} group={g} showDone={showDone} onAdd={openNew} refresh={refresh} />
+          <OwnerSection key={g.owner.id} group={g} showDone={showDone} onAdd={openNew} refresh={refresh} onOpenTask={setTicketId} />
         ))
       )}
 
@@ -285,6 +306,17 @@ export function DashboardClient({
           }}
         />
       ) : null}
+
+      {ticketTask ? (
+        <TaskTicket
+          task={ticketTask}
+          ownerName={ticketOwner}
+          people={data.people}
+          currentUserId={currentUserId}
+          isAdmin={isAdmin}
+          onClose={() => setTicketId(null)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -294,11 +326,13 @@ function OwnerSection({
   showDone,
   onAdd,
   refresh,
+  onOpenTask,
 }: {
   group: OwnerGroup;
   showDone: boolean;
   onAdd: (ownerId: string) => void;
   refresh: () => void;
+  onOpenTask: (taskId: string) => void;
 }) {
   const g = group;
 
@@ -384,17 +418,16 @@ function OwnerSection({
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="border-b bg-muted/20 text-xs text-muted-foreground">
-                    <SortHeader label="Pri" k="priority" sort={sort} onSort={setSort} className="w-12 text-center" />
+                    <SortHeader label="Pri" k="priority" sort={sort} onSort={setSort} className="w-16 text-center" />
                     <SortHeader label="Task" k="title" sort={sort} onSort={setSort} />
                     <SortHeader label="Target" k="target" sort={sort} onSort={setSort} className="w-40" />
                     <SortHeader label="State" k="state" sort={sort} onSort={setSort} className="w-32" />
-                    <th className="px-2 py-1.5 text-left">Notes</th>
                     <th className="w-9 px-1 py-1.5"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedOpen.map((t) => (
-                    <EditableRow key={t.id} task={t} refresh={refresh} />
+                    <EditableRow key={t.id} task={t} refresh={refresh} onOpen={() => onOpenTask(t.id)} />
                   ))}
                 </tbody>
               </table>
@@ -412,12 +445,9 @@ function OwnerSection({
   );
 }
 
-function EditableRow({ task, refresh }: { task: TechTaskRow; refresh: () => void }) {
+function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: () => void; onOpen: () => void }) {
   const [pending, startTransition] = useTransition();
   const [priority, setPriority] = useState(String(task.priority));
-  const [title, setTitle] = useState(task.title);
-  const [location, setLocation] = useState(task.location ?? "");
-  const [notes, setNotes] = useState(task.notes ?? "");
   const [target, setTarget] = useState(task.targetDate ? task.targetDate.slice(0, 10) : "");
 
   const save = (patch: Parameters<typeof updateTechTaskAction>[0]) =>
@@ -429,15 +459,6 @@ function EditableRow({ task, refresh }: { task: TechTaskRow; refresh: () => void
   const commitPriority = () => {
     const n = Number(priority) || task.priority;
     if (n !== task.priority) save({ id: task.id, priority: n });
-  };
-  const commitTitle = () => {
-    if (title.trim() && title !== task.title) save({ id: task.id, title });
-  };
-  const commitLocation = () => {
-    if (location !== (task.location ?? "")) save({ id: task.id, location });
-  };
-  const commitNotes = () => {
-    if (notes !== (task.notes ?? "")) save({ id: task.id, notes });
   };
   const commitTarget = (v: string) => {
     setTarget(v);
@@ -472,33 +493,40 @@ function EditableRow({ task, refresh }: { task: TechTaskRow; refresh: () => void
           onChange={(e) => setPriority(e.target.value)}
           onBlur={commitPriority}
           onKeyDown={editKeys(() => setPriority(String(task.priority)))}
-          className={`${CELL_INPUT} text-center tabular-nums`}
+          // Spinner arrows hidden so up to 3 digits stay fully visible.
+          className={`${CELL_INPUT} min-w-14 text-center tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
           aria-label="Priority"
         />
       </td>
       <td className="px-1 py-1.5">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={editKeys(() => setTitle(task.title))}
-          className={`${CELL_INPUT} font-medium`}
-          aria-label="Task"
-        />
-        <div className="flex items-center gap-1 px-1.5">
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Open ticket — details, comments & history"
+          className="w-full rounded px-1.5 py-1 text-left text-sm font-medium hover:bg-muted/40 hover:underline"
+        >
+          {task.title}
+        </button>
+        <div className="flex items-center gap-1.5 px-1.5">
           <span className="inline-flex rounded-full bg-slate-100 px-1.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
             {ORIGIN_LABELS[task.origin]}
           </span>
-          <input
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
-            onBlur={commitLocation}
-            onKeyDown={editKeys(() => setLocation(task.location ?? ""))}
-            placeholder="+ location"
-            className="flex-1 rounded border border-transparent bg-transparent px-1 py-0.5 text-xs text-muted-foreground hover:border-input focus:border-input focus-visible:outline-none"
-            aria-label="Location"
-          />
+          {task.commentCount > 0 ? (
+            <button
+              type="button"
+              onClick={onOpen}
+              title={`${task.commentCount} comment(s) — open the discussion`}
+              className="inline-flex items-center gap-0.5 rounded-full bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-300"
+            >
+              <MessageSquare className="h-2.5 w-2.5" /> {task.commentCount}
+            </button>
+          ) : null}
         </div>
+        {task.notes ? (
+          <p className="whitespace-pre-wrap break-words px-1.5 pt-0.5 text-xs text-muted-foreground">
+            {task.notes}
+          </p>
+        ) : null}
       </td>
       <td className="px-1 py-1.5">
         <DatePicker value={target} onChange={commitTarget} placeholder="Set date" className="h-8 text-xs" />
@@ -526,17 +554,6 @@ function EditableRow({ task, refresh }: { task: TechTaskRow; refresh: () => void
             </option>
           ))}
         </select>
-      </td>
-      <td className="px-1 py-1.5">
-        <input
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          onBlur={commitNotes}
-          onKeyDown={editKeys(() => setNotes(task.notes ?? ""))}
-          placeholder="—"
-          className={`${CELL_INPUT} text-muted-foreground`}
-          aria-label="Notes"
-        />
       </td>
       <td className="px-1 py-1.5 text-center">
         <button
@@ -779,9 +796,9 @@ function CreateModal({
           </div>
           <div className="space-y-2">
             <Label>
-              Location <span className="font-normal text-muted-foreground">(optional)</span>
+              Contact / other details <span className="font-normal text-muted-foreground">(optional)</span>
             </Label>
-            <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Site / customer" />
+            <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Site contact, phone, PO number…" />
           </div>
           <div className="space-y-2">
             <Label>Notes</Label>

@@ -38,6 +38,8 @@ export interface SheetResult {
   unchanged: number;
   skipped: number;
   errors: string[];
+  /** Non-blocking notices (e.g. a created/updated job duplicates an SO + title). */
+  warnings?: string[];
 }
 export interface ImportSummary {
   results: SheetResult[];
@@ -45,6 +47,7 @@ export interface ImportSummary {
   totalUpdated: number;
   totalUnchanged: number;
   totalErrors: number;
+  totalWarnings: number;
 }
 
 // People sheet column list (export + import — keep in sync with importPeople).
@@ -619,9 +622,38 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
 }
 
 async function importJobs(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
-  const res: SheetResult = { sheet: SHEET.jobs, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
+  const res: SheetResult = { sheet: SHEET.jobs, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [], warnings: [] };
   const techs = await techMap(scope);
   const wg = await workGroupMaps(scope.ctx.orgId);
+
+  // Duplicate rule (hard): a job's SO number + title must be unique. Rows that
+  // repeat an existing job or an earlier row in this file are SKIPPED, matching
+  // the server-side rule the New Job / edit dialogs enforce. Snapshot the
+  // current jobs once; intra-file repeats are tracked as we go.
+  const jobKey = (so: string | null | undefined, title: string | null | undefined) =>
+    `${(so ?? "").trim().toLowerCase()}|${(title ?? "").trim().toLowerCase()}`;
+  const existing = await prisma.task.findMany({
+    where: { kind: "FIELD_SERVICE", ...scope.team() },
+    select: { id: true, soNumber: true, title: true },
+  });
+  const existingByKey = new Map<string, string[]>();
+  for (const j of existing) {
+    const k = jobKey(j.soNumber, j.title);
+    const ids = existingByKey.get(k);
+    if (ids) ids.push(j.id); else existingByKey.set(k, [j.id]);
+  }
+  const seenInFile = new Set<string>();
+  const dupReason = (rowId: string | null | undefined, so: string | null | undefined, title: string): string | null => {
+    const k = jobKey(so, title);
+    const clashesExisting = (existingByKey.get(k) ?? []).some((eid) => eid !== rowId);
+    const clashesFile = seenInFile.has(k);
+    seenInFile.add(k);
+    if (clashesExisting || clashesFile) {
+      return `SO "${so || "—"}" + title "${title}" already exists${clashesFile ? " earlier in this file" : ""}`;
+    }
+    return null;
+  };
+
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]; const line = i + 2;
     const parsed = JobRowSchema.safeParse(r);
@@ -642,6 +674,12 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
     const workGroupId: string | null = workGroup ? wg.idByName.get(workGroup.toLowerCase()) ?? null : null;
     if (workGroup && !workGroupId) {
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: unknown work group "${workGroup}"`); continue;
+    }
+
+    // Hard duplicate check — skip rows that would repeat an SO + title.
+    const dup = dupReason(id, soNumber, title);
+    if (dup) {
+      res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: duplicate — ${dup}; not imported.`); continue;
     }
 
     try {
@@ -748,6 +786,7 @@ function summarize(results: SheetResult[]): ImportSummary {
     totalUpdated: results.reduce((a, r) => a + r.updated, 0),
     totalUnchanged: results.reduce((a, r) => a + r.unchanged, 0),
     totalErrors: results.reduce((a, r) => a + r.errors.length, 0),
+    totalWarnings: results.reduce((a, r) => a + (r.warnings?.length ?? 0), 0),
   };
 }
 

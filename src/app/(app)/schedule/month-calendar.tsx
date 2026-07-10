@@ -1,9 +1,8 @@
 "use client";
 
-import type { DragEvent } from "react";
-import { AlertTriangle, Plane } from "lucide-react";
+import { useEffect, useRef, type DragEvent } from "react";
+import { AlertTriangle, ClipboardList, Plane } from "lucide-react";
 import {
-  startOfMonth,
   startOfWeekSunday,
   addDays,
   toUtcMidnight,
@@ -12,6 +11,7 @@ import {
 import { barStyle, hatchStyle } from "@/lib/scheduling/colors";
 import { jobLabel } from "./format";
 import type { JobRow, TechnicianOption, TechTimeOff } from "./types";
+import type { TargetedTask } from "@/lib/services/tech-tasks";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const HEADER_H = 28; // px reserved at the top of a cell for the date number
@@ -27,16 +27,14 @@ function colOf(date: Date, weekStart: Date): number {
   return Math.round((toUtcMidnight(date).getTime() - weekStart.getTime()) / MS_PER_DAY);
 }
 
-// An item on the calendar: a job bar OR a time-off bar. Time off is packed into
-// the SAME lane system as jobs, so a job can never be drawn on top of it — the
-// week simply grows another lane instead.
+// An item on the calendar. Only jobs occupy lane bars now; time off renders as a
+// compact corner chip per day (see offByDay), so it never competes for lanes.
 interface CalItem {
   key: string;
-  kind: "job" | "off";
+  kind: "job";
   start: string; // YYYY-MM-DD
   end: string;
   job?: JobRow;
-  off?: { techName: string; color: string; reason: string | null };
 }
 
 interface Segment {
@@ -60,12 +58,8 @@ function packWeek(items: CalItem[], weekStart: Date, weekEnd: Date): {
       return { item, startCol, endCol };
     })
     .filter((seg) => seg.endCol >= seg.startCol)
-    // Time off packs first so it claims the top lanes and stays prominent.
-    .sort((a, b) =>
-      a.item.kind !== b.item.kind
-        ? a.item.kind === "off" ? -1 : 1
-        : a.startCol - b.startCol,
-    );
+    // Left-to-right so earlier jobs claim the top lanes.
+    .sort((a, b) => a.startCol - b.startCol);
 
   const laneEnds: number[] = []; // last endCol per lane
   const segments: Segment[] = [];
@@ -83,16 +77,6 @@ function packWeek(items: CalItem[], weekStart: Date, weekEnd: Date): {
 }
 
 /** Red-striped style for time-off bars — clearly distinct from job bars. */
-function offStyle(color: string) {
-  return {
-    backgroundColor: "#fee2e2", // red-100
-    backgroundImage:
-      "repeating-linear-gradient(45deg, rgba(220,38,38,0.18) 0, rgba(220,38,38,0.18) 5px, transparent 5px, transparent 11px)",
-    borderColor: "#fca5a5", // red-300
-    color: "#991b1b", // red-800
-    boxShadow: `inset 3px 0 0 ${color}`, // technician identity stripe on the left
-  } as const;
-}
 
 export function MonthCalendar({
   month,
@@ -102,10 +86,13 @@ export function MonthCalendar({
   technicians,
   selectedTechs,
   timeOff,
+  targetedTasks,
   todayYmd,
   onOpenJob,
   onDropDay,
   onClearDate,
+  onOpenDayTasks,
+  onShiftWeeks,
 }: {
   month: Date;
   jobs: JobRow[];
@@ -114,14 +101,42 @@ export function MonthCalendar({
   technicians: TechnicianOption[];
   selectedTechs: Set<string> | null; // null = everyone
   timeOff: TechTimeOff[];
+  /** Open dashboard tasks with a target date — day markers. */
+  targetedTasks: TargetedTask[];
   todayYmd: string; // computed in the USER'S timezone by the parent
   onOpenJob: (job: JobRow) => void;
   onDropDay: (jobId: string, day: Date) => void;
   onClearDate: (jobId: string) => void;
+  onOpenDayTasks: (dateYmd: string, tasks: TargetedTask[]) => void;
+  /** Mouse-wheel: shift the visible window by n weeks (±1 per notch). */
+  onShiftWeeks: (n: number) => void;
 }) {
-  const first = startOfMonth(month);
-  const gridStart = startOfWeekSunday(first);
-  const monthIdx = first.getUTCMonth();
+  // ROLLING grid: starts on the week containing the anchor (wheel scrolling
+  // moves it a week at a time). The tinted "current month" is whichever month
+  // dominates the visible 6-week window — its middle day. When the anchor is
+  // the 1st of a month (the ◀ ▶ buttons), this matches the old fixed layout.
+  const gridStart = startOfWeekSunday(month);
+  const monthIdx = addDays(gridStart, 17).getUTCMonth();
+
+  // Wheel → one week per notch. Native non-passive listener because React
+  // registers onWheel as passive, which would ignore preventDefault (the page
+  // behind the calendar would scroll too).
+  const rootRef = useRef<HTMLDivElement>(null);
+  const wheelAcc = useRef(0);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      wheelAcc.current += e.deltaY;
+      if (Math.abs(wheelAcc.current) >= 80) {
+        onShiftWeeks(Math.sign(wheelAcc.current));
+        wheelAcc.current = 0;
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [onShiftWeeks]);
 
   const techById = new Map(technicians.map((t) => [t.id, t]));
   const visibleTech = (id: string) => {
@@ -130,34 +145,47 @@ export function MonthCalendar({
     return selectedTechs === null || selectedTechs.has(id);
   };
 
-  const items: CalItem[] = [
-    ...timeOff
-      .filter((o) => visibleTech(o.technicianId))
-      .map((o, i) => {
-        const t = techById.get(o.technicianId)!;
-        return {
-          key: `off-${o.technicianId}-${o.startDate}-${i}`,
-          kind: "off" as const,
-          start: o.startDate,
-          end: o.endDate,
-          off: { techName: t.name, color: t.color, reason: o.reason },
-        };
-      }),
-    ...jobs
-      .filter((j) => j.startDate)
-      .map((j) => ({
-        key: `job-${j.id}`,
-        kind: "job" as const,
-        start: j.startDate!,
-        end: j.endDate ?? j.startDate!,
-        job: j,
-      })),
-  ];
+  // Jobs are the only lane bars now — time off shows as a compact corner chip
+  // per day (built below), so it never competes with jobs for lane space.
+  const items: CalItem[] = jobs
+    .filter((j) => j.startDate)
+    .map((j) => ({
+      key: `job-${j.id}`,
+      kind: "job" as const,
+      start: j.startDate!,
+      end: j.endDate ?? j.startDate!,
+      job: j,
+    }));
+
+  // Per-day time-off index: YYYY-MM-DD → who's off that day (+ reason).
+  const offByDay = new Map<string, { techName: string; reason: string | null }[]>();
+  for (const o of timeOff) {
+    if (!visibleTech(o.technicianId)) continue;
+    const t = techById.get(o.technicianId)!;
+    const end = parseYmd(o.endDate).getTime();
+    for (let d = parseYmd(o.startDate); d.getTime() <= end; d = addDays(d, 1)) {
+      const k = ymd(d);
+      const list = offByDay.get(k) ?? [];
+      list.push({ techName: t.name, reason: o.reason });
+      offByDay.set(k, list);
+    }
+  }
+
+  // Per-day targeted-task index: YYYY-MM-DD → open dashboard tasks due that
+  // day (owner must pass the technician filter, like everything else here).
+  const tasksByDay = new Map<string, TargetedTask[]>();
+  for (const t of targetedTasks) {
+    if (!t.task.targetDate || !visibleTech(t.task.ownerId)) continue;
+    const k = t.task.targetDate.slice(0, 10);
+    const list = tasksByDay.get(k) ?? [];
+    list.push(t);
+    tasksByDay.set(k, list);
+  }
 
   const weeks = Array.from({ length: 6 }, (_, w) => addDays(gridStart, w * 7));
 
   return (
-    <div className="flex h-full flex-col p-3">
+    <div ref={rootRef} className="flex h-full flex-col p-3">
       <div className="grid shrink-0 grid-cols-7 border-b text-center text-xs font-medium text-muted-foreground">
         {DAY_LABELS.map((d, i) => (
           <div key={d} className={`py-2 ${i === 0 || i === 6 ? "bg-muted/40" : ""}`}>{d}</div>
@@ -182,6 +210,8 @@ export function MonthCalendar({
                   const isToday = ymd(day) === todayYmd;
                   const weekend = ci === 0 || ci === 6;
                   const holiday = holidays.get(ymd(day));
+                  const offList = offByDay.get(ymd(day)) ?? [];
+                  const dueTasks = tasksByDay.get(ymd(day)) ?? [];
 
                   return (
                     <div
@@ -213,15 +243,39 @@ export function MonthCalendar({
                         ) : (
                           <span />
                         )}
-                        {isToday ? (
-                          <span className="inline-flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-sm font-bold text-primary-foreground">
-                            {day.getUTCDate()}
-                          </span>
-                        ) : (
-                          <span className={`shrink-0 text-sm ${inMonth ? "text-foreground/70" : "text-muted-foreground/50"}`}>
-                            {day.getUTCDate()}
-                          </span>
-                        )}
+                        <div className="flex shrink-0 items-center gap-1">
+                          {dueTasks.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenDayTasks(ymd(day), dueTasks)}
+                              title={`Targeted tasks:\n${dueTasks
+                                .map((t) => `${t.ownerName}: ${t.task.title} (P${t.task.priority})`)
+                                .join("\n")}`}
+                              className="pointer-events-auto inline-flex items-center gap-0.5 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/50 dark:text-indigo-300"
+                            >
+                              <ClipboardList className="h-3 w-3" aria-hidden />
+                              {dueTasks.length}
+                            </button>
+                          ) : null}
+                          {offList.length > 0 ? (
+                            <span
+                              title={`Off: ${offList.map((o) => (o.reason ? `${o.techName} (${o.reason})` : o.techName)).join(", ")}`}
+                              className="pointer-events-auto inline-flex items-center gap-0.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/50 dark:text-red-300"
+                            >
+                              <Plane className="h-3 w-3" aria-hidden />
+                              {offList.length}
+                            </span>
+                          ) : null}
+                          {isToday ? (
+                            <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-primary px-1 text-sm font-bold text-primary-foreground">
+                              {day.getUTCDate()}
+                            </span>
+                          ) : (
+                            <span className={`text-sm ${inMonth ? "text-foreground/70" : "text-muted-foreground/50"}`}>
+                              {day.getUTCDate()}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -234,21 +288,6 @@ export function MonthCalendar({
                   const left = `calc(${(startCol / 7) * 100}% + 2px)`;
                   const width = `calc(${(span / 7) * 100}% - 4px)`;
                   const top = HEADER_H + lane * BAR_H;
-
-                  if (item.kind === "off") {
-                    const off = item.off!;
-                    return (
-                      <div
-                        key={item.key}
-                        title={`${off.techName} — Time off${off.reason ? ` (${off.reason})` : ""}\n${item.start} → ${item.end}`}
-                        className="pointer-events-auto absolute flex items-center gap-1 overflow-hidden rounded border px-1.5 text-left text-[12px] font-medium"
-                        style={{ ...offStyle(off.color), left, width, top, height: BAR_H - 4 }}
-                      >
-                        <Plane className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                        <span className="truncate">{off.techName} — Time off{off.reason ? ` · ${off.reason}` : ""}</span>
-                      </div>
-                    );
-                  }
 
                   const job = item.job!;
                   return (

@@ -11,6 +11,7 @@ export function Modal({
   description,
   children,
   className,
+  headerActions,
 }: {
   open: boolean;
   onClose: () => void;
@@ -18,6 +19,8 @@ export function Modal({
   description?: string;
   children: ReactNode;
   className?: string;
+  /** Optional controls rendered in the header, just left of the close button. */
+  headerActions?: ReactNode;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -47,14 +50,17 @@ export function Modal({
               <p className="text-sm text-muted-foreground">{description}</p>
             ) : null}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {headerActions}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
         {children}
       </div>

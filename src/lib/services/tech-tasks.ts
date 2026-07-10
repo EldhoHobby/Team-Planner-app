@@ -2,9 +2,9 @@ import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "@/lib/services/audit";
-import type { TechTaskState, TaskOrigin, JobType, JobStatus } from "@prisma/client";
+import type { TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
 
-export type { TechTaskState, TaskOrigin };
+export type { TechTaskState, TaskOrigin, NoteKind };
 
 export interface OwnerLite {
   id: string;
@@ -20,8 +20,20 @@ export interface TechTaskRow {
   targetDate: string | null; // ISO date or null
   state: TechTaskState;
   origin: TaskOrigin;
-  location: string | null;
+  location: string | null; // shown in the UI as "Contact / other details"
   completedAt: string | null;
+  createdAt: string;
+  commentCount: number;
+}
+
+/** One entry in a task's ticket thread: a user COMMENT or a system CHANGE note. */
+export interface NoteRow {
+  id: string;
+  kind: NoteKind;
+  authorId: string | null;
+  authorName: string;
+  body: string;
+  editedAt: string | null;
   createdAt: string;
 }
 export interface JobRow {
@@ -53,19 +65,22 @@ export interface DashboardData {
   groups: OwnerGroup[];
   pool: JobRow[]; // unscheduled / unassigned jobs, shown once for everyone
   owners: OwnerLite[];
+  /** EVERY active person in the org — the reassign dropdown (cross-department). */
+  people: OwnerLite[];
 }
 
 function serialize(t: {
   id: string; ownerId: string; title: string; notes: string | null; priority: number;
   targetDate: Date | null; state: TechTaskState; origin: TaskOrigin; location: string | null;
   completedAt: Date | null; createdAt: Date;
-}): TechTaskRow {
+}, commentCount = 0): TechTaskRow {
   return {
     id: t.id, ownerId: t.ownerId, title: t.title, notes: t.notes, priority: t.priority,
     targetDate: t.targetDate ? t.targetDate.toISOString() : null,
     state: t.state, origin: t.origin, location: t.location,
     completedAt: t.completedAt ? t.completedAt.toISOString() : null,
     createdAt: t.createdAt.toISOString(),
+    commentCount,
   };
 }
 
@@ -198,6 +213,14 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
     orderBy: [{ priority: "asc" }, { targetDate: "asc" }, { createdAt: "asc" }],
   });
 
+  // 💬 badge counts: user comments only (system CHANGE notes don't count).
+  const commentAgg = await prisma.techTaskNote.groupBy({
+    by: ["taskId"],
+    where: { taskId: { in: tasks.map((t) => t.id) }, kind: "COMMENT" },
+    _count: { _all: true },
+  });
+  const commentsByTask = new Map(commentAgg.map((c) => [c.taskId, c._count._all]));
+
   // Field-service jobs that aren't finished. `technicianId` IS a person's user id
   // now, so a job maps straight to its owner.
   const jobs = await prisma.task.findMany({
@@ -233,8 +256,9 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
 
   const groups: OwnerGroup[] = owners.map((o) => {
     const mine = tasks.filter((t) => t.ownerId === o.id);
-    const open = mine.filter((t) => t.state !== "DONE").map(serialize);
-    const done = mine.filter((t) => t.state === "DONE").map(serialize);
+    const withCount = (t: (typeof mine)[number]) => serialize(t, commentsByTask.get(t.id) ?? 0);
+    const open = mine.filter((t) => t.state !== "DONE").map(withCount);
+    const done = mine.filter((t) => t.state === "DONE").map(withCount);
 
     // Group completed items by the week they were completed (newest week first).
     const byWeek = new Map<string, TechTaskRow[]>();
@@ -262,7 +286,56 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
     };
   });
 
-  return { groups, pool, owners };
+  const people = await listOrgPeople(scope);
+
+  return { groups, pool, owners, people };
+}
+
+/** Everyone active in the org — reassign targets, any department. */
+export async function listOrgPeople(scope: TenantScope): Promise<OwnerLite[]> {
+  return prisma.user.findMany({
+    where: { archived: false, isActive: true, memberships: { some: { orgId: scope.ctx.orgId } } },
+    select: { id: true, name: true, email: true },
+    orderBy: [{ name: "asc" }, { email: "asc" }],
+  });
+}
+
+/** A dashboard task pinned to a calendar day (open + has a target date). */
+export interface TargetedTask {
+  task: TechTaskRow;
+  ownerName: string;
+  /** Viewer may open/edit the ticket (owner, their managers, admins). */
+  editable: boolean;
+}
+
+/**
+ * Open tasks with a target date, org-wide — the schedule calendar shows a small
+ * "targeted task" marker on each one's day. `editable` mirrors dashboard
+ * visibility so the calendar only opens tickets the viewer could see there.
+ */
+export async function listTargetedTasks(scope: TenantScope): Promise<TargetedTask[]> {
+  const rows = await prisma.techTask.findMany({
+    where: {
+      orgId: scope.ctx.orgId,
+      state: { not: "DONE" },
+      targetDate: { not: null },
+      owner: { archived: false, isActive: true },
+    },
+    include: { owner: { select: { name: true, username: true, email: true } } },
+    orderBy: [{ targetDate: "asc" }, { priority: "asc" }],
+  });
+  const counts = await prisma.techTaskNote.groupBy({
+    by: ["taskId"],
+    where: { taskId: { in: rows.map((r) => r.id) }, kind: "COMMENT" },
+    _count: { _all: true },
+  });
+  const countMap = new Map(counts.map((c) => [c.taskId, c._count._all]));
+  const manageable = new Set([scope.ctx.userId, ...(await managedMemberIds(scope))]);
+  return rows.map((r) => ({
+    task: serialize(r, countMap.get(r.id) ?? 0),
+    ownerName: r.owner.name ?? r.owner.username ?? r.owner.email ?? "someone",
+    editable: scope.ctx.isOrgAdmin || manageable.has(r.ownerId),
+  }));
 }
 
 export interface CreateTechTaskInput {
@@ -281,6 +354,118 @@ export interface UpdateTechTaskInput {
   targetDate?: Date | null;
   state?: TechTaskState;
   location?: string;
+  /** Reassign to another person (any active org member, any department). */
+  ownerId?: string;
+}
+
+// ─── Ticket thread (comments + change history) ───
+
+const NOTE_STATE_LABELS: Record<TechTaskState, string> = {
+  NEW: "New", TODO: "To Do", IN_PROGRESS: "In Progress", HOLD: "Hold", DONE: "Done",
+};
+function noteDate(d: Date | null): string {
+  return d ? d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "—";
+}
+
+/** The EFFECTIVE user writing to a thread (id + display-name snapshot). */
+async function noteAuthor(scope: TenantScope): Promise<{ id: string; name: string }> {
+  const u = await prisma.user.findUnique({
+    where: { id: scope.ctx.userId },
+    select: { name: true, username: true, email: true },
+  });
+  return { id: scope.ctx.userId, name: u?.name ?? u?.username ?? u?.email ?? "someone" };
+}
+
+/** Best-effort system CHANGE note — never breaks the underlying update. */
+async function recordChange(scope: TenantScope, taskId: string, body: string) {
+  try {
+    const author = await noteAuthor(scope);
+    await prisma.techTaskNote.create({
+      data: {
+        orgId: scope.ctx.orgId,
+        taskId,
+        authorId: author.id,
+        authorName: author.name,
+        kind: "CHANGE",
+        body: body.slice(0, 500),
+      },
+    });
+  } catch {
+    /* history must never break the mutation */
+  }
+}
+
+function serializeNote(n: {
+  id: string; kind: NoteKind; authorId: string | null; authorName: string;
+  body: string; editedAt: Date | null; createdAt: Date;
+}): NoteRow {
+  return {
+    id: n.id, kind: n.kind, authorId: n.authorId, authorName: n.authorName,
+    body: n.body, editedAt: n.editedAt ? n.editedAt.toISOString() : null,
+    createdAt: n.createdAt.toISOString(),
+  };
+}
+
+/** The full thread for a task, oldest first. Permission = task visibility. */
+export async function getTaskThread(scope: TenantScope, taskId: string): Promise<NoteRow[]> {
+  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
+  if (!task) throw new ForbiddenError("Task not found");
+  await assertCanManageOwner(scope, task.ownerId);
+  const notes = await prisma.techTaskNote.findMany({
+    where: { taskId },
+    orderBy: { createdAt: "asc" },
+  });
+  return notes.map(serializeNote);
+}
+
+export async function addTaskComment(scope: TenantScope, taskId: string, body: string): Promise<NoteRow> {
+  const text = body.trim();
+  if (!text) throw new ForbiddenError("Write a comment first.");
+  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
+  if (!task) throw new ForbiddenError("Task not found");
+  await assertCanManageOwner(scope, task.ownerId);
+  const author = await noteAuthor(scope);
+  const note = await prisma.techTaskNote.create({
+    data: {
+      orgId: scope.ctx.orgId,
+      taskId,
+      authorId: author.id,
+      authorName: author.name,
+      kind: "COMMENT",
+      body: text.slice(0, 4000),
+    },
+  });
+  return serializeNote(note);
+}
+
+/** Authors may edit their own comments; edits get an "(edited)" stamp. */
+export async function editTaskComment(scope: TenantScope, noteId: string, body: string): Promise<NoteRow> {
+  const text = body.trim();
+  if (!text) throw new ForbiddenError("A comment can't be empty — delete it instead.");
+  const note = await prisma.techTaskNote.findFirst({
+    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT" },
+  });
+  if (!note) throw new ForbiddenError("Comment not found");
+  if (note.authorId !== scope.ctx.userId) {
+    throw new ForbiddenError("You can only edit your own comments.");
+  }
+  const updated = await prisma.techTaskNote.update({
+    where: { id: noteId },
+    data: { body: text.slice(0, 4000), editedAt: new Date() },
+  });
+  return serializeNote(updated);
+}
+
+/** Delete own comment; org admins may delete anyone's. */
+export async function deleteTaskComment(scope: TenantScope, noteId: string): Promise<void> {
+  const note = await prisma.techTaskNote.findFirst({
+    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT" },
+  });
+  if (!note) throw new ForbiddenError("Comment not found");
+  if (note.authorId !== scope.ctx.userId && !scope.ctx.isOrgAdmin) {
+    throw new ForbiddenError("You can only delete your own comments.");
+  }
+  await prisma.techTaskNote.delete({ where: { id: noteId } });
 }
 
 export async function createTechTask(scope: TenantScope, input: CreateTechTaskInput) {
@@ -312,6 +497,8 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
     action: "created",
     summary: `Added dashboard task "${task.title}"${owner ? ` for ${owner.name ?? owner.username}` : ""}`,
   });
+  // Thread opener — GitLab-style "opened" system note.
+  await recordChange(scope, task.id, owner ? `created this task for ${owner.name ?? owner.username}` : "created this task");
   return task;
 }
 
@@ -319,6 +506,29 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
   const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
   if (!existing) throw new ForbiddenError("Task not found");
   await assertCanManageOwner(scope, existing.ownerId);
+
+  // Reassignment: allowed by whoever can edit the task (owner / their managers /
+  // admins); the TARGET may be anyone active in the org — any department.
+  const reassigning = input.ownerId !== undefined && input.ownerId !== existing.ownerId;
+  let newOwner: { id: string; name: string | null; username: string } | null = null;
+  let oldOwnerName = "";
+  if (reassigning) {
+    newOwner = await prisma.user.findFirst({
+      where: {
+        id: input.ownerId!,
+        archived: false,
+        isActive: true,
+        memberships: { some: { orgId: scope.ctx.orgId } },
+      },
+      select: { id: true, name: true, username: true },
+    });
+    if (!newOwner) throw new ForbiddenError("That person isn't an active member of your organization.");
+    const old = await prisma.user.findUnique({
+      where: { id: existing.ownerId },
+      select: { name: true, username: true },
+    });
+    oldOwnerName = old?.name ?? old?.username ?? "someone";
+  }
 
   const stateChanged = input.state !== undefined && input.state !== existing.state;
   // Stamp completedAt when entering DONE, clear it when leaving DONE.
@@ -338,6 +548,15 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
       ...(input.state !== undefined ? { state: input.state } : {}),
       ...(completedAt !== undefined ? { completedAt } : {}),
       ...(input.location !== undefined ? { location: input.location?.trim() || null } : {}),
+      // Reassign: hand the task to the new person; the reassigner becomes the
+      // "assigned by" and the origin flips to MANAGER (it was handed over).
+      ...(reassigning
+        ? {
+            ownerId: newOwner!.id,
+            assignedById: scope.ctx.userId,
+            ...(newOwner!.id !== scope.ctx.userId ? { origin: "MANAGER" as TaskOrigin } : {}),
+          }
+        : {}),
       // Flag synced tasks whose state changed so a future Outlook sync pushes it back.
       ...(stateChanged && existing.externalId ? { syncDirty: true } : {}),
     },
@@ -354,6 +573,34 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
     },
     { coalesceMs: stateChanged ? 0 : 5 * 60 * 1000 },
   );
+
+  // Ticket history: one CHANGE note per save, listing what actually changed.
+  const changes: string[] = [];
+  if (input.title !== undefined && input.title.trim() !== existing.title) {
+    changes.push(`title: “${existing.title}” → “${task.title}”`);
+  }
+  if (input.priority !== undefined && task.priority !== existing.priority) {
+    changes.push(`priority: ${existing.priority} → ${task.priority}`);
+  }
+  if (input.targetDate !== undefined) {
+    const before = existing.targetDate?.getTime() ?? null;
+    const after = task.targetDate?.getTime() ?? null;
+    if (before !== after) changes.push(`target date: ${noteDate(existing.targetDate)} → ${noteDate(task.targetDate)}`);
+  }
+  if (stateChanged) {
+    changes.push(`state: ${NOTE_STATE_LABELS[existing.state]} → ${NOTE_STATE_LABELS[task.state]}`);
+  }
+  if (input.notes !== undefined && (input.notes.trim() || null) !== existing.notes) {
+    changes.push("updated the details");
+  }
+  if (input.location !== undefined && (input.location.trim() || null) !== existing.location) {
+    changes.push("updated contact / other details");
+  }
+  if (reassigning) {
+    changes.push(`reassigned: ${oldOwnerName} → ${newOwner!.name ?? newOwner!.username}`);
+  }
+  if (changes.length) await recordChange(scope, id, changes.join("; "));
+
   return task;
 }
 

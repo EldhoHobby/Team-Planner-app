@@ -13,6 +13,7 @@ import {
   CalendarDays,
   PanelLeftClose,
   PanelLeftOpen,
+  Plane,
   X,
 } from "lucide-react";
 import {
@@ -32,6 +33,9 @@ import { barStyle, dotStyle, softStyle, hatchStyle } from "@/lib/scheduling/colo
 import { rescheduleJobAction } from "../tasks/actions";
 import { jobLabel } from "./format";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
+import type { OwnerLite, TargetedTask } from "@/lib/services/tech-tasks";
+import { TaskTicket } from "../dashboard/task-ticket";
+import { Modal } from "@/components/ui/modal";
 import { NewJobDialog } from "./new-job-dialog";
 import { JobEditor } from "./job-editor";
 import { ImportDialog } from "./import-dialog";
@@ -99,6 +103,10 @@ export function ScheduleClient({
   holidays,
   defaultTechIds,
   initialDate,
+  targetedTasks,
+  people,
+  currentUserId,
+  isAdmin,
 }: {
   jobs: JobRow[];
   technicians: TechnicianOption[];
@@ -108,6 +116,11 @@ export function ScheduleClient({
   defaultTechIds: string[] | null;
   /** Deep-link (e.g. from the dashboard): open the board at this date. */
   initialDate?: string | null;
+  /** Open dashboard tasks with a target date — calendar day markers. */
+  targetedTasks: TargetedTask[];
+  people: OwnerLite[];
+  currentUserId: string;
+  isAdmin: boolean;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -137,11 +150,34 @@ export function ScheduleClient({
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  // After Duplicate: the copy's id, selected as soon as the refreshed data
+  // includes it (swaps the open editor from the source over to the new copy).
+  const [pendingSelectId, setPendingSelectId] = useState<string | null>(null);
+
+  // Targeted-task markers on the calendar: clicking one opens the task ticket
+  // (single editable task) or a chooser (several tasks that day).
+  const [taskTicketId, setTaskTicketId] = useState<string | null>(null);
+  const [dayTasks, setDayTasks] = useState<{ ymd: string; tasks: TargetedTask[] } | null>(null);
+  const ticketEntry = taskTicketId ? targetedTasks.find((t) => t.task.id === taskTicketId) : null;
+  const openDayTasks = (dateYmd: string, tasks: TargetedTask[]) => {
+    if (tasks.length === 1 && tasks[0].editable) setTaskTicketId(tasks[0].task.id);
+    else setDayTasks({ ymd: dateYmd, tasks });
+  };
 
   // Keep an open job editor pointed at the latest data after any refresh.
   useEffect(() => {
     setSelected((sel) => (sel ? (propJobs.find((j) => j.id === sel.id) ?? null) : null));
   }, [propJobs]);
+
+  // Open the freshly duplicated job once it lands in the refreshed job list.
+  useEffect(() => {
+    if (!pendingSelectId) return;
+    const copy = propJobs.find((j) => j.id === pendingSelectId);
+    if (copy) {
+      setSelected(copy);
+      setPendingSelectId(null);
+    }
+  }, [pendingSelectId, propJobs]);
 
   // Filters. Technician filter is a checkbox multi-select: null = everyone;
   // otherwise a set of technician ids (plus "UNASSIGNED"). Initialised to the
@@ -217,12 +253,12 @@ export function ScheduleClient({
   const weekEnd = weekDays[6];
   const todayYmd = localTodayYmd();
 
-  // Time-off index: technicianId → list of [startMs, endMs]
+  // Time-off index: technicianId → list of [startMs, endMs] + reason
   const offByTech = useMemo(() => {
-    const m = new Map<string, { s: number; e: number }[]>();
+    const m = new Map<string, { s: number; e: number; reason: string | null }[]>();
     for (const o of timeOff) {
       const arr = m.get(o.technicianId) ?? [];
-      arr.push({ s: parseYmd(o.startDate).getTime(), e: parseYmd(o.endDate).getTime() });
+      arr.push({ s: parseYmd(o.startDate).getTime(), e: parseYmd(o.endDate).getTime(), reason: o.reason });
       m.set(o.technicianId, arr);
     }
     return m;
@@ -239,6 +275,12 @@ export function ScheduleClient({
     if (!techId) return false;
     const t = toUtcMidnight(day).getTime();
     return (offByTech.get(techId) ?? []).some((r) => r.s <= t && t <= r.e);
+  };
+  // The matching time-off block on a day (for the chip's reason tooltip), or null.
+  const offInfoOnDay = (techId: string | null, day: Date) => {
+    if (!techId) return null;
+    const t = toUtcMidnight(day).getTime();
+    return (offByTech.get(techId) ?? []).find((r) => r.s <= t && t <= r.e) ?? null;
   };
   const isOffInRange = (techId: string | null, s: Date, e: Date) => {
     if (!techId) return false;
@@ -493,7 +535,9 @@ export function ScheduleClient({
             </button>
             <span className="min-w-[10rem] text-center text-sm font-medium">
               {view === "calendar"
-                ? anchor.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
+                ? // Label the month that DOMINATES the (wheel-scrollable) 6-week
+                  // grid — the middle of the visible window, not the raw anchor.
+                  addDays(startOfWeekSunday(anchor), 17).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
                 : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
             </span>
             <button type="button" aria-label={view === "calendar" ? "Next month" : "Next week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(1)}>
@@ -636,10 +680,13 @@ export function ScheduleClient({
               technicians={technicians}
               selectedTechs={fTechSel}
               timeOff={timeOff}
+              targetedTasks={targetedTasks}
               todayYmd={todayYmd}
               onOpenJob={setSelected}
               onDropDay={moveDate}
               onClearDate={(jobId) => moveDate(jobId, null)}
+              onOpenDayTasks={openDayTasks}
+              onShiftWeeks={(n) => setAnchor((a) => addDays(a, n * 7))}
             />
           ) : (
             <>
@@ -680,20 +727,25 @@ export function ScheduleClient({
                       <div className="absolute inset-0 grid grid-cols-7">
                         {weekDays.map((d, i) => {
                           const weekend = i === 0 || i === 6;
-                          const off = isOffOnDay(row.id, d);
+                          const offInfo = offInfoOnDay(row.id, d);
+                          const off = !!offInfo;
                           const holiday = holidayOn(d);
                           const isToday = ymd(d) === todayYmd;
                           return (
                             <div
                               key={i}
-                              className={`border-r ${off ? "bg-red-100/70" : holiday ? "bg-amber-100/60" : isToday ? "bg-primary/5 shadow-[inset_2px_0_0_hsl(var(--primary)),inset_-2px_0_0_hsl(var(--primary))]" : weekend ? "bg-muted/30" : ""}`}
-                              title={off ? `${row.name} — time off` : holiday ? `Holiday: ${holiday}` : undefined}
+                              className={`relative border-r ${off ? "bg-red-100/70" : holiday ? "bg-amber-100/60" : isToday ? "bg-primary/5 shadow-[inset_2px_0_0_hsl(var(--primary)),inset_-2px_0_0_hsl(var(--primary))]" : weekend ? "bg-muted/30" : ""}`}
+                              title={off ? `${row.name} — time off${offInfo!.reason ? ` (${offInfo!.reason})` : ""}` : holiday ? `Holiday: ${holiday}` : undefined}
                               onDragOver={(e) => row.droppable && e.preventDefault()}
                               onDrop={(e) => {
                                 if (row.droppable) onDropCell(e, row.id, d);
                                 else e.preventDefault();
                               }}
-                            />
+                            >
+                              {off ? (
+                                <Plane className="pointer-events-none absolute right-0.5 top-0.5 h-3 w-3 text-red-600" aria-hidden />
+                              ) : null}
+                            </div>
                           );
                         })}
                       </div>
@@ -746,13 +798,69 @@ export function ScheduleClient({
           open={newOpen}
           onClose={() => setNewOpen(false)}
           technicians={technicians}
+          allJobs={jobs}
         />
       )}
       {importOpen && (
         <ImportDialog key="import" open={importOpen} onClose={() => setImportOpen(false)} />
       )}
+      {dayTasks && (
+        <Modal
+          open
+          onClose={() => setDayTasks(null)}
+          title={`Targeted tasks — ${parseYmd(dayTasks.ymd).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
+          description="Dashboard tasks due this day."
+        >
+          <ul className="space-y-1.5">
+            {dayTasks.tasks.map((t) => (
+              <li key={t.task.id}>
+                {t.editable ? (
+                  <button
+                    type="button"
+                    onClick={() => { setDayTasks(null); setTaskTicketId(t.task.id); }}
+                    className="w-full rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/40"
+                  >
+                    <span className="font-medium">{t.task.title}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {t.ownerName} · P{t.task.priority}
+                    </span>
+                  </button>
+                ) : (
+                  <div
+                    className="w-full rounded-md border border-dashed px-3 py-2 text-left text-sm opacity-70"
+                    title="Managed on that person's dashboard"
+                  >
+                    <span className="font-medium">{t.task.title}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {t.ownerName} · P{t.task.priority}
+                    </span>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Modal>
+      )}
+
+      {ticketEntry && (
+        <TaskTicket
+          task={ticketEntry.task}
+          ownerName={ticketEntry.ownerName}
+          people={people}
+          currentUserId={currentUserId}
+          isAdmin={isAdmin}
+          onClose={() => setTaskTicketId(null)}
+        />
+      )}
+
       {selected && (
-        <JobEditor job={selected} technicians={technicians} onClose={() => setSelected(null)} />
+        <JobEditor
+          job={selected}
+          technicians={technicians}
+          allJobs={jobs}
+          onClose={() => setSelected(null)}
+          onDuplicated={(id) => setPendingSelectId(id)}
+        />
       )}
     </div>
   );

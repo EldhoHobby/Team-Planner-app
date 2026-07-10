@@ -43,6 +43,8 @@ export type HolidayLite = {
 export type JobFormState = {
   error?: string;
   success?: boolean;
+  /** Set by duplicateJobAction — the id of the newly created copy. */
+  jobId?: string;
 };
 
 export type ImportState = {

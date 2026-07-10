@@ -9,6 +9,7 @@ import {
 import { listTechTimeOff } from "@/lib/services/technicians";
 import { listHolidays } from "@/lib/services/holidays";
 import { recordPageView } from "@/lib/services/audit";
+import { listTargetedTasks, listOrgPeople } from "@/lib/services/tech-tasks";
 import { ScheduleClient } from "./schedule-client";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 
@@ -64,12 +65,14 @@ export default async function SchedulePage({
   // off by default, so production starts with no technicians). No-op otherwise.
   await ensureDefaultTechnicians(scope);
 
-  const [jobs, techs, timeOff, holidays, defaultTechIds] = await Promise.all([
+  const [jobs, techs, timeOff, holidays, defaultTechIds, targetedTasks, people] = await Promise.all([
     listFieldJobs(scope),
     listTechnicians(scope),
     listTechTimeOff(scope),
     listHolidays(scope),
     defaultTechIdsFor(user.id, scope.ctx.orgId, scope.ctx.isOrgAdmin),
+    listTargetedTasks(scope),
+    listOrgPeople(scope),
   ]);
 
   const jobRows: JobRow[] = jobs.map((j) => ({
@@ -118,6 +121,10 @@ export default async function SchedulePage({
       holidays={holidayRows}
       defaultTechIds={params.tech ? [params.tech] : defaultTechIds}
       initialDate={params.date && /^\d{4}-\d{2}-\d{2}$/.test(params.date) ? params.date : null}
+      targetedTasks={targetedTasks}
+      people={people}
+      currentUserId={user.id}
+      isAdmin={scope.ctx.isOrgAdmin}
     />
   );
 }

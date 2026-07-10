@@ -126,6 +126,34 @@ async function assertWorkGroupInScope(scope: TenantScope, workGroupId: string) {
   if (!g) throw new ForbiddenError("Work group is not in your organization");
 }
 
+/** A job's dedupe key: normalized SO number + title. */
+export function soTitleKey(soNumber: string | null | undefined, title: string): string {
+  return `${(soNumber ?? "").trim().toLowerCase()}|${title.trim().toLowerCase()}`;
+}
+
+/**
+ * Enforce that no OTHER field-service job in scope shares this SO number +
+ * title. Keeps job titles unambiguous. `exceptId` excludes the row being
+ * updated. Throws a user-facing ForbiddenError (surfaced by the job actions).
+ */
+async function assertUniqueSoTitle(
+  scope: TenantScope,
+  soNumber: string | null | undefined,
+  title: string,
+  exceptId?: string,
+) {
+  const key = soTitleKey(soNumber, title);
+  const peers = await prisma.task.findMany({
+    where: { kind: "FIELD_SERVICE", ...scope.team() },
+    select: { id: true, soNumber: true, title: true },
+  });
+  if (peers.some((p) => p.id !== exceptId && soTitleKey(p.soNumber, p.title) === key)) {
+    throw new ForbiddenError(
+      `Another job already has SO "${(soNumber ?? "").trim() || "—"}" with the title "${title.trim()}". Give this job a unique title.`,
+    );
+  }
+}
+
 /** Derive endDate + a coherent jobStatus from start/duration/technician. */
 function deriveSchedule(input: {
   startDate?: Date | null;
@@ -147,6 +175,7 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
   const { teamId, projectId } = await ensureContainer(scope);
   if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
   if (input.workGroupId) await assertWorkGroupInScope(scope, input.workGroupId);
+  await assertUniqueSoTitle(scope, input.soNumber, input.title.trim());
 
   const { start, end, duration, status } = deriveSchedule(input);
 
@@ -177,6 +206,59 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
   return job;
 }
 
+/**
+ * Copy an existing job for editing: keeps ALL details including the assigned
+ * technician, duration and work group — only the START DATE is cleared, so the
+ * copy lands unscheduled (in the backlog) with a "(copy)" title until the
+ * planner picks a new date.
+ */
+export async function duplicateJob(scope: TenantScope, jobId: string) {
+  const src = await prisma.task.findFirst({
+    where: { id: jobId, orgId: scope.ctx.orgId, kind: "FIELD_SERVICE" },
+  });
+  if (!src) throw new ForbiddenError("Job not found");
+
+  // Pick a unique "(copy)" title so the uniqueness rule accepts it — "(copy)",
+  // then "(copy 2)", "(copy 3)", … if earlier copies already exist.
+  const peers = await prisma.task.findMany({
+    where: { kind: "FIELD_SERVICE", ...scope.team() },
+    select: { soNumber: true, title: true },
+  });
+  const taken = new Set(peers.map((p) => soTitleKey(p.soNumber, p.title)));
+  let copyTitle = `${src.title} (copy)`;
+  for (let n = 2; taken.has(soTitleKey(src.soNumber, copyTitle)); n++) {
+    copyTitle = `${src.title} (copy ${n})`;
+  }
+
+  const copy = await createJob(scope, {
+    title: copyTitle,
+    soNumber: src.soNumber,
+    customerName: src.customerName,
+    description: src.description,
+    jobType: src.jobType,
+    hardwareTarget: src.hardwareTarget,
+    priority: src.priority,
+    workGroupId: src.workGroupId,
+    technicianId: src.technicianId, // keep the assignee
+    startDate: null, // clear only the date → lands in the backlog
+    durationDays: src.durationDays,
+    tentative: false,
+  });
+  // deriveSchedule nulls duration for unscheduled jobs; keep the source's day
+  // count on the copy so dragging it onto the board restores the same span
+  // (rescheduleJob falls back to the stored durationDays).
+  if (src.durationDays) {
+    await prisma.task.update({ where: { id: copy.id }, data: { durationDays: src.durationDays } });
+  }
+  await writeAudit(scope, {
+    entity: "job",
+    entityId: copy.id,
+    action: "created",
+    summary: `Duplicated "${src.title}" → "${copy.title}" (backlog)`,
+  });
+  return copy;
+}
+
 export interface UpdateJobInput {
   title?: string;
   soNumber?: string | null;
@@ -201,6 +283,13 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
 
   if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
   if (input.workGroupId) await assertWorkGroupInScope(scope, input.workGroupId);
+
+  // Keep SO + title unique when either is being changed.
+  if (input.title !== undefined || input.soNumber !== undefined) {
+    const effTitle = input.title !== undefined ? input.title.trim() : job.title;
+    const effSo = input.soNumber !== undefined ? (input.soNumber?.trim() || null) : job.soNumber;
+    await assertUniqueSoTitle(scope, effSo, effTitle, id);
+  }
 
   const nextStart = input.startDate !== undefined ? input.startDate : job.startDate;
   const nextDuration =
