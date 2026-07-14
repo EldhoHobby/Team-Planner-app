@@ -39,6 +39,38 @@ function custFontPx(len: number): number {
 const numInput = "h-8 w-14 rounded bg-transparent px-1 text-center text-sm focus:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const txtInput = "h-8 w-full rounded bg-transparent px-1.5 text-sm focus:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+// Hour cell that supports typing decimals ("1.5"). The cell keeps its own TEXT
+// while focused (so an in-progress "1." isn't eaten by number round-tripping)
+// and pushes the parsed value up on every keystroke so totals stay live.
+// Module-level on purpose: defining it inside the page component would remount
+// the input (and drop focus) on every parent re-render.
+function HourCell({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  const [text, setText] = useState(value ? String(value) : "");
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setText(value ? String(value) : "");
+  }, [value, focused]);
+  return (
+    <input
+      className={numInput}
+      inputMode="decimal"
+      value={text}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        setText(value ? String(value) : "");
+      }}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (v !== "" && !/^\d{0,2}(\.\d{0,2})?$/.test(v)) return; // digits + one "." only
+        setText(v);
+        const n = parseFloat(v);
+        onChange(Number.isFinite(n) && n > 0 ? n : 0);
+      }}
+    />
+  );
+}
+
 export function TimesheetClient({
   userName,
   empNo: initialEmpNo,
@@ -236,7 +268,7 @@ export function TimesheetClient({
                 {DAY_KEYS.map((k) => (
                   <Td key={k} className="text-center">
                     {editable ? (
-                      <input className={numInput} inputMode="decimal" value={r[k] || ""} onChange={(e) => setDirectDay(i, k, num(e.target.value))} />
+                      <HourCell value={r[k]} onChange={(n) => setDirectDay(i, k, n)} />
                     ) : (r[k] || "")}
                   </Td>
                 ))}
@@ -272,7 +304,7 @@ export function TimesheetClient({
                 {DAY_KEYS.map((k) => (
                   <Td key={k} className="text-center">
                     {editable ? (
-                      <input className={numInput} inputMode="decimal" value={r[k] || ""} onChange={(e) => setIndirectDay(i, k, num(e.target.value))} />
+                      <HourCell value={r[k]} onChange={(n) => setIndirectDay(i, k, n)} />
                     ) : (r[k] || "")}
                   </Td>
                 ))}

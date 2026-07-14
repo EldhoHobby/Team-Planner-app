@@ -161,6 +161,9 @@ function deriveSchedule(input: {
   technicianId?: string | null;
   jobStatus?: JobStatus;
 }) {
+  // durationDays === 0 is the "days TBD" placeholder: it schedules as a single
+  // day (endDate = startDate) but we PERSIST the 0 so the UI can label it TBD.
+  const isTbd = input.durationDays === 0;
   const duration = input.durationDays && input.durationDays > 0 ? input.durationDays : 1;
   const start = input.startDate ? toUtcMidnight(input.startDate) : null;
   const end = start ? endFromDuration(start, duration) : null;
@@ -168,7 +171,7 @@ function deriveSchedule(input: {
   let status: JobStatus = input.jobStatus ?? "UNCONFIRMED";
   if (status === "UNCONFIRMED" && start && input.technicianId) status = "SCHEDULED";
   if (!start) status = input.jobStatus ?? "UNCONFIRMED";
-  return { start, end, duration: start ? duration : null, status };
+  return { start, end, duration: isTbd ? 0 : start ? duration : null, status };
 }
 
 export async function createJob(scope: TenantScope, input: CreateJobInput) {
@@ -393,8 +396,9 @@ export async function rescheduleJob(
   });
 
   // Preserve the day-count even when unscheduled, so a trip through the backlog
-  // doesn't silently reset a multi-day job back to 1 day.
-  const storedDuration = nextDuration && nextDuration > 0 ? nextDuration : 1;
+  // doesn't silently reset a multi-day job back to 1 day. Keep 0 ("days TBD").
+  const storedDuration =
+    nextDuration === 0 ? 0 : nextDuration && nextDuration > 0 ? nextDuration : 1;
   const updated = await prisma.task.update({
     where: { id },
     data: {

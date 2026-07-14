@@ -323,28 +323,29 @@ export function JobEditor({
             <Input
               id="ed-days"
               type="number"
-              min={1}
+              min={0}
               max={60}
               value={form.durationDays}
               disabled={pending}
               onChange={(e) => {
                 // Always accept the raw text (so backspace/clearing works);
-                // only push valid values to the server.
+                // only push valid values to the server. 0 = "days TBD".
                 const raw = e.target.value;
                 setForm((f) => ({ ...f, durationDays: raw }));
                 const n = Number(raw);
-                if (raw !== "" && Number.isInteger(n) && n >= 1 && n <= 60) {
+                if (raw !== "" && Number.isInteger(n) && n >= 0 && n <= 60) {
                   run(() => rescheduleJobAction({ jobId: job.id, durationDays: n }));
                 }
               }}
               onBlur={() => {
                 // Leaving the field empty/invalid restores the saved value.
                 const n = Number(form.durationDays);
-                if (form.durationDays === "" || !Number.isInteger(n) || n < 1 || n > 60) {
+                if (form.durationDays === "" || !Number.isInteger(n) || n < 0 || n > 60) {
                   setForm((f) => ({ ...f, durationDays: String(job.durationDays ?? 1) }));
                 }
               }}
             />
+            <p className="text-[11px] text-muted-foreground">0 = days TBD</p>
           </div>
         </div>
 

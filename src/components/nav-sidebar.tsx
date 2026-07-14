@@ -36,7 +36,7 @@ export function NavSidebar({
 }) {
   const pathname = usePathname();
   return (
-    <aside className="flex h-full w-52 flex-shrink-0 flex-col border-r bg-card">
+    <aside className="flex h-full w-52 flex-shrink-0 flex-col border-r bg-card print:hidden">
       <div className="flex h-14 items-center border-b px-4">
         <span className="text-sm font-semibold tracking-tight">
           Team Planner
@@ -73,12 +73,6 @@ export function NavSidebar({
         <p className="pt-1 text-center text-[10px] text-muted-foreground" title="Application version and build date">
           {VERSION_LABEL}
         </p>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/DreamsLIVE_logo_png.png"
-          alt="Dreams Live Solutions"
-          className="mx-auto mt-1 w-36"
-        />
       </div>
     </aside>
   );

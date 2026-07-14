@@ -117,23 +117,27 @@ export function EmailClient({
           </p>
           <p>
             2. Each message&apos;s subject and body are scanned for <span className="font-medium text-foreground">@username</span> tags
-            (e.g. <code className="rounded bg-muted px-1">@charles.fry</code> — usernames are shown on Settings → People). Every tagged
-            person gets a dashboard task: title = the subject (tags removed), notes = sender + body excerpt, origin = &quot;Assigned&quot;.
+            (e.g. <code className="rounded bg-muted px-1">@charles.fry</code>) <span className="font-medium text-foreground">or
+            @Full Name</span> (e.g. <code className="rounded bg-muted px-1">@Charles Fry</code> — the @ is required; a plain
+            name in the text does not assign). Every matched person gets a dashboard task:
+            title = the email subject, details = &quot;Email task created&quot; with the date &amp; time, origin = &quot;Assigned&quot;.
+            The email body itself is not stored.
           </p>
           <p>
             {ai.enabled ? (
               <>
-                2b. <span className="font-medium text-foreground">AI summarizer is ON</span> (local model{" "}
+                2b. <span className="font-medium text-foreground">AI assist is ON</span> (local model{" "}
                 <code className="rounded bg-muted px-1">{ai.model}</code>, runs on this server — nothing leaves your network).
-                It rewrites the task with an action-oriented title and a short summary, and fills in the target date and
-                priority when the email states them. If the model is unavailable, the raw subject/excerpt is used instead
-                (the history detail says which).
+                It reads the email and fills in the <span className="font-medium text-foreground">target date</span> (&quot;by
+                Friday&quot;) and <span className="font-medium text-foreground">priority</span> (&quot;urgent&quot;) when stated.
+                The title and details always follow the format above. If the model is unavailable, the task is created
+                without a date/priority (the history detail says which).
               </>
             ) : (
               <>
-                2b. <span className="font-medium text-foreground">AI summarizer is OFF</span> — set{" "}
+                2b. <span className="font-medium text-foreground">AI assist is OFF</span> — set{" "}
                 <code className="rounded bg-muted px-1">EMAIL_AI_ENABLED=true</code> in .env to have a local model
-                (Ollama, on this server) write the task title/summary and extract target date + priority.
+                (Ollama, on this server) extract the target date + priority from each email.
               </>
             )}
           </p>

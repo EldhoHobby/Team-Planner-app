@@ -14,6 +14,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plane,
+  Printer,
   X,
 } from "lucide-react";
 import {
@@ -36,6 +37,7 @@ import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types
 import type { OwnerLite, TargetedTask } from "@/lib/services/tech-tasks";
 import { TaskTicket } from "../dashboard/task-ticket";
 import { Modal } from "@/components/ui/modal";
+import { PrintSheet } from "./print-sheet";
 import { NewJobDialog } from "./new-job-dialog";
 import { JobEditor } from "./job-editor";
 import { ImportDialog } from "./import-dialog";
@@ -493,14 +495,21 @@ export function ScheduleClient({
     if (jobId) moveDate(jobId, null); // unschedule, keep technician + duration
   };
 
+  // Shown in the header AND on the print-only title line.
+  const rangeLabel =
+    view === "calendar"
+      ? // Label the month that DOMINATES the (wheel-scrollable) 6-week grid.
+        addDays(startOfWeekSunday(anchor), 17).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
+      : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`;
+
   return (
     <div
-      className="flex h-full flex-col"
+      className="flex h-full flex-col print:h-auto"
       onDragStart={() => { draggingRef.current = true; }}
       onDragEnd={() => { draggingRef.current = false; }}
     >
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 print:hidden">
         <div className="flex items-center gap-2">
           <CalendarDays className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-lg font-semibold">Field Service Schedule</h1>
@@ -533,13 +542,7 @@ export function ScheduleClient({
             <button type="button" aria-label={view === "calendar" ? "Previous month" : "Previous week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(-1)}>
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <span className="min-w-[10rem] text-center text-sm font-medium">
-              {view === "calendar"
-                ? // Label the month that DOMINATES the (wheel-scrollable) 6-week
-                  // grid — the middle of the visible window, not the raw anchor.
-                  addDays(startOfWeekSunday(anchor), 17).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
-                : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
-            </span>
+            <span className="min-w-[10rem] text-center text-sm font-medium">{rangeLabel}</span>
             <button type="button" aria-label={view === "calendar" ? "Next month" : "Next week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(1)}>
               <ChevronRight className="h-4 w-4" />
             </button>
@@ -550,6 +553,9 @@ export function ScheduleClient({
           <Button variant="outline" size="sm" onClick={() => { window.location.href = "/api/schedule/export"; }}>
             <Download className="mr-1.5 h-4 w-4" /> Export
           </Button>
+          <Button variant="outline" size="sm" title="Print the current view (landscape)" onClick={() => window.print()}>
+            <Printer className="mr-1.5 h-4 w-4" /> Print
+          </Button>
           <Button size="sm" onClick={() => setNewOpen(true)}>
             <Plus className="mr-1.5 h-4 w-4" /> New job
           </Button>
@@ -557,7 +563,7 @@ export function ScheduleClient({
       </header>
 
       {/* Insights + filters */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-5 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-5 py-2 text-xs print:hidden">
         <div className="flex flex-wrap items-center gap-2">
           <Stat label="jobs" value={visible.length} />
           <Stat label="scheduled" value={scheduled.length} />
@@ -596,7 +602,7 @@ export function ScheduleClient({
           (amber). This is a VISUAL indicator only — it does NOT block assignment;
           you can still drop more jobs onto a full technician (conflicts/PTO show
           their own warning icons). `overbooked` above counts full technicians. */}
-      <div className="flex flex-wrap items-center gap-2 border-b px-5 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b px-5 py-2 print:hidden">
         <span className="text-xs font-medium text-muted-foreground">
           {view === "calendar" ? "This month:" : "This week:"}
         </span>
@@ -614,7 +620,7 @@ export function ScheduleClient({
       </div>
 
       {warning ? (
-        <div className="flex items-center gap-2 border-b bg-amber-50 px-5 py-2 text-sm text-amber-800">
+        <div className="flex items-center gap-2 border-b bg-amber-50 px-5 py-2 text-sm text-amber-800 print:hidden">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span className="flex-1">{warning}</span>
           <button type="button" aria-label="Dismiss" onClick={() => setWarning(null)} className="rounded p-0.5 hover:bg-amber-100">
@@ -623,11 +629,12 @@ export function ScheduleClient({
         </div>
       ) : null}
 
-      <div className="flex min-h-0 flex-1">
+      {/* Entire interactive area is hidden in print — PrintSheet below is the printout. */}
+      <div className="flex min-h-0 flex-1 print:hidden">
         {/* Jobs queue — grouped, sortable, type-filterable */}
         {sidebarOpen ? (
           <aside
-            className="flex w-72 shrink-0 flex-col border-r bg-card/40"
+            className="flex w-72 shrink-0 flex-col border-r bg-card/40 print:hidden"
             onDragOver={(e) => e.preventDefault()}
             onDrop={onDropBacklog}
             aria-label="Jobs queue"
@@ -663,14 +670,14 @@ export function ScheduleClient({
             aria-label="Show panel"
             title="Show panel"
             onClick={() => setSidebarOpen(true)}
-            className="flex w-8 shrink-0 items-center justify-center border-r text-muted-foreground hover:bg-muted"
+            className="flex w-8 shrink-0 items-center justify-center border-r text-muted-foreground hover:bg-muted print:hidden"
           >
             <PanelLeftOpen className="h-4 w-4" />
           </button>
         )}
 
         {/* Main view */}
-        <div className={`min-w-0 flex-1 ${view === "calendar" ? "overflow-hidden" : "overflow-auto"}`}>
+        <div className={`min-w-0 flex-1 print:overflow-visible ${view === "calendar" ? "overflow-hidden" : "overflow-auto"}`}>
           {view === "calendar" ? (
             <MonthCalendar
               month={anchor}
@@ -804,6 +811,18 @@ export function ScheduleClient({
       {importOpen && (
         <ImportDialog key="import" open={importOpen} onClose={() => setImportOpen(false)} />
       )}
+      {/* The printout — a purpose-built report layout (see print-sheet.tsx). */}
+      <PrintSheet
+        view={view}
+        anchor={anchor}
+        weekDays={weekDays}
+        jobs={visible}
+        techs={visibleTechs}
+        timeOff={timeOff}
+        holidays={holidayMap}
+        rangeLabel={rangeLabel}
+      />
+
       {dayTasks && (
         <Modal
           open
@@ -1117,7 +1136,7 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
             <Detail label="Technician" value={job.technicianName ?? "Unassigned"} />
             <Detail label="Start" value={job.startDate} />
             <Detail label="End" value={job.endDate} />
-            <Detail label="Days" value={job.durationDays != null ? String(job.durationDays) : null} />
+            <Detail label="Days" value={job.durationDays === 0 ? "TBD" : job.durationDays != null ? String(job.durationDays) : null} />
             <Detail label="Tentative" value={job.tentative ? "Yes" : "No"} />
             <Detail label="Scope" value={job.description} wrap />
           </dl>

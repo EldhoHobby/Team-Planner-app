@@ -147,7 +147,8 @@ const CreateJobSchema = z.object({
   hardwareTarget: z.string().max(120).optional(),
   technicianId: z.string().optional(),
   startDate: z.string().optional(),
-  durationDays: z.coerce.number().int().positive().max(60).optional(),
+  // 0 = "days TBD" placeholder (schedules as a 1-day block); 1..60 = real length.
+  durationDays: z.coerce.number().int().nonnegative().max(60).optional(),
 });
 
 export async function createJobAction(
@@ -199,7 +200,7 @@ const UpdateJobSchema = z.object({
   priority: z.enum(PRIORITIES).optional(),
   technicianId: z.string().optional().nullable(),
   startDate: z.string().optional().nullable(),
-  durationDays: z.coerce.number().int().positive().max(60).optional().nullable(),
+  durationDays: z.coerce.number().int().nonnegative().max(60).optional().nullable(),
   jobStatus: z.enum(JOB_STATUSES).optional(),
   tentative: z.boolean().optional(),
 });

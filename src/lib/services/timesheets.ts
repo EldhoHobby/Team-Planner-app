@@ -1,5 +1,7 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import ExcelJS from "exceljs";
+import { unzipSync, zipSync, strToU8, strFromU8 } from "fflate";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
@@ -10,7 +12,7 @@ import { toUtcMidnight, addDays } from "@/lib/scheduling/calc";
 export const INDIRECT_CATEGORIES = [
   "Supervision",
   "Holiday",
-  "Personal (NJFLI) No Pay",
+  "Personal",
   "Meeting",
   "Vacation",
   "Support Marketing",
@@ -24,6 +26,12 @@ export const INDIRECT_CATEGORIES = [
   "Meeting w/Vendor",
   "Other (Explain)",
 ] as const;
+
+// Old category wordings that may exist in saved rows — mapped to the current
+// label on load so historical weeks keep displaying (and re-save cleanly).
+const LEGACY_CATEGORY_ALIASES: Record<string, string> = {
+  "Personal (NJFLI) No Pay": "Personal",
+};
 
 export const DIRECT_ROW_COUNT = 20;
 export const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
@@ -118,7 +126,9 @@ export async function getTimesheet(scope: TenantScope, weekEnding: Date): Promis
           };
         }
       } else {
-        const idx = INDIRECT_CATEGORIES.indexOf((e.functionLabel ?? "") as (typeof INDIRECT_CATEGORIES)[number]);
+        const raw = e.functionLabel ?? "";
+        const label = LEGACY_CATEGORY_ALIASES[raw] ?? raw;
+        const idx = INDIRECT_CATEGORIES.indexOf(label as (typeof INDIRECT_CATEGORIES)[number]);
         if (idx >= 0) indirect[idx] = { functionLabel: INDIRECT_CATEGORIES[idx], ...days };
       }
     }
@@ -246,6 +256,68 @@ export async function getSoLookup(): Promise<SoLookupEntry[]> {
   }
 }
 
+// ── Surgical .xlsm patching ────────────────────────────────────────────
+//
+// The QEI template is a MACRO-ENABLED workbook (vbaProject.bin) full of
+// formulas: per-line T.Hours (=SUM(F:L) in column M), column/grand totals, and
+// day-date headers derived from the week-ending date (L2) — several of them
+// SHARED formulas. Rebuilding it through ExcelJS's model (`wb.xlsx.writeBuffer`)
+// is lossy: it strips the VBA (the file stops being a .xlsm), drops the embedded
+// logo drawing + printer settings, mangles shared formulas, and leaves the
+// cached `0` on the T.Hours cells. So instead we treat the .xlsm as the ZIP it
+// is and inject ONLY the input-cell values into the worksheet XML, leaving every
+// other part byte-for-byte intact, then flip `fullCalcOnLoad` so Excel recomputes
+// all formulas on open. Column M and the totals are never touched — they stay
+// live formulas.
+
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Excel serial date (1900 system) for a UTC-midnight date. */
+function excelSerial(d: Date): number {
+  return Math.round((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(1899, 11, 30)) / 86_400_000);
+}
+
+/**
+ * Replace a single cell's body in a worksheet XML string, preserving its style
+ * (`s=`) attribute. Handles both the empty self-closing form (`<c r=".." s=".."/>`)
+ * and an existing open form. `typeAttr` is e.g. ` t="inlineStr"` (empty for numbers).
+ */
+function patchCell(xml: string, ref: string, inner: string, typeAttr: string): string {
+  const re = new RegExp(`<c r="${ref}"([^>]*?)(?:/>|>[\\s\\S]*?</c>)`);
+  return xml.replace(re, (_m, attrs: string) => {
+    const cleaned = attrs.replace(/\/\s*$/, "").replace(/\s+t="[^"]*"/g, "");
+    return `<c r="${ref}"${cleaned}${typeAttr}>${inner}</c>`;
+  });
+}
+function setText(xml: string, ref: string, text: string): string {
+  if (!text) return xml;
+  return patchCell(xml, ref, `<is><t xml:space="preserve">${xmlEscape(text)}</t></is>`, ` t="inlineStr"`);
+}
+function setNumber(xml: string, ref: string, n: number): string {
+  return patchCell(xml, ref, `<v>${n}</v>`, "");
+}
+
+/** Resolve the main timesheet worksheet's zip path (the sheet that isn't "Sheet2"). */
+function resolveMainSheetPath(files: Record<string, Uint8Array>): string {
+  const wbXml = strFromU8(files["xl/workbook.xml"]);
+  const relsXml = strFromU8(files["xl/_rels/workbook.xml.rels"]);
+  const tags = wbXml.match(/<sheet\b[^>]*\/>/g) ?? [];
+  let rid = "";
+  for (const t of tags) {
+    const name = /name="([^"]*)"/.exec(t)?.[1] ?? "";
+    const id = /r:id="([^"]*)"/.exec(t)?.[1] ?? "";
+    if (name.toLowerCase() !== "sheet2") {
+      rid = id;
+      break;
+    }
+  }
+  const rel = new RegExp(`<Relationship[^>]*Id="${rid}"[^>]*Target="([^"]*)"`).exec(relsXml);
+  const target = (rel?.[1] ?? "worksheets/sheet2.xml").replace(/^\//, "").replace(/^xl\//, "");
+  return `xl/${target}`;
+}
+
 export async function generateTimesheetXlsx(
   scope: TenantScope,
   weekEnding: Date,
@@ -254,36 +326,33 @@ export async function generateTimesheetXlsx(
   const user = await prisma.user.findUnique({ where: { id: scope.ctx.userId }, select: { name: true, email: true, empNo: true } });
   const data = await getTimesheet(scope, we);
 
-  const wb = new ExcelJS.Workbook();
+  let raw: Buffer;
   try {
-    await wb.xlsx.readFile(templatePath());
+    raw = await readFile(templatePath());
   } catch {
     throw new ForbiddenError(
       "Timesheet template not found. Place Time_Sheet_Template.xlsm in the configured template folder on the host.",
     );
   }
-  // The template has a helper sheet ("Sheet2") plus the timesheet sheet.
-  const ws = wb.worksheets.find((w) => w.name.toLowerCase() !== "sheet2") ?? wb.worksheets[wb.worksheets.length - 1];
 
-  // Header
-  ws.getCell("E2").value = user?.name || user?.email || "";
-  ws.getCell("E4").value = user?.empNo || "";
-  ws.getCell("L2").value = we; // drives all day dates + M4 via formulas
+  const files = unzipSync(new Uint8Array(raw));
+  const sheetPath = resolveMainSheetPath(files);
+  let sheet = strFromU8(files[sheetPath]);
+
+  // Header inputs
+  sheet = setText(sheet, "E2", user?.name || user?.email || ""); // NAME (echoed at D53)
+  sheet = setText(sheet, "E4", user?.empNo || ""); // Emp No #
+  sheet = setNumber(sheet, "L2", excelSerial(we)); // Week ending — drives every day-date + total formula
 
   // DIRECT rows: line N → template row 7 + N (line 1 = row 8)
   data.direct.forEach((r, i) => {
     const row = 8 + i;
-    if (r.workDept) ws.getCell(`B${row}`).value = r.workDept;
-    if (r.soNumber) ws.getCell(`C${row}`).value = r.soNumber;
-    if (r.customerName) {
-      const cell = ws.getCell(`D${row}`);
-      cell.value = r.customerName;
-      // Match the old VBA: shrink the Customer Name font by text length so it fits.
-      cell.font = { ...(cell.font ?? {}), size: customerFontSize(r.customerName.length) };
-    }
-    if (r.issueNo) ws.getCell(`E${row}`).value = r.issueNo;
+    sheet = setText(sheet, `B${row}`, r.workDept);
+    sheet = setText(sheet, `C${row}`, r.soNumber);
+    sheet = setText(sheet, `D${row}`, r.customerName);
+    sheet = setText(sheet, `E${row}`, r.issueNo);
     DAY_KEYS.forEach((k, di) => {
-      if (r[k] > 0) ws.getCell(`${DAY_COLS[di]}${row}`).value = r[k];
+      if (r[k] > 0) sheet = setNumber(sheet, `${DAY_COLS[di]}${row}`, r[k]);
     });
   });
 
@@ -291,22 +360,27 @@ export async function generateTimesheetXlsx(
   data.indirect.forEach((r, i) => {
     const row = 32 + i;
     DAY_KEYS.forEach((k, di) => {
-      if (r[k] > 0) ws.getCell(`${DAY_COLS[di]}${row}`).value = r[k];
+      if (r[k] > 0) sheet = setNumber(sheet, `${DAY_COLS[di]}${row}`, r[k]);
     });
   });
 
   // Comments (merged C50:N50)
-  if (data.comments) ws.getCell("C50").value = data.comments;
+  sheet = setText(sheet, "C50", data.comments);
 
-  // Ask Excel to recompute the T.Hours / total formulas when it opens the file.
-  try {
-    const calc = (wb as unknown as { calcProperties?: { fullCalcOnLoad?: boolean } }).calcProperties;
-    if (calc) calc.fullCalcOnLoad = true;
-  } catch {
-    /* non-fatal */
-  }
+  files[sheetPath] = strToU8(sheet);
 
-  const buffer = Buffer.from((await wb.xlsx.writeBuffer()) as ArrayBuffer);
+  // Force Excel to recompute T.Hours / totals / day-dates on open (the template's
+  // cached formula results are all 0).
+  let wbXml = strFromU8(files["xl/workbook.xml"]);
+  wbXml = wbXml.replace(/<calcPr\b([^>]*?)\/>/, (_m, a: string) => {
+    const cleaned = a.replace(/\s+fullCalcOnLoad="[^"]*"/g, "");
+    return `<calcPr${cleaned} fullCalcOnLoad="1"/>`;
+  });
+  files["xl/workbook.xml"] = strToU8(wbXml);
+
+  const out = zipSync(files, { level: 6 });
+  const buffer = Buffer.from(out);
   const who = (user?.name || user?.email || "timesheet").replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "");
-  return { buffer, filename: `Timesheet-${who}-${ymd(we)}.xlsx` };
+  // Stays a macro-enabled .xlsm — VBA, logo, formulas all preserved.
+  return { buffer, filename: `Timesheet-${who}-${ymd(we)}.xlsm` };
 }

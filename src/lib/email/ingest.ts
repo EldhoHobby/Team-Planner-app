@@ -4,20 +4,24 @@ import { simpleParser } from "mailparser";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { emailAiEnabled, summarizeEmail } from "@/lib/email/summarize";
+import { TAG_RE, matchAssignees, stripAssignmentMarkers } from "@/lib/email/match-assignees";
 
 // ─────────────────────────── Email → task ingest ───────────────────────────
 //
 // Polls a designated Gmail mailbox (IMAP + app password) and turns new messages
 // into dashboard items (TechTask):
 //
-//   • Tags: "@username" anywhere in the subject or body assigns the task to
-//     that person (multiple tags → one task each).
-//   • No/unknown tag: the task goes to the SENDER, if their From address
-//     matches a user. Otherwise the message is skipped (logged to AuditLog).
-//   • Title = subject (tags stripped); notes = sender + a body excerpt.
-//     With EMAIL_AI_ENABLED, a local Ollama model instead writes an action
-//     title + summary and extracts target date/priority (summarize.ts);
-//     any AI failure falls back to the raw subject/excerpt.
+//   • Assignees: "@username" tags OR "@Full Name" mentions ("@Charles Fry",
+//     case-insensitive, multi-word names only) anywhere in the subject or
+//     body — each matched person gets a task. A name WITHOUT the "@" marker
+//     does not assign.
+//   • No match: the task goes to the SENDER, if their From address matches a
+//     user. Otherwise the message is skipped (logged to AuditLog).
+//   • Title = the email subject (tags stripped). Details = just a creation
+//     stamp ("Email task created MM/DD/YYYY h:mm AM ET") — the body text is
+//     deliberately NOT stored. With EMAIL_AI_ENABLED, the local Ollama model
+//     is consulted ONLY for target date + priority ("by Friday", "urgent");
+//     its title/summary are ignored.
 //   • origin = MANAGER ("manager-assigned category"); assignedById = the
 //     sender's user id when known.
 //   • Dedupe: Message-ID stored in externalId (externalSource "email"),
@@ -33,11 +37,6 @@ import { emailAiEnabled, summarizeEmail } from "@/lib/email/summarize";
 // IMAP_PASSWORD, EMAIL_POLL_SECONDS. Gmail needs 2FA + an app password and
 // IMAP enabled in the account settings.
 
-// "@username" tags. The lookbehind keeps this from matching the domain half of
-// email addresses ("bob@acme.com" must not tag "acme.com") and from mangling
-// addresses when tags are stripped out of titles.
-const TAG_RE = /(?<![a-z0-9._-])@([a-z0-9][a-z0-9._-]{0,31})/gi;
-const EXCERPT_LEN = 1000;
 
 export function emailIngestEnabled(): boolean {
   return (
@@ -136,6 +135,7 @@ function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
 }
 
+
 declare global {
   // eslint-disable-next-line no-var
   var __emailIngestRunning: boolean | undefined;
@@ -175,7 +175,6 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
     where: { archived: false, isActive: true, memberships: { some: { orgId: org.id } } },
     select: { id: true, username: true, email: true, name: true },
   });
-  const byUsername = new Map(people.map((p) => [p.username.toLowerCase(), p]));
   const byEmail = new Map(people.filter((p) => p.email).map((p) => [p.email!.toLowerCase(), p]));
 
   const client = new ImapFlow({
@@ -230,19 +229,17 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
               .digest("hex")
               .slice(0, 32)}`;
 
-          // Collect @username tags from subject + body.
-          const tagged = new Map<string, (typeof people)[number]>();
-          for (const m of `${subject}\n${body}`.matchAll(TAG_RE)) {
-            const u = byUsername.get(m[1].toLowerCase());
-            if (u) tagged.set(u.id, u);
-          }
-
-          const owners = tagged.size ? [...tagged.values()] : sender ? [sender] : [];
+          // Collect assignees from subject + body — both "@username" and
+          // "@Full Name" require the "@" marker (see match-assignees.ts,
+          // which is unit-tested). No match → fall back to the sender.
+          const matched = matchAssignees(`${subject}\n${body}`, people);
+          const owners: { id: string; name: string | null; username: string }[] =
+            matched.length ? matched : sender ? [sender] : [];
           if (!owners.length) {
-            await log(org.id, "skipped", `Email "${subject}" from ${fromAddr || "unknown"}: no @username tag and sender is not a known user.`);
+            await log(org.id, "skipped", `Email "${subject}" from ${fromAddr || "unknown"}: no @username tag or full name found, and sender is not a known user.`);
             await recordEmail(org.id, {
               messageId, fromAddr, subject,
-              outcome: "SKIPPED", detail: "No @username tag and sender is not a known user.",
+              outcome: "SKIPPED", detail: "No @username tag or full name found, and sender is not a known user.",
             });
             await markSeen();
             res.skipped++;
@@ -267,9 +264,12 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
             continue;
           }
 
-          // Local AI summary (Ollama): action title + summary + optional target
-          // date/priority. Null on any failure → fall back to raw subject/excerpt.
-          const cleanSubject = subject.replace(TAG_RE, "").replace(/\s{2,}/g, " ").trim();
+          // Task fields: title = the email SUBJECT (tags stripped) and Details =
+          // just a creation stamp — the body text is deliberately not stored.
+          // The AI (when enabled) is consulted ONLY for target date + priority
+          // ("by Friday", "urgent"); its title/summary are ignored.
+          // Title = subject with the assignment markers removed.
+          const cleanSubject = stripAssignmentMarkers(subject, matched);
           const ai = emailAiEnabled()
             ? await summarizeEmail({
                 subject: cleanSubject || subject,
@@ -278,11 +278,13 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
               })
             : null;
 
-          const title = ai?.title ?? (cleanSubject || "(no subject)");
-          const excerpt = body.length > EXCERPT_LEN ? `${body.slice(0, EXCERPT_LEN)}…` : body;
-          const notes = [`From: ${mail.from?.text ?? fromAddr ?? "unknown"}`, "", ai?.summary ?? excerpt]
-            .join("\n")
-            .trim();
+          const title = cleanSubject || "(no subject)";
+          const stamp = new Date().toLocaleString("en-US", {
+            timeZone: "America/New_York",
+            month: "2-digit", day: "2-digit", year: "numeric",
+            hour: "numeric", minute: "2-digit",
+          });
+          const notes = `Email task created ${stamp} ET`;
 
           let createdHere = 0;
           for (const owner of toCreate) {
@@ -312,7 +314,7 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
             }
           }
           const ownerNames = toCreate.map((o) => o.name ?? o.username).join(", ");
-          const how = !emailAiEnabled() ? "" : ai ? " (AI summary)" : " (raw excerpt — AI unavailable)";
+          const how = !emailAiEnabled() ? "" : ai ? " (AI date/priority)" : " (AI unavailable)";
           await log(org.id, "created", `Email "${title}" from ${fromAddr || "unknown"} → task for ${ownerNames}${how}.`);
           await recordEmail(org.id, {
             messageId, fromAddr, subject,

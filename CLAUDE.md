@@ -285,9 +285,11 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   while impersonating.
 - **Email → task ingest:** done — polls a designated Gmail inbox over IMAP
   (`src/lib/email/ingest.ts`, started by `src/instrumentation.ts`; manual
-  admin trigger at `POST /api/email-ingest`). "@username" tags in subject/body
-  create a dashboard TechTask per tagged person (origin MANAGER, notes carry
-  sender + body excerpt); no tag → falls back to the sender when their From
+  admin trigger at `POST /api/email-ingest`). "@username" tags OR "@Full Name"
+  mentions (multi-word, case-insensitive; the "@" is required) in subject/body create a dashboard
+  TechTask per matched person (origin MANAGER; title = the email subject,
+  Details = "Email task created <MM/DD/YYYY h:mm> ET" — the body is NOT
+  stored); no match → falls back to the sender when their From
   address matches a user; Message-ID dedupe via externalSource="email" —
   per-owner, backstopped by a DB unique constraint (orgId, ownerId,
   externalSource, externalId) + a per-process single-pass guard; IMAP ops run
@@ -296,14 +298,14 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   Config via EMAIL_INGEST_ENABLED / IMAP_* / EMAIL_POLL_SECONDS (Gmail app
   password; off by default). NOTE: deps stage now runs `npm install` (not
   `npm ci`) because the dev host has no npm to regenerate the lockfile.
-- **Local AI email summarizer:** done — optional, fully on-prem. An `ollama`
+- **Local AI email assist:** done — optional, fully on-prem. An `ollama`
   service (+ one-shot `ollama-init` model pull, gated on the flag) runs on the
   internal Compose network; `src/lib/email/summarize.ts` calls it with a JSON
-  schema (structured output) to produce an action title, 2–4 sentence summary,
-  and optional target date + priority (today's date is passed so "by Friday"
-  resolves). Ingest uses the AI draft when available and falls back to the raw
-  subject/excerpt on ANY failure (null contract); the EmailIngestLog detail
-  records which path ran. Config: EMAIL_AI_ENABLED / EMAIL_AI_MODEL
+  schema (structured output). Ingest consults it ONLY for the optional target
+  date + priority (today's date is passed so "by Friday" resolves) — the AI
+  title/summary fields are ignored (title/Details always follow the fixed
+  format above); on ANY failure the task is created without date/priority
+  (null contract); the EmailIngestLog detail records which path ran. Config: EMAIL_AI_ENABLED / EMAIL_AI_MODEL
   (default qwen2.5:3b-instruct, ~2 GB, CPU-friendly) / OLLAMA_URL. Settings →
   Email shows the AI status in "how it works".
 - **Remote access:** done — Caddy serves localhost + LAN IP + public DuckDNS

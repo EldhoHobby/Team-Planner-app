@@ -29,7 +29,7 @@ export async function GET(req: Request) {
     });
     return new Response(new Uint8Array(buffer), {
       headers: {
-        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Type": "application/vnd.ms-excel.sheet.macroEnabled.12",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });

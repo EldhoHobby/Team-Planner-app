@@ -154,7 +154,8 @@ export function NewJobDialog({
           </div>
           <div className="space-y-2">
             <Label htmlFor="durationDays">Days</Label>
-            <Input id="durationDays" name="durationDays" type="number" min={1} max={60} defaultValue={1} />
+            <Input id="durationDays" name="durationDays" type="number" min={0} max={60} defaultValue={1} />
+            <p className="text-[11px] text-muted-foreground">0 = days TBD (placeholder)</p>
           </div>
         </div>
 

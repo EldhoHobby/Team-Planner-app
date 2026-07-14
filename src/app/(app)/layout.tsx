@@ -43,12 +43,14 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    // print:* variants let the shell expand for multi-page printing — the
+    // h-screen + overflow-hidden scroll box otherwise clips output to one page.
+    <div className="flex h-screen overflow-hidden bg-background print:block print:h-auto print:overflow-visible">
       <ThemeSync theme={user.theme ?? null} />
       <NavSidebar user={{ email: user.email ?? user.username, name: user.name }} isAdmin={isAdmin} viewAs={viewAs} />
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden print:block print:overflow-visible">
         {actor.impersonating ? <ViewAsBanner targetLabel={displayHandle(user)} /> : null}
-        <div className="flex-1 overflow-y-auto">{children}</div>
+        <div className="flex-1 overflow-y-auto print:overflow-visible">{children}</div>
       </div>
     </div>
   );

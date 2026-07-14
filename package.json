@@ -1,6 +1,6 @@
 {
   "name": "team-planner",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -23,6 +23,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",
+    "fflate": "^0.8.3",
     "imapflow": "^1.0.171",
     "lucide-react": "^0.469.0",
     "mailparser": "^3.7.1",
