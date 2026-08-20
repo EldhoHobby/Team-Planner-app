@@ -1,5 +1,6 @@
 "use client";
 
+import { AlertTriangle } from "lucide-react";
 import { startOfWeekSunday, addDays, toUtcMidnight, MS_PER_DAY } from "@/lib/scheduling/calc";
 import { dotStyle } from "@/lib/scheduling/colors";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
@@ -48,6 +49,7 @@ export function PrintSheet({
   timeOff,
   holidays,
   rangeLabel,
+  conflicts,
 }: {
   view: "timeline" | "calendar";
   anchor: Date;
@@ -57,6 +59,7 @@ export function PrintSheet({
   timeOff: TechTimeOff[];
   holidays: Map<string, string>;
   rangeLabel: string;
+  conflicts: Set<string>; // job ids with a scheduling conflict (double-book / PTO)
 }) {
   const isOff = (techId: string, day: Date) =>
     timeOff.some(
@@ -100,14 +103,14 @@ export function PrintSheet({
       ) : null}
 
       {view === "timeline" ? (
-        <WeekGrid weekDays={weekDays} techs={techs} dated={dated} unassigned={unassignedDated} isOff={isOff} holidays={holidays} />
+        <WeekGrid weekDays={weekDays} techs={techs} dated={dated} unassigned={unassignedDated} isOff={isOff} holidays={holidays} conflicts={conflicts} />
       ) : (
-        <MonthGrid anchor={anchor} dated={dated} techs={techs} holidays={holidays} isOff={isOff} />
+        <MonthGrid anchor={anchor} dated={dated} techs={techs} holidays={holidays} isOff={isOff} conflicts={conflicts} />
       )}
 
       {/* ONE summary of the whole workload: grouped by SO, groups ordered by
           their earliest job date, jobs chronological inside each group. */}
-      <JobSummary jobs={jobs} firstDayYmd={firstDayYmd} />
+      <JobSummary jobs={jobs} firstDayYmd={firstDayYmd} conflicts={conflicts} />
     </div>
   );
 }
@@ -118,14 +121,15 @@ export function PrintSheet({
  * Groups sort by earliest start date (undated-only groups after dated ones,
  * "No SO" always last); rows are chronological with unscheduled ones last.
  */
-function JobSummary({ jobs, firstDayYmd }: { jobs: JobRow[]; firstDayYmd: string }) {
+function JobSummary({ jobs, firstDayYmd, conflicts }: { jobs: JobRow[]; firstDayYmd: string; conflicts: Set<string> }) {
   if (!jobs.length) return null;
 
   const fmtD = (s: string) =>
     parseYmd(s).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
-  // "(x days)" segment — 0/blank duration is the "days TBD" placeholder.
+  // "(x days)" segment. ONLY an explicit 0 is the "days TBD" placeholder; a
+  // null/blank duration follows the app-wide default of 1 day.
   const daysLabel = (d: number | null | undefined) =>
-    !d || d <= 0 ? "(days TBD)" : d === 1 ? "(1 day)" : `(${d} days)`;
+    d === 0 ? "(days TBD)" : (d ?? 1) === 1 ? "(1 day)" : `(${d} days)`;
 
   // Header tally: firm-dated / tentative-dated / undated (mutually exclusive).
   const nScheduled = jobs.filter((j) => j.startDate && !j.tentative).length;
@@ -189,6 +193,9 @@ function JobSummary({ jobs, firstDayYmd }: { jobs: JobRow[]; firstDayYmd: string
                     {j.technicianName ? ` — ${j.technicianName}` : " — Unassigned"}
                     {j.tentative ? " (tent.)" : ""}
                   </span>
+                  {conflicts.has(j.id) ? (
+                    <AlertTriangle className="ml-1 inline h-2.5 w-2.5 align-middle text-red-600" aria-label="Conflict" />
+                  ) : null}
                   {isPast(j) ? <span className="font-bold text-red-600"> [PAST]</span> : null}
                 </p>
               ))}
@@ -209,6 +216,7 @@ function WeekGrid({
   unassigned,
   isOff,
   holidays,
+  conflicts,
 }: {
   weekDays: Date[];
   techs: TechnicianOption[];
@@ -216,6 +224,7 @@ function WeekGrid({
   unassigned: JobRow[];
   isOff: (techId: string, day: Date) => boolean;
   holidays: Map<string, string>;
+  conflicts: Set<string>;
 }) {
   const cellJobs = (techId: string | null, day: Date) =>
     dated.filter((j) => (j.technicianId ?? null) === techId && covers(j, day));
@@ -229,6 +238,9 @@ function WeekGrid({
           const isStart = j.startDate === ymd(day) || ymd(day) === ymd(weekDays[0]);
           return isStart ? (
             <p key={j.id} className="mb-0.5 rounded-sm bg-white pl-1" style={chipStyle(j.technicianColor)}>
+              {conflicts.has(j.id) ? (
+                <AlertTriangle className="mr-0.5 inline h-2.5 w-2.5 align-middle text-red-600" aria-label="Conflict" />
+              ) : null}
               <span className="font-semibold">{j.title}</span>
               {j.soNumber ? <span className="text-neutral-600"> {j.soNumber}</span> : null}
               {j.tentative ? <span className="text-neutral-500"> (tent.)</span> : null}
@@ -321,12 +333,14 @@ function MonthGrid({
   techs,
   holidays,
   isOff,
+  conflicts,
 }: {
   anchor: Date;
   dated: JobRow[];
   techs: TechnicianOption[];
   holidays: Map<string, string>;
   isOff: (techId: string, day: Date) => boolean;
+  conflicts: Set<string>;
 }) {
   const gridStart = startOfWeekSunday(anchor);
   const monthIdx = addDays(gridStart, 17).getUTCMonth();
@@ -395,6 +409,9 @@ function MonthGrid({
                   }}
                 >
                   {startsBefore ? "◂ " : ""}
+                  {conflicts.has(job.id) ? (
+                    <AlertTriangle className="mr-0.5 inline h-2.5 w-2.5 align-middle text-red-600" aria-label="Conflict" />
+                  ) : null}
                   {job.soNumber ? `${job.soNumber} · ` : ""}
                   <span className="font-bold">{job.title}</span>
                   {` — ${job.technicianId ? techName.get(job.technicianId) ?? "?" : "Unassigned"}`}

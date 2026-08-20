@@ -206,7 +206,8 @@ export function ScheduleClient({
   // Side-panel controls (independent of the header filters above).
   const [panelSort, setPanelSort] = useState<"date" | "so">("date");
   const [panelStatus, setPanelStatus] = useState<string>("ALL");
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // "Completed" starts collapsed — it's a historical pile, not active work.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["Completed"]));
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const weekStart = useMemo(() => startOfWeekSunday(anchor), [anchor]);
@@ -374,10 +375,14 @@ export function ScheduleClient({
       const r = (a.startDate ?? "9999-99-99").localeCompare(b.startDate ?? "9999-99-99");
       return r || jobLabel(a).localeCompare(jobLabel(b));
     };
+    // Completed jobs split into their own section regardless of date/tentative,
+    // so finished work leaves "Scheduled". In-progress stays as active work.
+    const done = (j: JobRow) => j.jobStatus === "COMPLETED";
     return {
-      scheduled: base.filter((j) => j.startDate && !j.tentative).sort(cmp),
-      tentative: base.filter((j) => j.tentative).sort(cmp),
-      unscheduled: base.filter((j) => !j.startDate && !j.tentative).sort(cmp),
+      scheduled: base.filter((j) => j.startDate && !j.tentative && !done(j)).sort(cmp),
+      tentative: base.filter((j) => j.tentative && !done(j)).sort(cmp),
+      unscheduled: base.filter((j) => !j.startDate && !j.tentative && !done(j)).sort(cmp),
+      completed: base.filter(done).sort(cmp),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, panelStatus, panelSort]);
@@ -662,6 +667,7 @@ export function ScheduleClient({
               <PanelSection title="Scheduled" jobs={panelGroups.scheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="No scheduled jobs." />
               <PanelSection title="Tentative" amber jobs={panelGroups.tentative} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="None to confirm." />
               <PanelSection title="Unscheduled" jobs={panelGroups.unscheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="Nothing in the backlog." hint="Drag onto the schedule to book." />
+              <PanelSection title="Completed" jobs={panelGroups.completed} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="No completed jobs." />
             </div>
           </aside>
         ) : (
@@ -782,10 +788,9 @@ export function ScheduleClient({
                               width: `calc(${(span / 7) * 100}% - 4px)`,
                               top: lane * 34 + 4,
                               height: 28,
-                              ...(conflict ? { color: "#ef4444", fontWeight: "bold" } : {}),
                             }}
                           >
-                            {conflict ? <AlertTriangle className="h-3 w-3 shrink-0" aria-label="Scheduling conflict" /> : null}
+                            {conflict ? <AlertTriangle className="h-3 w-3 shrink-0 animate-pulse text-red-600" aria-label="Scheduling conflict" /> : null}
                             <span className="truncate">{jobLabel(job)}</span>
                           </button>
                         );
@@ -816,11 +821,12 @@ export function ScheduleClient({
         view={view}
         anchor={anchor}
         weekDays={weekDays}
-        jobs={visible}
+        jobs={visible.filter((j) => j.jobStatus !== "COMPLETED")}
         techs={visibleTechs}
         timeOff={timeOff}
         holidays={holidayMap}
         rangeLabel={rangeLabel}
+        conflicts={warnings}
       />
 
       {dayTasks && (
@@ -879,6 +885,15 @@ export function ScheduleClient({
           allJobs={jobs}
           onClose={() => setSelected(null)}
           onDuplicated={(id) => setPendingSelectId(id)}
+          conflict={warnings.has(selected.id)}
+          conflictReason={
+            [
+              conflicts.has(selected.id) ? "Technician double-booked" : null,
+              ptoClashIds.has(selected.id) ? "Scheduled during the technician's time off" : null,
+            ]
+              .filter(Boolean)
+              .join("; ") || undefined
+          }
         />
       )}
     </div>

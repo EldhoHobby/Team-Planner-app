@@ -318,11 +318,10 @@ export function MonthCalendar({
                         width,
                         top,
                         height: BAR_H - 4,
-                        ...(conflicts.has(job.id) ? { color: "#ef4444", fontWeight: "bold" } : {}),
                       }}
                     >
                       {conflicts.has(job.id) ? (
-                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-label="Conflict" />
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 animate-pulse text-red-600" aria-label="Conflict" />
                       ) : null}
                       <span className="truncate">{jobLabel(job)}</span>
                     </button>

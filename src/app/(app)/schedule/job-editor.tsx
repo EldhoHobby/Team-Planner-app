@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Trash2, Inbox, History, Copy } from "lucide-react";
+import { Trash2, Inbox, History, Copy, AlertTriangle } from "lucide-react";
 import {
   updateJobAction,
   rescheduleJobAction,
@@ -42,6 +42,8 @@ export function JobEditor({
   allJobs,
   onClose,
   onDuplicated,
+  conflict = false,
+  conflictReason,
 }: {
   job: JobRow | null;
   technicians: TechnicianOption[];
@@ -50,6 +52,10 @@ export function JobEditor({
   onClose: () => void;
   /** Called with the new copy's id after Duplicate — the parent reopens it. */
   onDuplicated: (newJobId: string) => void;
+  /** True when this job has a scheduling conflict (double-book and/or time off). */
+  conflict?: boolean;
+  /** Human-readable reason(s) for the conflict, shown on hover. */
+  conflictReason?: string;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -145,6 +151,13 @@ export function JobEditor({
       open={!!job}
       onClose={closeGuarded}
       title={job.title}
+      titleBadge={
+        conflict ? (
+          <span className="inline-flex shrink-0" title={conflictReason || "Scheduling conflict"}>
+            <AlertTriangle className="h-5 w-5 animate-pulse text-red-600" aria-label="Scheduling conflict" />
+          </span>
+        ) : undefined
+      }
       description={[job.soNumber, job.customerName].filter(Boolean).join(" · ") || undefined}
       headerActions={
         <Button
