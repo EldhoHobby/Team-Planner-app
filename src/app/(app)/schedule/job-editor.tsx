@@ -83,6 +83,10 @@ export function JobEditor({
   const [askReason, setAskReason] = useState(false);
   const [reason, setReason] = useState("");
   const [noteError, setNoteError] = useState<string | null>(null);
+  // Newest change-history timestamp at the moment the job opened. Entries newer
+  // than this are what THIS editing session changed (server timestamps, so no
+  // client-clock skew).
+  const [historyMarker, setHistoryMarker] = useState<string | null>(null);
   // Declared with the other hooks (i.e. BEFORE the `if (!job) return null`
   // early return) so hook order stays stable if the editor ever renders
   // without a job — a conditional useState would break the rules of hooks.
@@ -139,7 +143,11 @@ export function JobEditor({
         .then((rows) => { if (!cancelled) setThread(rows); })
         .catch(() => { if (!cancelled) setThread([]); });
       void listJobHistoryAction({ jobId: id })
-        .then((rows) => { if (!cancelled) setHistory(rows); })
+        .then((rows) => {
+          if (cancelled) return;
+          setHistory(rows);
+          setHistoryMarker(rows[0]?.createdAt ?? null); // rows are newest-first
+        })
         .catch(() => { if (!cancelled) setHistory([]); });
       return () => { cancelled = true; };
     }
@@ -169,7 +177,22 @@ export function JobEditor({
     if (!body) return closeNow();
     setNoteError(null);
     startTransition(async () => {
-      const res = await addJobCommentAction({ jobId: job.id, body });
+      // Record WHAT changed alongside the reason, using the server's own
+      // change summaries from this session, so the note (and the audit /
+      // activity line it writes) is self-explanatory later.
+      let full = body;
+      try {
+        const fresh = await listJobHistoryAction({ jobId: job.id });
+        const changed = fresh
+          .filter((h) => h.action !== "commented" && (!historyMarker || h.createdAt > historyMarker))
+          .map((h) => h.summary);
+        if (changed.length) full = `${body}
+
+Changed: ${changed.join("; ")}`;
+      } catch {
+        /* the reason still saves without the change list */
+      }
+      const res = await addJobCommentAction({ jobId: job.id, body: full });
       // Keep the dialog (and the typed reason) open on failure — silently
       // closing would throw away what the user just wrote.
       if (res.error) return setNoteError(res.error);
@@ -528,6 +551,27 @@ export function JobEditor({
 
           {notesOpen ? (
           <>
+          {/* Composer — first thing inside the expanded history. */}
+          <div className="mt-3 flex items-start gap-2">
+            <textarea
+              rows={2}
+              className="flex w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              placeholder="Add a comment or the reason for a change…"
+              value={comment}
+              disabled={pending}
+              onChange={(e) => setComment(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); addComment(); }
+              }}
+            />
+            <Button type="button" size="sm" disabled={pending || !comment.trim()} onClick={addComment}>
+              <MessageSquarePlus className="mr-1.5 h-4 w-4" /> Add
+            </Button>
+          </div>
+          {noteError && !askReason ? (
+            <p role="alert" className="mt-1 text-xs text-destructive">{noteError}</p>
+          ) : null}
+
           {(() => {
             type Entry = {
               key: string; when: string; kind: "comment" | "change";
@@ -616,26 +660,6 @@ export function JobEditor({
             );
           })()}
 
-          {/* Composer — add a comment / reason for a change. */}
-          <div className="mt-3 flex items-start gap-2">
-            <textarea
-              rows={2}
-              className="flex w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              placeholder="Add a comment or the reason for a change…"
-              value={comment}
-              disabled={pending}
-              onChange={(e) => setComment(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); addComment(); }
-              }}
-            />
-            <Button type="button" size="sm" disabled={pending || !comment.trim()} onClick={addComment}>
-              <MessageSquarePlus className="mr-1.5 h-4 w-4" /> Add
-            </Button>
-          </div>
-          {noteError && !askReason ? (
-            <p role="alert" className="mt-1 text-xs text-destructive">{noteError}</p>
-          ) : null}
           </>
           ) : null}
         </div>

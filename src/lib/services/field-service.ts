@@ -27,9 +27,10 @@ const JOB_TYPE_LABEL: Record<string, string> = {
   ANNUAL_MAINTENANCE: "Annual Maintenance",
   EMERGENCY_SUPPORT: "Emergency Support",
 };
-/** "SO-1234 · Commissioning Acme" — the job reference shown in every log entry. */
-function jobRef(j: { soNumber?: string | null; title: string }): string {
-  return j.soNumber ? `${j.soNumber} · ${j.title}` : j.title;
+/** "SO-1234 · MBTA · RTU #2 commissioning" — the job reference shown in every
+ *  log entry (SO · customer · title; missing pieces are skipped). */
+function jobRef(j: { soNumber?: string | null; customerName?: string | null; title: string }): string {
+  return [j.soNumber, j.customerName, j.title].filter(Boolean).join(" · ");
 }
 const lbl = (map: Record<string, string>, v: string | null | undefined): string =>
   v ? (map[v] ?? v) : "—";
@@ -509,7 +510,7 @@ export async function setJobStatus(
 export async function deleteJob(scope: TenantScope, id: string) {
   const job = await prisma.task.findFirst({
     where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-    select: { id: true, title: true, soNumber: true },
+    select: { id: true, title: true, soNumber: true, customerName: true },
   });
   if (!job) throw new ForbiddenError("Job not found");
   await prisma.task.delete({ where: { id } });
@@ -694,10 +695,13 @@ async function jobNoteAuthor(scope: TenantScope): Promise<{ id: string; name: st
   return { id: scope.ctx.userId, name: u?.name ?? u?.username ?? u?.email ?? "someone" };
 }
 
-async function assertJobInScope(scope: TenantScope, jobId: string): Promise<{ title: string; soNumber: string | null }> {
+async function assertJobInScope(
+  scope: TenantScope,
+  jobId: string,
+): Promise<{ title: string; soNumber: string | null; customerName: string | null }> {
   const job = await prisma.task.findFirst({
     where: { id: jobId, kind: "FIELD_SERVICE", ...scope.team() },
-    select: { title: true, soNumber: true },
+    select: { title: true, soNumber: true, customerName: true },
   });
   if (!job) throw new ForbiddenError("Job not found");
   return job;
@@ -724,7 +728,7 @@ export async function addJobComment(scope: TenantScope, jobId: string, body: str
   // Also surface it in the audit / activity log, referencing the job.
   await writeAudit(scope, {
     entity: "job", entityId: jobId, action: "commented",
-    summary: `${jobRef(job)}: 💬 ${text.length > 200 ? `${text.slice(0, 200)}…` : text}`,
+    summary: `${jobRef(job)}: 💬 ${text.length > 400 ? `${text.slice(0, 400)}…` : text}`,
   });
   return serializeJobNote(note);
 }
