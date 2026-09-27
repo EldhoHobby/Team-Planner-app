@@ -12,6 +12,11 @@ import {
   setJobTentative,
   deleteJob,
   duplicateJob,
+  getJobThread,
+  addJobComment,
+  editJobComment,
+  deleteJobComment,
+  type JobNoteRow,
 } from "@/lib/services/field-service";
 import { runJobsImport } from "@/lib/services/data-io";
 import { listAudit, writeAudit } from "@/lib/services/audit";
@@ -295,13 +300,63 @@ export async function setJobTentativeAction(input: {
 
 export async function listJobHistoryAction(input: { jobId: string }): Promise<AuditEntry[]> {
   const { scope } = await requireScope();
-  const rows = await listAudit(scope, "job", input.jobId);
+  // Comments are rendered from JobNote in the editor thread — keep them out of
+  // the change-history fetch so they can't crowd out real changes.
+  const rows = await listAudit(scope, "job", input.jobId, { excludeActions: ["commented"] });
   return rows.map((r) => ({
     action: r.action,
     summary: r.summary,
     actorEmail: r.actorEmail,
     createdAt: r.createdAt.toISOString(),
   }));
+}
+
+// ─── Job comment thread (reason-for-change + discussion) ───
+
+export async function getJobThreadAction(input: { jobId: string }): Promise<JobNoteRow[]> {
+  const { scope } = await requireScope();
+  return getJobThread(scope, input.jobId);
+}
+
+export async function addJobCommentAction(input: {
+  jobId: string;
+  body: string;
+}): Promise<{ note?: JobNoteRow; error?: string }> {
+  const { scope } = await requireScope();
+  try {
+    const note = await addJobComment(scope, input.jobId, input.body);
+    revalidatePath("/schedule");
+    return { note };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not add the comment." };
+  }
+}
+
+export async function editJobCommentAction(input: {
+  noteId: string;
+  body: string;
+}): Promise<{ note?: JobNoteRow; error?: string }> {
+  const { scope } = await requireScope();
+  try {
+    return { note: await editJobComment(scope, input.noteId, input.body) };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not edit the comment." };
+  }
+}
+
+export async function deleteJobCommentAction(input: {
+  noteId: string;
+}): Promise<{ ok?: boolean; error?: string }> {
+  const { scope } = await requireScope();
+  try {
+    await deleteJobComment(scope, input.noteId);
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not delete the comment." };
+  }
 }
 
 /** Copy a job into the unscheduled backlog ("(copy)" title, no dates/tech). */

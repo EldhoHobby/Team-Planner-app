@@ -71,9 +71,21 @@ export async function writeAudit(
   }
 }
 
-export function listAudit(scope: TenantScope, entity: string, entityId: string) {
+export function listAudit(
+  scope: TenantScope,
+  entity: string,
+  entityId: string,
+  opts?: { excludeActions?: string[] },
+) {
   return prisma.auditLog.findMany({
-    where: { orgId: scope.ctx.orgId, entity, entityId },
+    // Excluded actions are filtered in the QUERY, not after, so they don't eat
+    // the row budget below (e.g. comments crowding out a job's change history).
+    where: {
+      orgId: scope.ctx.orgId,
+      entity,
+      entityId,
+      ...(opts?.excludeActions?.length ? { action: { notIn: opts.excludeActions } } : {}),
+    },
     orderBy: { createdAt: "desc" },
     take: 100,
   });

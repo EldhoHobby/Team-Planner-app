@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type DragEvent } from "react";
+import { useEffect, useRef, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { AlertTriangle, ClipboardList, Plane } from "lucide-react";
 import {
   startOfWeekSunday,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/scheduling/calc";
 import { barStyle, hatchStyle } from "@/lib/scheduling/colors";
 import { jobLabel } from "./format";
+import { ResizeHandle, type JobSnapshot } from "./schedule-overlays";
 import type { JobRow, TechnicianOption, TechTimeOff } from "./types";
 import type { TargetedTask } from "@/lib/services/tech-tasks";
 
@@ -90,9 +91,15 @@ export function MonthCalendar({
   todayYmd,
   onOpenJob,
   onDropDay,
-  onClearDate,
   onOpenDayTasks,
   onShiftWeeks,
+  onOpenMenu,
+  onConflictClick,
+  onPreviewResize,
+  onCommitResize,
+  resizingId,
+  onResizeActive,
+  highlight,
 }: {
   month: Date;
   jobs: JobRow[];
@@ -106,10 +113,20 @@ export function MonthCalendar({
   todayYmd: string; // computed in the USER'S timezone by the parent
   onOpenJob: (job: JobRow) => void;
   onDropDay: (jobId: string, day: Date) => void;
-  onClearDate: (jobId: string) => void;
   onOpenDayTasks: (dateYmd: string, tasks: TargetedTask[]) => void;
   /** Mouse-wheel: shift the visible window by n weeks (±1 per notch). */
   onShiftWeeks: (n: number) => void;
+  /** Right-click a job → open the shared context menu at the cursor. */
+  onOpenMenu: (e: ReactMouseEvent, job: JobRow) => void;
+  /** Click a ⚠ → show the conflict popover. */
+  onConflictClick: (e: ReactMouseEvent, job: JobRow) => void;
+  /** Edge-resize: live preview (local) + commit on release. */
+  onPreviewResize: (jobId: string, durationDays: number) => void;
+  onCommitResize: (jobId: string, durationDays: number, before: JobSnapshot) => void;
+  resizingId: string | null;
+  onResizeActive: (jobId: string | null) => void;
+  /** Job ids to highlight (quick-search matches). */
+  highlight: Set<string>;
 }) {
   // ROLLING grid: starts on the week containing the anchor (wheel scrolling
   // moves it a week at a time). The tinted "current month" is whichever month
@@ -202,7 +219,7 @@ export function MonthCalendar({
           const cellMinH = HEADER_H + laneCount * BAR_H + 8;
 
           return (
-            <div key={wi} className="relative flex-1" style={{ minHeight: cellMinH }}>
+            <div key={wi} className="relative flex-1" style={{ minHeight: cellMinH }} data-weekcontainer data-weekstart={weekStart.getTime()}>
               {/* Background day cells (date numbers + drop targets) */}
               <div className="grid h-full grid-cols-7">
                 {days.map((day, ci) => {
@@ -294,24 +311,21 @@ export function MonthCalendar({
                     <button
                       key={item.key}
                       type="button"
-                      draggable
+                      draggable={resizingId !== job.id}
                       onDragStart={(e: DragEvent) => e.dataTransfer.setData("text/plain", job.id)}
                       onDoubleClick={() => onOpenJob(job)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        onClearDate(job.id);
-                      }}
+                      onContextMenu={(e) => onOpenMenu(e, job)}
                       title={[
                         jobLabel(job),
                         job.technicianName ? `Tech: ${job.technicianName}` : "Unassigned",
                         job.description ? `Scope: ${job.description}` : "",
-                        "Right-click to unschedule",
+                        "Double-click to open · right-click for actions · drag right edge to resize",
                       ]
                         .filter(Boolean)
                         .join("\n")}
                       className={`pointer-events-auto absolute flex items-center gap-1 overflow-hidden rounded border px-1.5 text-left text-[13px] font-medium ${
                         job.jobStatus === "COMPLETED" ? "opacity-60" : ""
-                      }`}
+                      } ${highlight.has(job.id) ? "ring-2 ring-primary ring-offset-1" : ""}`}
                       style={{
                         ...(job.tentative ? hatchStyle(job.technicianColor) : barStyle(job.technicianColor)),
                         left,
@@ -321,9 +335,18 @@ export function MonthCalendar({
                       }}
                     >
                       {conflicts.has(job.id) ? (
-                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 animate-pulse text-red-600" aria-label="Conflict" />
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label="Show conflict details"
+                          onClick={(e) => onConflictClick(e, job)}
+                          className="shrink-0 cursor-help"
+                        >
+                          <AlertTriangle className="h-3.5 w-3.5 animate-pulse text-red-600" />
+                        </span>
                       ) : null}
                       <span className="truncate">{jobLabel(job)}</span>
+                      <ResizeHandle job={job} onPreview={onPreviewResize} onCommit={onCommitResize} onActive={(a) => onResizeActive(a ? job.id : null)} />
                     </button>
                   );
                 })}

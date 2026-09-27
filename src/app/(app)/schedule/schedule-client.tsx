@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import {
   ChevronLeft,
@@ -15,6 +15,7 @@ import {
   PanelLeftOpen,
   Plane,
   Printer,
+  Search,
   X,
 } from "lucide-react";
 import {
@@ -31,8 +32,20 @@ import {
   type JobLite,
 } from "@/lib/scheduling/calc";
 import { barStyle, dotStyle, softStyle, hatchStyle } from "@/lib/scheduling/colors";
-import { rescheduleJobAction } from "../tasks/actions";
+import { rescheduleJobAction, setJobStatusAction, duplicateJobAction, addJobCommentAction } from "../tasks/actions";
 import { jobLabel } from "./format";
+import {
+  ContextMenu,
+  ConflictPopover,
+  UndoToast,
+  ResizeHandle,
+  conflictDetails,
+  snapshotOf,
+  type MenuState,
+  type ConflictState,
+  type UndoState,
+  type JobSnapshot,
+} from "./schedule-overlays";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 import type { OwnerLite, TargetedTask } from "@/lib/services/tech-tasks";
 import { TaskTicket } from "../dashboard/task-ticket";
@@ -152,6 +165,26 @@ export function ScheduleClient({
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+
+  // Board overlays: undo toast, right-click menu, conflict popover, quick search,
+  // and the id of a job currently being edge-resized (drag is disabled on it).
+  const [undo, setUndo] = useState<UndoState | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const undoSeq = useRef(0);
+  const showUndo = (label: string, run: () => void, jobId?: string) => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndo({ id: ++undoSeq.current, label, run, jobId });
+    undoTimer.current = setTimeout(() => setUndo(null), 8000);
+  };
+  // Cancels the toast's auto-dismiss (used while a board reason is being typed).
+  const holdUndo = () => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = null;
+  };
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [conflictPop, setConflictPop] = useState<ConflictState | null>(null);
+  const [query, setQuery] = useState("");
+  const [resizingId, setResizingId] = useState<string | null>(null);
   // After Duplicate: the copy's id, selected as soon as the refreshed data
   // includes it (swaps the open editor from the source over to the new copy).
   const [pendingSelectId, setPendingSelectId] = useState<string | null>(null);
@@ -362,11 +395,26 @@ export function ScheduleClient({
   const unscheduled = visible.filter((j) => !j.startDate);
   const tentativeCount = visible.filter((j) => j.tentative).length;
 
+  // Quick search: matches SO / customer / title (label). Filters the side panel;
+  // highlights matching bars on the board (without hiding the rest).
+  const q = query.trim().toLowerCase();
+  const queryMatch = (j: JobRow) =>
+    !q ||
+    jobLabel(j).toLowerCase().includes(q) ||
+    (j.soNumber ?? "").toLowerCase().includes(q) ||
+    (j.customerName ?? "").toLowerCase().includes(q) ||
+    j.title.toLowerCase().includes(q);
+  const highlight = useMemo(
+    () => (q ? new Set(jobs.filter(queryMatch).map((j) => j.id)) : new Set<string>()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [jobs, q],
+  );
+
   // Side-panel groups: partition the visible jobs into Scheduled / Tentative /
   // Unscheduled, then apply the panel's own type filter + sort. Tentative jobs
   // (dated or not) sit in their own group so they're easy to confirm.
   const panelGroups = useMemo(() => {
-    const base = visible.filter((j) => matchesStatus(j, panelStatus));
+    const base = visible.filter((j) => matchesStatus(j, panelStatus) && queryMatch(j));
     const cmp = (a: JobRow, b: JobRow) => {
       if (panelSort === "so") {
         const r = (a.soNumber ?? "").localeCompare(b.soNumber ?? "", undefined, { numeric: true });
@@ -385,7 +433,7 @@ export function ScheduleClient({
       completed: base.filter(done).sort(cmp),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, panelStatus, panelSort]);
+  }, [visible, panelStatus, panelSort, q]);
 
   // Technicians currently in view (respects the checkbox filter).
   const visibleTechs = technicians.filter(
@@ -422,6 +470,7 @@ export function ScheduleClient({
   ) => {
     const job = jobs.find((j) => j.id === jobId);
     if (!job) return;
+    const before = snapshotOf(job); // for the Undo toast
     const dur = job.durationDays && job.durationDays > 0 ? job.durationDays : 1;
 
     const patch: Partial<JobRow> = {};
@@ -466,6 +515,13 @@ export function ScheduleClient({
       }
     }
 
+    const label =
+      opts.startDate === null
+        ? `Unscheduled “${jobLabel(job)}”`
+        : opts.startDate === undefined
+          ? `Reassigned “${jobLabel(job)}”`
+          : `Moved “${jobLabel(job)}”`;
+
     startTransition(async () => {
       const res = await rescheduleJobAction({
         jobId,
@@ -474,7 +530,10 @@ export function ScheduleClient({
           ? { startDate: opts.startDate ? ymd(toUtcMidnight(opts.startDate)) : null }
           : {}),
       });
+      // Only offer Undo once the server accepted the change — otherwise Undo
+      // would write the old values back for a change that never happened.
       if (res?.error) setWarning(res.error);
+      else showUndo(label, () => revertTo(jobId, before), jobId);
       router.refresh(); // reconcile with server truth
     });
   };
@@ -482,6 +541,85 @@ export function ScheduleClient({
   const move = (jobId: string, technicianId: string | null, date: Date | null) =>
     doMove(jobId, { technicianId, startDate: date });
   const moveDate = (jobId: string, date: Date | null) => doMove(jobId, { startDate: date });
+
+  // Restore a job to a prior snapshot (used by the Undo toast). Optimistic +
+  // persisted; rescheduleJob re-derives end/status from start + duration + tech.
+  const revertTo = (jobId: string, snap: JobSnapshot) => {
+    setJobs((js) => js.map((j) => (j.id === jobId ? { ...j, ...snap } : j)));
+    startTransition(async () => {
+      const res = await rescheduleJobAction({
+        jobId,
+        startDate: snap.startDate,
+        technicianId: snap.technicianId,
+        durationDays: snap.durationDays ?? undefined,
+      });
+      if (res?.error) setWarning(res.error);
+      router.refresh();
+    });
+  };
+
+  // ── Edge-resize (duration) ──
+  const previewResize = (jobId: string, durationDays: number) => {
+    setJobs((js) =>
+      js.map((j) =>
+        j.id === jobId && j.startDate
+          ? { ...j, durationDays, endDate: ymd(endFromDuration(parseYmd(j.startDate), durationDays)) }
+          : j,
+      ),
+    );
+  };
+  const commitResize = (jobId: string, durationDays: number, before: JobSnapshot) => {
+    const job = jobs.find((j) => j.id === jobId);
+    startTransition(async () => {
+      const res = await rescheduleJobAction({ jobId, durationDays });
+      if (res?.error) setWarning(res.error);
+      else
+        showUndo(
+          `Resized “${job ? jobLabel(job) : "job"}” to ${durationDays} day${durationDays === 1 ? "" : "s"}`,
+          () => revertTo(jobId, before),
+          jobId,
+        );
+      router.refresh();
+    });
+  };
+
+  // ── Right-click menu + conflict popover ──
+  const openMenu = (e: ReactMouseEvent, job: JobRow) => {
+    e.preventDefault();
+    setConflictPop(null);
+    setMenu({ x: e.clientX, y: e.clientY, job });
+  };
+  const openConflict = (e: ReactMouseEvent, job: JobRow) => {
+    e.stopPropagation();
+    setMenu(null);
+    setConflictPop({ x: e.clientX, y: e.clientY, reasons: conflictDetails(job, jobs, timeOff) });
+  };
+  const markComplete = (job: JobRow) => {
+    const before = snapshotOf(job);
+    setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: "COMPLETED" } : j)));
+    startTransition(async () => {
+      const res = await setJobStatusAction({ jobId: job.id, jobStatus: "COMPLETED" });
+      if (res?.error) setWarning(res.error);
+      else
+        showUndo(`Completed “${jobLabel(job)}”`, () => {
+          setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: before.jobStatus } : j)));
+          startTransition(async () => {
+            const undoRes = await setJobStatusAction({ jobId: job.id, jobStatus: before.jobStatus });
+            if (undoRes?.error) setWarning(undoRes.error);
+            router.refresh();
+          });
+        }, job.id);
+      router.refresh();
+    });
+  };
+  const duplicateFromMenu = (job: JobRow) => {
+    startTransition(async () => {
+      const res = await duplicateJobAction({ jobId: job.id });
+      if (res?.error) setWarning(res.error);
+      else if (res?.jobId) setPendingSelectId(res.jobId);
+      router.refresh();
+    });
+  };
 
   // Double-clicking a list job navigates the current view to its date (timeline →
   // that week, calendar → that month). No-op for unscheduled jobs.
@@ -552,6 +690,15 @@ export function ScheduleClient({
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
+          {/* Jump to a specific date (moves the view to that week/month). */}
+          <input
+            type="date"
+            aria-label="Jump to date"
+            title="Jump to date"
+            value={ymd(anchor)}
+            onChange={(e) => { if (e.target.value) setAnchor(parseYmd(e.target.value)); }}
+            className={selectClass}
+          />
           <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
             <Upload className="mr-1.5 h-4 w-4" /> Import
           </Button>
@@ -578,6 +725,17 @@ export function ScheduleClient({
           <Stat label="conflicts" value={conflicts.size} tone={conflicts.size ? "bad" : undefined} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search SO / customer / title"
+              aria-label="Search jobs"
+              className={`${selectClass} w-52 pl-7`}
+            />
+          </div>
           <TechFilter technicians={technicians} selected={fTechSel} onChange={setFTechSel} />
           <select className={selectClass} value={fType} onChange={(e) => setFType(e.target.value)} aria-label="Filter job type">
             <option value="ALL">All types</option>
@@ -697,9 +855,15 @@ export function ScheduleClient({
               todayYmd={todayYmd}
               onOpenJob={setSelected}
               onDropDay={moveDate}
-              onClearDate={(jobId) => moveDate(jobId, null)}
               onOpenDayTasks={openDayTasks}
               onShiftWeeks={(n) => setAnchor((a) => addDays(a, n * 7))}
+              onOpenMenu={openMenu}
+              onConflictClick={openConflict}
+              onPreviewResize={previewResize}
+              onCommitResize={commitResize}
+              resizingId={resizingId}
+              onResizeActive={(id) => setResizingId(id)}
+              highlight={highlight}
             />
           ) : (
             <>
@@ -736,7 +900,7 @@ export function ScheduleClient({
                       <span className="h-2.5 w-2.5 rounded-full" style={dotStyle(row.color)} />
                       <span className="truncate text-sm font-medium">{row.name}</span>
                     </div>
-                    <div className="relative col-span-7" style={{ height: laneHeight }}>
+                    <div className="relative col-span-7" style={{ height: laneHeight }} data-weekcontainer data-weekstart={weekStart.getTime()}>
                       <div className="absolute inset-0 grid grid-cols-7">
                         {weekDays.map((d, i) => {
                           const weekend = i === 0 || i === 6;
@@ -771,15 +935,12 @@ export function ScheduleClient({
                           <button
                             key={job.id}
                             type="button"
-                            draggable
+                            draggable={resizingId !== job.id}
                             onDragStart={(e) => e.dataTransfer.setData("text/plain", job.id)}
                             onDoubleClick={() => setSelected(job)}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              moveDate(job.id, null);
-                            }}
-                            title={[jobLabel(job), job.description ? `Scope: ${job.description}` : "", "Right-click to unschedule"].filter(Boolean).join("\n")}
-                            className={`absolute flex items-center gap-1 overflow-hidden rounded border px-1.5 text-left text-xs shadow-sm ${job.jobStatus === "COMPLETED" ? "opacity-60" : ""}`}
+                            onContextMenu={(e) => openMenu(e, job)}
+                            title={[jobLabel(job), job.description ? `Scope: ${job.description}` : "", "Double-click to open · right-click for actions · drag right edge to resize"].filter(Boolean).join("\n")}
+                            className={`absolute flex items-center gap-1 overflow-hidden rounded border px-1.5 text-left text-xs shadow-sm ${job.jobStatus === "COMPLETED" ? "opacity-60" : ""} ${highlight.has(job.id) ? "ring-2 ring-primary ring-offset-1" : ""}`}
                             style={{
                               ...(job.tentative
                                 ? hatchStyle(job.technicianColor ?? row.color)
@@ -790,8 +951,19 @@ export function ScheduleClient({
                               height: 28,
                             }}
                           >
-                            {conflict ? <AlertTriangle className="h-3 w-3 shrink-0 animate-pulse text-red-600" aria-label="Scheduling conflict" /> : null}
+                            {conflict ? (
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                aria-label="Show conflict details"
+                                onClick={(e) => openConflict(e, job)}
+                                className="shrink-0 cursor-help"
+                              >
+                                <AlertTriangle className="h-3 w-3 animate-pulse text-red-600" />
+                              </span>
+                            ) : null}
                             <span className="truncate">{jobLabel(job)}</span>
+                            <ResizeHandle job={job} onPreview={previewResize} onCommit={commitResize} onActive={(a) => setResizingId(a ? job.id : null)} />
                           </button>
                         );
                       })}
@@ -893,6 +1065,37 @@ export function ScheduleClient({
             ]
               .filter(Boolean)
               .join("; ") || undefined
+          }
+          currentUserId={currentUserId}
+          isAdmin={isAdmin}
+        />
+      )}
+
+      {menu && (
+        <ContextMenu
+          menu={menu}
+          technicians={technicians}
+          onOpen={setSelected}
+          onReassign={(job, techId) => doMove(job.id, { technicianId: techId })}
+          onComplete={markComplete}
+          onDuplicate={duplicateFromMenu}
+          onUnschedule={(job) => moveDate(job.id, null)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {conflictPop && <ConflictPopover pop={conflictPop} onClose={() => setConflictPop(null)} />}
+      {undo && (
+        <UndoToast
+          key={undo.id}
+          undo={undo}
+          onClose={() => setUndo(null)}
+          onHold={holdUndo}
+          onReason={(jobId, body) =>
+            startTransition(async () => {
+              const res = await addJobCommentAction({ jobId, body });
+              if (res.error) setWarning(res.error);
+              router.refresh();
+            })
           }
         />
       )}

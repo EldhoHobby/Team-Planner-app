@@ -48,7 +48,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     users, memberships, teams, teamMemberships, managerLinks,
     workGroups, workGroupMemberships, projects, boards, boardColumns,
     tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
-    holidays, timesheets, timesheetEntries, techTasks, techTaskNotes,
+    holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
   ] = await Promise.all([
     prisma.user.findMany({ where: { memberships: { some: { orgId } } } }),
     prisma.membership.findMany({ where: { orgId } }),
@@ -70,6 +70,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.timesheetEntry.findMany({ where: { timesheet: { orgId } } }),
     prisma.techTask.findMany({ where: { orgId } }),
     prisma.techTaskNote.findMany({ where: { orgId } }),
+    prisma.jobNote.findMany({ where: { orgId } }),
   ]);
 
   await writeAudit(scope, {
@@ -88,7 +89,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
       users, memberships, teams, teamMemberships, managerLinks,
       workGroups, workGroupMemberships, projects, boards, boardColumns,
       tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
-      holidays, timesheets, timesheetEntries, techTasks, techTaskNotes,
+      holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
     },
   };
 }
@@ -144,6 +145,7 @@ export async function restoreFullBackup(
       // ── 1. Wipe the org's domain data (children first; logs are kept) ──
       await tx.techTaskNote.deleteMany({ where: { orgId } });
       await tx.techTask.deleteMany({ where: { orgId } });
+      await tx.jobNote.deleteMany({ where: { orgId } });
       await tx.timesheetEntry.deleteMany({ where: { timesheet: { orgId } } });
       await tx.timesheet.deleteMany({ where: { orgId } });
       await tx.technicianTimeOff.deleteMany({ where: { orgId } });
@@ -215,6 +217,8 @@ export async function restoreFullBackup(
       await tx.techTask.createMany({ data: reOrg(rows(backup, "techTasks"), orgId) });
       // Ticket threads (comments + change history). Absent in v1 files → empty.
       await tx.techTaskNote.createMany({ data: reOrg(rows(backup, "techTaskNotes"), orgId) });
+      // Job comment threads. Absent in older backups → empty (createMany handles []).
+      await tx.jobNote.createMany({ data: reOrg(rows(backup, "jobNotes"), orgId) });
 
       // ── 5. Orphan cleanup: users with no membership anywhere (and not in the
       //       file) lost their account in the replace — e.g. the wizard user. ──

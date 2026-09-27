@@ -37,6 +37,7 @@ model Organization {
   managerLinks ManagerLink[]
   workGroups   WorkGroup[]
   techTaskNotes TechTaskNote[]
+  jobNotes      JobNote[]
 }
 
 model User {
@@ -421,6 +422,7 @@ model Task {
   workGroup   WorkGroup?       @relation(fields: [workGroupId], references: [id], onDelete: SetNull)
   assignments TaskAssignment[]
   attachments Attachment[]
+  jobNotes    JobNote[] // field-service job comment thread (reason-for-change etc.)
 
   @@index([orgId, teamId, status])
   @@index([projectId, columnId, position])
@@ -646,6 +648,27 @@ model TechTaskNote {
   task TechTask     @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([taskId, createdAt])
+  @@index([orgId])
+}
+
+// Comment thread on a field-service job (the "reason for the change" and any
+// discussion). Comments only; the change history itself lives in AuditLog and is
+// merged in at display time. Included in the full backup; NOT in the Excel
+// round-trip. Never pruned.
+model JobNote {
+  id         String    @id @default(cuid())
+  orgId      String
+  jobId      String
+  authorId   String?
+  authorName String // display-name snapshot at write time
+  body       String
+  editedAt   DateTime? // set when a comment is edited ("(edited)" marker)
+  createdAt  DateTime  @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  job Task         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
   @@index([orgId])
 }
 

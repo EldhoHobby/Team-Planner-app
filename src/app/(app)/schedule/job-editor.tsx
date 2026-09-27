@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Trash2, Inbox, History, Copy, AlertTriangle } from "lucide-react";
+import { Trash2, Inbox, History, Copy, AlertTriangle, MessageSquarePlus, ChevronDown, ChevronRight } from "lucide-react";
 import {
   updateJobAction,
   rescheduleJobAction,
@@ -11,7 +11,12 @@ import {
   deleteJobAction,
   duplicateJobAction,
   listJobHistoryAction,
+  getJobThreadAction,
+  addJobCommentAction,
+  editJobCommentAction,
+  deleteJobCommentAction,
 } from "../tasks/actions";
+import type { JobNoteRow } from "@/lib/services/field-service";
 import type { AuditEntry, JobRow, JobStatus, TechnicianOption } from "./types";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
@@ -44,6 +49,8 @@ export function JobEditor({
   onDuplicated,
   conflict = false,
   conflictReason,
+  currentUserId,
+  isAdmin,
 }: {
   job: JobRow | null;
   technicians: TechnicianOption[];
@@ -56,10 +63,30 @@ export function JobEditor({
   conflict?: boolean;
   /** Human-readable reason(s) for the conflict, shown on hover. */
   conflictReason?: string;
+  /** For the comment thread: who's viewing (edit own) and whether they're an admin (delete any). */
+  currentUserId: string;
+  isAdmin: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [history, setHistory] = useState<AuditEntry[] | null>(null);
+  // Comment thread (reason-for-change + discussion), merged with the change
+  // history for display. Loaded when a job opens.
+  const [thread, setThread] = useState<JobNoteRow[]>([]);
+  const [comment, setComment] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editBody, setEditBody] = useState("");
+  // Notes panel starts collapsed. `dirty` tracks whether this editing session
+  // actually saved anything — closing then asks for an optional reason.
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [askReason, setAskReason] = useState(false);
+  const [reason, setReason] = useState("");
+  const [noteError, setNoteError] = useState<string | null>(null);
+  // Declared with the other hooks (i.e. BEFORE the `if (!job) return null`
+  // early return) so hook order stays stable if the editor ever renders
+  // without a job — a conditional useState would break the rules of hooks.
+  const [closeError, setCloseError] = useState<string | null>(null);
 
   // Controlled form state so edits stay consistent (the inputs reflect each other
   // immediately). Reset whenever a different job is opened.
@@ -93,24 +120,95 @@ export function JobEditor({
         durationDays: String(job.durationDays ?? 1),
         tentative: job.tentative,
       });
+      setComment("");
+      setEditingNoteId(null);
+      setNotesOpen(false);
+      setDirty(false);
+      setAskReason(false);
+      setReason("");
+      setNoteError(null);
+      // Clear the PREVIOUS job's thread/history immediately (otherwise its
+      // comments stay on screen — with live Edit/Delete — under the new job,
+      // e.g. after Duplicate swaps the editor over), and ignore responses that
+      // land after the editor has moved on.
+      setThread([]);
       setHistory(null);
+      const id = job.id;
+      let cancelled = false;
+      void getJobThreadAction({ jobId: id })
+        .then((rows) => { if (!cancelled) setThread(rows); })
+        .catch(() => { if (!cancelled) setThread([]); });
+      void listJobHistoryAction({ jobId: id })
+        .then((rows) => { if (!cancelled) setHistory(rows); })
+        .catch(() => { if (!cancelled) setHistory([]); });
+      return () => { cancelled = true; };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id]);
 
   if (!job) return null;
 
+  // Every field save funnels through here, so it's where we mark the session
+  // dirty (drives the "why did you change this?" prompt on close). Delete passes
+  // close=true and calls onClose() directly, so it never prompts.
   const run = (fn: () => Promise<unknown>, close = false) =>
     startTransition(async () => {
       await fn();
+      setDirty(true);
       router.refresh();
       if (close) onClose();
     });
 
-  const loadHistory = () =>
+  const closeNow = () => {
+    setAskReason(false);
+    setDirty(false);
+    onClose();
+  };
+  const saveReasonAndClose = () => {
+    const body = reason.trim();
+    if (!body) return closeNow();
+    setNoteError(null);
     startTransition(async () => {
-      setHistory(await listJobHistoryAction({ jobId: job.id }));
+      const res = await addJobCommentAction({ jobId: job.id, body });
+      // Keep the dialog (and the typed reason) open on failure — silently
+      // closing would throw away what the user just wrote.
+      if (res.error) return setNoteError(res.error);
+      router.refresh();
+      closeNow();
     });
+  };
+
+  const addComment = () => {
+    const body = comment.trim();
+    if (!body) return;
+    startTransition(async () => {
+      const res = await addJobCommentAction({ jobId: job.id, body });
+      if (res.error) return setNoteError(res.error);
+      if (res.note) {
+        setThread((t) => [...t, res.note!]);
+        setComment("");
+        setNoteError(null);
+        router.refresh(); // the comment also lands in the activity/audit log
+      }
+    });
+  };
+  const saveEdit = (noteId: string) => {
+    const body = editBody.trim();
+    if (!body) return;
+    startTransition(async () => {
+      const res = await editJobCommentAction({ noteId, body });
+      if (res.note) {
+        setThread((t) => t.map((n) => (n.id === noteId ? res.note! : n)));
+        setEditingNoteId(null);
+      }
+    });
+  };
+  const removeComment = (noteId: string) => {
+    startTransition(async () => {
+      const res = await deleteJobCommentAction({ noteId });
+      if (res.ok) setThread((t) => t.filter((n) => n.id !== noteId));
+    });
+  };
 
   // Duplicate into the backlog, then hand the new id to the parent so it swaps
   // this editor over to the copy (source closes, copy opens for editing).
@@ -124,7 +222,6 @@ export function JobEditor({
   // Hard-block closing while the title is a duplicate: still the auto "(copy)"
   // name, or an SO number + title that matches another job. No bypass — the
   // user must give it a unique title first.
-  const [closeError, setCloseError] = useState<string | null>(null);
   const closeGuarded = () => {
     const title = form.title.trim();
     const so = form.soNumber.trim();
@@ -143,13 +240,21 @@ export function JobEditor({
       );
       return; // stay open
     }
+    // Something was actually changed this session → ask for an optional reason.
+    if (dirty) {
+      setAskReason(true);
+      return;
+    }
     onClose();
   };
 
   return (
+    <>
     <Modal
       open={!!job}
-      onClose={closeGuarded}
+      // While the reason dialog is up it owns Escape / backdrop clicks — the
+      // editor underneath must not also react (it would re-open the prompt).
+      onClose={() => { if (!askReason) closeGuarded(); }}
       title={job.title}
       titleBadge={
         conflict ? (
@@ -405,32 +510,174 @@ export function JobEditor({
           </Button>
         </div>
 
-        {/* Change history */}
+        {/* Notes & change history — comments (with a reason for the change) merged
+            with the job's audit history, newest first. */}
         <div className="border-t pt-3">
-          <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={loadHistory}>
-            <History className="mr-1.5 h-4 w-4" /> {history ? "Refresh history" : "History"}
-          </Button>
-          {history ? (
-            history.length ? (
-              <ul className="mt-2 space-y-1.5 text-xs">
-                {history.map((h, i) => (
-                  <li key={i} className="flex gap-2">
-                    <span className="shrink-0 text-muted-foreground">
-                      {new Date(h.createdAt).toLocaleString()}
-                    </span>
-                    <span>
-                      {h.summary}
-                      {h.actorEmail ? ` — ${h.actorEmail}` : ""}
-                    </span>
+          <button
+            type="button"
+            onClick={() => setNotesOpen((v) => !v)}
+            aria-expanded={notesOpen}
+            className="mb-2 flex w-full items-center gap-1.5 text-sm font-medium hover:text-foreground"
+          >
+            {notesOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            <History className="h-4 w-4" /> Notes &amp; change history
+            <span className="text-muted-foreground">
+              ({thread.length + (history?.length ?? 0)})
+            </span>
+          </button>
+
+          {notesOpen ? (
+          <>
+          {(() => {
+            type Entry = {
+              key: string; when: string; kind: "comment" | "change";
+              who: string; body: string; noteId?: string; mine?: boolean; editedAt?: string | null;
+            };
+            const entries: Entry[] = [
+              ...thread.map((n) => ({
+                key: `c-${n.id}`, when: n.createdAt, kind: "comment" as const,
+                who: n.authorName, body: n.body, noteId: n.id,
+                mine: n.authorId === currentUserId, editedAt: n.editedAt,
+              })),
+              // The audit log also records a "commented" row per comment — skip it
+              // here so comments aren't shown twice.
+              ...(history ?? [])
+                .filter((h) => h.action !== "commented")
+                .map((h, i) => ({
+                  key: `h-${i}-${h.createdAt}`, when: h.createdAt, kind: "change" as const,
+                  who: h.actorEmail ?? "system", body: h.summary,
+                })),
+            ].sort((a, b) => b.when.localeCompare(a.when)); // newest first
+
+            if (!entries.length) {
+              return <p className="text-xs text-muted-foreground">No notes or changes yet.</p>;
+            }
+            return (
+              <ul className="space-y-2">
+                {entries.map((e) => (
+                  <li key={e.key} className="text-xs">
+                    {e.kind === "change" ? (
+                      <div className="flex gap-2 text-muted-foreground">
+                        <span className="shrink-0">{new Date(e.when).toLocaleString()}</span>
+                        <span className="italic">
+                          {e.body}
+                          {e.who && e.who !== "system" ? ` — ${e.who}` : ""}
+                        </span>
+                      </div>
+                    ) : editingNoteId === e.noteId ? (
+                      <div className="rounded-md border bg-muted/30 p-2">
+                        <textarea
+                          rows={2}
+                          className="flex w-full rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          value={editBody}
+                          disabled={pending}
+                          onChange={(ev) => setEditBody(ev.target.value)}
+                        />
+                        <div className="mt-1.5 flex gap-2">
+                          <Button type="button" size="sm" disabled={pending} onClick={() => saveEdit(e.noteId!)}>Save</Button>
+                          <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => setEditingNoteId(null)}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border p-2">
+                        <div className="mb-0.5 flex items-center gap-2 text-muted-foreground">
+                          <span className="font-medium text-foreground">{e.who}</span>
+                          <span>{new Date(e.when).toLocaleString()}</span>
+                          {e.editedAt ? <span className="italic">(edited)</span> : null}
+                          {e.mine || isAdmin ? (
+                            <span className="ml-auto flex gap-2">
+                              {e.mine ? (
+                                <button
+                                  type="button"
+                                  className="hover:text-foreground"
+                                  disabled={pending}
+                                  onClick={() => { setEditingNoteId(e.noteId!); setEditBody(e.body); }}
+                                >
+                                  Edit
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="hover:text-destructive"
+                                disabled={pending}
+                                onClick={() => removeComment(e.noteId!)}
+                              >
+                                Delete
+                              </button>
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="whitespace-pre-wrap text-foreground">{e.body}</p>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
-            ) : (
-              <p className="mt-2 text-xs text-muted-foreground">No history recorded yet.</p>
-            )
+            );
+          })()}
+
+          {/* Composer — add a comment / reason for a change. */}
+          <div className="mt-3 flex items-start gap-2">
+            <textarea
+              rows={2}
+              className="flex w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              placeholder="Add a comment or the reason for a change…"
+              value={comment}
+              disabled={pending}
+              onChange={(e) => setComment(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); addComment(); }
+              }}
+            />
+            <Button type="button" size="sm" disabled={pending || !comment.trim()} onClick={addComment}>
+              <MessageSquarePlus className="mr-1.5 h-4 w-4" /> Add
+            </Button>
+          </div>
+          {noteError && !askReason ? (
+            <p role="alert" className="mt-1 text-xs text-destructive">{noteError}</p>
+          ) : null}
+          </>
           ) : null}
         </div>
       </div>
     </Modal>
+
+    {/* Asked on close, only when this session changed something. Its own window
+        on top of the job form. Optional — Skip (or Esc) closes without a note;
+        anything entered is saved as a comment. */}
+    {askReason ? (
+      <Modal
+        open
+        onClose={closeNow}
+        title="Why did you change this job?"
+        description="Optional — saved as a comment on this job's notes."
+        className="max-w-md"
+      >
+        <textarea
+          rows={3}
+          autoFocus
+          className="flex w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          placeholder="e.g. customer pushed the visit a week"
+          value={reason}
+          disabled={pending}
+          onChange={(e) => setReason(e.target.value)}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); saveReasonAndClose(); }
+          }}
+        />
+        {noteError ? (
+          <p role="alert" className="mt-2 text-sm text-destructive">{noteError}</p>
+        ) : null}
+        <div className="mt-3 flex gap-2">
+          <Button type="button" size="sm" disabled={pending || !reason.trim()} onClick={saveReasonAndClose}>
+            Save &amp; close
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={closeNow}>
+            Skip
+          </Button>
+        </div>
+      </Modal>
+    ) : null}
+    </>
   );
 }

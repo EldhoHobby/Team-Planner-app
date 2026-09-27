@@ -12,6 +12,28 @@ const JOB_INCLUDE = {
   project: { select: { name: true, teamId: true } },
 } as const;
 
+// Friendly labels + a "which job" reference used in audit summaries so the
+// activity / audit log reads clearly (names the job, spells out what changed).
+const PRIORITY_LABEL: Record<string, string> = { LOW: "Low", MEDIUM: "Medium", HIGH: "High", URGENT: "Urgent" };
+const STATUS_LABEL: Record<string, string> = {
+  UNCONFIRMED: "Unconfirmed",
+  SCHEDULED: "Scheduled",
+  IN_PROGRESS: "In Progress",
+  COMPLETED: "Completed",
+};
+const JOB_TYPE_LABEL: Record<string, string> = {
+  COMMISSIONING: "Commissioning",
+  TRAINING: "Training",
+  ANNUAL_MAINTENANCE: "Annual Maintenance",
+  EMERGENCY_SUPPORT: "Emergency Support",
+};
+/** "SO-1234 · Commissioning Acme" — the job reference shown in every log entry. */
+function jobRef(j: { soNumber?: string | null; title: string }): string {
+  return j.soNumber ? `${j.soNumber} · ${j.title}` : j.title;
+}
+const lbl = (map: Record<string, string>, v: string | null | undefined): string =>
+  v ? (map[v] ?? v) : "—";
+
 // ─────────────────────────── People (schedulable technicians) ───────────────────────────
 // A person IS a technician now: jobs are assigned to Users. These helpers return
 // the org's people shaped for the board ({ id, name, color, active }) so the
@@ -205,7 +227,7 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
     },
     include: JOB_INCLUDE,
   });
-  await writeAudit(scope, { entity: "job", entityId: job.id, action: "created", summary: `Created "${job.title}"` });
+  await writeAudit(scope, { entity: "job", entityId: job.id, action: "created", summary: `Created ${jobRef(job)}` });
   return job;
 }
 
@@ -329,11 +351,39 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
     include: JOB_INCLUDE,
   });
 
+  // Spell out exactly what changed (before→after), prefixed with which job.
+  const parts: string[] = [];
+  if (input.title !== undefined && job.title !== updated.title)
+    parts.push(`Title “${job.title}”→“${updated.title}”`);
+  if (input.soNumber !== undefined && (job.soNumber ?? null) !== (updated.soNumber ?? null))
+    parts.push(`SO ${job.soNumber ?? "—"}→${updated.soNumber ?? "—"}`);
+  if (input.customerName !== undefined && (job.customerName ?? null) !== (updated.customerName ?? null))
+    parts.push(`Customer ${job.customerName ?? "—"}→${updated.customerName ?? "—"}`);
+  if (input.description !== undefined && (job.description ?? null) !== (updated.description ?? null))
+    parts.push("Scope of work edited");
+  if (input.jobType !== undefined && (job.jobType ?? null) !== (updated.jobType ?? null))
+    parts.push(`Type ${lbl(JOB_TYPE_LABEL, job.jobType)}→${lbl(JOB_TYPE_LABEL, updated.jobType)}`);
+  if (input.hardwareTarget !== undefined && (job.hardwareTarget ?? null) !== (updated.hardwareTarget ?? null))
+    parts.push(`Hardware ${job.hardwareTarget ?? "—"}→${updated.hardwareTarget ?? "—"}`);
+  if (input.priority !== undefined && job.priority !== updated.priority)
+    parts.push(`Priority ${lbl(PRIORITY_LABEL, job.priority)}→${lbl(PRIORITY_LABEL, updated.priority)}`);
+  if ((job.technicianId ?? null) !== (updated.technicianId ?? null))
+    parts.push(`Technician → ${updated.technician?.name ?? "Unassigned"}`);
+  if (job.jobStatus !== updated.jobStatus)
+    parts.push(`Status ${lbl(STATUS_LABEL, job.jobStatus)}→${lbl(STATUS_LABEL, updated.jobStatus)}`);
+  if (job.tentative !== updated.tentative)
+    parts.push(updated.tentative ? "Marked tentative" : "Marked confirmed");
+  const oldStartU = job.startDate ? job.startDate.toISOString().slice(0, 10) : null;
+  const newStartU = updated.startDate ? updated.startDate.toISOString().slice(0, 10) : null;
+  if (oldStartU !== newStartU) parts.push(newStartU ? `Date → ${newStartU}` : "Moved to the backlog");
+  if ((job.durationDays ?? null) !== (updated.durationDays ?? null))
+    parts.push(`Duration ${job.durationDays ?? "?"}→${updated.durationDays ?? "?"} day${updated.durationDays === 1 ? "" : "s"}`);
+
   await writeAudit(scope, {
     entity: "job",
     entityId: id,
     action: "updated",
-    summary: `Updated "${updated.title}"`,
+    summary: `${jobRef(updated)}${parts.length ? `: ${parts.join("; ")}` : " updated"}`,
   });
   return updated;
 }
@@ -353,7 +403,7 @@ export async function setJobTentative(
     data: { tentative },
     include: JOB_INCLUDE,
   });
-  await writeAudit(scope, { entity: "job", entityId: id, action: "updated", summary: tentative ? "Marked tentative" : "Marked confirmed" });
+  await writeAudit(scope, { entity: "job", entityId: id, action: "updated", summary: `${jobRef(updated)}: ${tentative ? "Marked tentative" : "Marked confirmed"}` });
   return updated;
 }
 
@@ -426,7 +476,7 @@ export async function rescheduleJob(
   if ((job.technicianId ?? null) !== (nextTech ?? null)) {
     parts.push(`Assigned to ${updated.technician?.name ?? "Unassigned"}`);
   }
-  const summary = parts.length ? parts.join(" · ") : "Updated";
+  const summary = `${jobRef(updated)}: ${parts.length ? parts.join(" · ") : "updated"}`;
 
   // Coalesce rapid repeats (e.g. several quick drags) into one history entry.
   await writeAudit(
@@ -452,18 +502,18 @@ export async function setJobStatus(
     data: { jobStatus },
     include: JOB_INCLUDE,
   });
-  await writeAudit(scope, { entity: "job", entityId: id, action: "status", summary: `Status → ${jobStatus}` });
+  await writeAudit(scope, { entity: "job", entityId: id, action: "status", summary: `${jobRef(updated)}: Status → ${lbl(STATUS_LABEL, jobStatus)}` });
   return updated;
 }
 
 export async function deleteJob(scope: TenantScope, id: string) {
   const job = await prisma.task.findFirst({
     where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-    select: { id: true, title: true },
+    select: { id: true, title: true, soNumber: true },
   });
   if (!job) throw new ForbiddenError("Job not found");
   await prisma.task.delete({ where: { id } });
-  await writeAudit(scope, { entity: "job", entityId: id, action: "deleted", summary: `Deleted "${job.title}"` });
+  await writeAudit(scope, { entity: "job", entityId: id, action: "deleted", summary: `Deleted ${jobRef(job)}` });
 }
 
 // ─────────────────────────── CSV import/export ───────────────────────────
@@ -611,3 +661,94 @@ export async function importJobsCsv(
 }
 
 export { inclusiveDayCount };
+
+// ─────────────────────────── Job comment thread ───────────────────────────
+// A freeform comment thread on a job (the "reason for the change" and any
+// discussion). Comments live in JobNote; the change history stays in AuditLog
+// and is merged in by the editor. Mirrors the dashboard task-ticket thread.
+
+export interface JobNoteRow {
+  id: string;
+  authorId: string | null;
+  authorName: string;
+  body: string;
+  editedAt: string | null; // ISO, set when edited
+  createdAt: string; // ISO
+}
+
+function serializeJobNote(n: {
+  id: string; authorId: string | null; authorName: string; body: string; editedAt: Date | null; createdAt: Date;
+}): JobNoteRow {
+  return {
+    id: n.id, authorId: n.authorId, authorName: n.authorName, body: n.body,
+    editedAt: n.editedAt ? n.editedAt.toISOString() : null, createdAt: n.createdAt.toISOString(),
+  };
+}
+
+/** The EFFECTIVE user writing to a thread (id + display-name snapshot). */
+async function jobNoteAuthor(scope: TenantScope): Promise<{ id: string; name: string }> {
+  const u = await prisma.user.findUnique({
+    where: { id: scope.ctx.userId },
+    select: { name: true, username: true, email: true },
+  });
+  return { id: scope.ctx.userId, name: u?.name ?? u?.username ?? u?.email ?? "someone" };
+}
+
+async function assertJobInScope(scope: TenantScope, jobId: string): Promise<{ title: string; soNumber: string | null }> {
+  const job = await prisma.task.findFirst({
+    where: { id: jobId, kind: "FIELD_SERVICE", ...scope.team() },
+    select: { title: true, soNumber: true },
+  });
+  if (!job) throw new ForbiddenError("Job not found");
+  return job;
+}
+
+/** All comments on a job, oldest first. Permission = job visibility (team scope). */
+export async function getJobThread(scope: TenantScope, jobId: string): Promise<JobNoteRow[]> {
+  await assertJobInScope(scope, jobId);
+  const notes = await prisma.jobNote.findMany({
+    where: { jobId, orgId: scope.ctx.orgId },
+    orderBy: { createdAt: "asc" },
+  });
+  return notes.map(serializeJobNote);
+}
+
+export async function addJobComment(scope: TenantScope, jobId: string, body: string): Promise<JobNoteRow> {
+  const text = body.trim();
+  if (!text) throw new ForbiddenError("Write a comment first.");
+  const job = await assertJobInScope(scope, jobId);
+  const author = await jobNoteAuthor(scope);
+  const note = await prisma.jobNote.create({
+    data: { orgId: scope.ctx.orgId, jobId, authorId: author.id, authorName: author.name, body: text.slice(0, 4000) },
+  });
+  // Also surface it in the audit / activity log, referencing the job.
+  await writeAudit(scope, {
+    entity: "job", entityId: jobId, action: "commented",
+    summary: `${jobRef(job)}: 💬 ${text.length > 200 ? `${text.slice(0, 200)}…` : text}`,
+  });
+  return serializeJobNote(note);
+}
+
+/** Authors may edit their own comments; edits get an "(edited)" stamp. */
+export async function editJobComment(scope: TenantScope, noteId: string, body: string): Promise<JobNoteRow> {
+  const text = body.trim();
+  if (!text) throw new ForbiddenError("A comment can't be empty — delete it instead.");
+  const note = await prisma.jobNote.findFirst({ where: { id: noteId, orgId: scope.ctx.orgId } });
+  if (!note) throw new ForbiddenError("Comment not found");
+  if (note.authorId !== scope.ctx.userId) throw new ForbiddenError("You can only edit your own comments.");
+  const updated = await prisma.jobNote.update({
+    where: { id: noteId },
+    data: { body: text.slice(0, 4000), editedAt: new Date() },
+  });
+  return serializeJobNote(updated);
+}
+
+/** Delete own comment; org admins may delete anyone's. */
+export async function deleteJobComment(scope: TenantScope, noteId: string): Promise<void> {
+  const note = await prisma.jobNote.findFirst({ where: { id: noteId, orgId: scope.ctx.orgId } });
+  if (!note) throw new ForbiddenError("Comment not found");
+  if (note.authorId !== scope.ctx.userId && !scope.ctx.isOrgAdmin) {
+    throw new ForbiddenError("You can only delete your own comments.");
+  }
+  await prisma.jobNote.delete({ where: { id: noteId } });
+}
