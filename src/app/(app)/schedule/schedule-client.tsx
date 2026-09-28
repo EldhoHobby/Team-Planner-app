@@ -411,8 +411,10 @@ export function ScheduleClient({
   );
 
   // Side-panel groups: partition the visible jobs into Scheduled / Tentative /
-  // Unscheduled, then apply the panel's own type filter + sort. Tentative jobs
-  // (dated or not) sit in their own group so they're easy to confirm.
+  // Unscheduled, then apply the panel's own type filter + sort. "Tentative"
+  // means a pencilled-in DATE, so it only applies to dated jobs — an undated
+  // job belongs in the backlog whatever its tentative flag says (otherwise it
+  // hides from Unscheduled entirely). Matches how the printout counts them.
   const panelGroups = useMemo(() => {
     const base = visible.filter((j) => matchesStatus(j, panelStatus) && queryMatch(j));
     const cmp = (a: JobRow, b: JobRow) => {
@@ -428,8 +430,8 @@ export function ScheduleClient({
     const done = (j: JobRow) => j.jobStatus === "COMPLETED";
     return {
       scheduled: base.filter((j) => j.startDate && !j.tentative && !done(j)).sort(cmp),
-      tentative: base.filter((j) => j.tentative && !done(j)).sort(cmp),
-      unscheduled: base.filter((j) => !j.startDate && !j.tentative && !done(j)).sort(cmp),
+      tentative: base.filter((j) => j.startDate && j.tentative && !done(j)).sort(cmp),
+      unscheduled: base.filter((j) => !j.startDate && !done(j)).sort(cmp),
       completed: base.filter(done).sort(cmp),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
