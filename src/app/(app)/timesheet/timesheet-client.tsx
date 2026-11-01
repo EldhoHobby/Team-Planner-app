@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Save, Download, ChevronLeft, ChevronRight, CalendarClock, Lock } from "lucide-react";
 import { saveTimesheetAction, setEmpNoAction } from "./actions";
 import type { DirectRow, IndirectRow, TimesheetData, WeekSummary } from "./types";
+import { todayUtcMs } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 
 const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
@@ -22,8 +23,8 @@ function fmtMD(d: Date): string {
   return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
 }
 function todayWeekEnding(): string {
-  const n = new Date();
-  const m = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()));
+  // Eastern "today": the UTC date would jump to next week on Saturday evenings.
+  const m = new Date(todayUtcMs());
   return ymd(new Date(m.getTime() + (6 - m.getUTCDay()) * MS_DAY));
 }
 const rowTotal = (r: Record<DayKey, number>) => DAY_KEYS.reduce((a, k) => a + (Number(r[k]) || 0), 0);

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { clearAuditLogAction } from "./actions";
+import { fmtEastern } from "@/lib/tz";
 
 const REFRESH_MS = 10_000;
 
@@ -28,9 +29,7 @@ interface Row {
 }
 
 function fmt(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
+  return fmtEastern(iso, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 /** Colour the action badge by what kind of event it is. */

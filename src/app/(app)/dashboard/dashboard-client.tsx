@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
+import { todayUtcMs } from "@/lib/tz";
 import {
   createTechTaskAction,
   updateTechTaskAction,
@@ -78,11 +79,11 @@ function fmtDate(iso: string | null): string {
 }
 
 export type DueStatus = "overdue" | "soon" | "none";
-/** Compare calendar days: overdue if target < today, "soon" if within 2 days. */
+/** Compare calendar days: overdue if target < today, "soon" if within 2 days.
+ *  "Today" is the Eastern date, so the server and browser renders agree. */
 export function dueStatus(targetIso: string | null, state: TechTaskState): DueStatus {
   if (!targetIso || state === "DONE") return "none";
-  const now = new Date();
-  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayUTC = todayUtcMs();
   const t = new Date(targetIso);
   const targetUTC = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
   const diffDays = Math.round((targetUTC - todayUTC) / 86_400_000);

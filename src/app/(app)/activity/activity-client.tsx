@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { History, Search } from "lucide-react";
+import { fmtEastern } from "@/lib/tz";
 
 type Row = {
   id: string;
@@ -54,7 +55,7 @@ export function ActivityClient({ retentionDays, rows }: { retentionDays: number;
   const groups = useMemo(() => {
     const map = new Map<string, Row[]>();
     for (const r of filtered) {
-      const key = new Date(r.when).toLocaleDateString(undefined, {
+      const key = fmtEastern(r.when, {
         weekday: "long",
         month: "short",
         day: "numeric",
@@ -67,8 +68,7 @@ export function ActivityClient({ retentionDays, rows }: { retentionDays: number;
     return [...map.entries()];
   }, [filtered]);
 
-  const time = (iso: string) =>
-    new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const time = (iso: string) => fmtEastern(iso, { hour: "numeric", minute: "2-digit" });
 
   return (
     <div className="mx-auto w-full max-w-3xl p-5">

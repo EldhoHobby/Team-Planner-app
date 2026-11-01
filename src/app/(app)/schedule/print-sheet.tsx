@@ -3,6 +3,7 @@
 import { AlertTriangle } from "lucide-react";
 import { startOfWeekSunday, addDays, toUtcMidnight, MS_PER_DAY } from "@/lib/scheduling/calc";
 import { dotStyle } from "@/lib/scheduling/colors";
+import { fmtEastern } from "@/lib/tz";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 
 // Purpose-built PRINT layout for the schedule (hidden on screen; the
@@ -85,8 +86,10 @@ export function PrintSheet({
             {view === "calendar" ? "Month view" : "Week view"} · {rangeLabel}
           </p>
         </div>
-        <p className="text-[9px] text-neutral-500">
-          printed {new Date().toLocaleString(undefined, { month: "2-digit", day: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit" })}
+        {/* Eastern time so server + browser renders agree; the minute can still
+            tick between the two renders, hence suppressHydrationWarning. */}
+        <p className="text-[9px] text-neutral-500" suppressHydrationWarning>
+          printed {fmtEastern(new Date(), { month: "2-digit", day: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit" })}
         </p>
       </div>
 

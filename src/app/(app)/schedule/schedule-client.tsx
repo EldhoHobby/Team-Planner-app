@@ -55,6 +55,7 @@ import { NewJobDialog } from "./new-job-dialog";
 import { JobEditor } from "./job-editor";
 import { ImportDialog } from "./import-dialog";
 import { MonthCalendar } from "./month-calendar";
+import { todayYmd } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -77,14 +78,12 @@ function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 /**
- * Today's date in the USER'S timezone (not UTC). The board's dates are UTC
- * midnights, so using the UTC date for "today" marked the wrong day for anyone
- * west of UTC in the evening / east of UTC in the morning.
+ * Today's date in US Eastern time (not UTC, and not the rendering machine's
+ * zone). The board's dates are UTC midnights; the server renders in UTC and the
+ * browser in local time, so the zone must be fixed or the evening renders
+ * disagree on which day is "today".
  */
-function localTodayYmd(): string {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
-}
+const localTodayYmd = todayYmd;
 function parseYmd(s: string): Date {
   return new Date(`${s}T00:00:00.000Z`);
 }

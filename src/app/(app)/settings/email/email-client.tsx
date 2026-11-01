@@ -6,6 +6,7 @@ import { Mail, RefreshCw, CheckCircle2, XCircle, MinusCircle } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { checkMailNowAction } from "./actions";
+import { fmtEastern } from "@/lib/tz";
 
 interface StatBlock {
   emailsCreated: number;
@@ -26,9 +27,7 @@ interface LogRow {
 
 function fmt(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
+  return fmtEastern(iso, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 const OUTCOME_UI = {
