@@ -7,6 +7,7 @@ import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import { ListChecks, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { daysFromToday } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -495,10 +496,11 @@ function TaskRow({
   task: TaskRow;
   onEdit: (t: TaskRow) => void;
 }) {
-  const overdue =
-    task.status !== "DONE" &&
-    task.dueDate &&
-    new Date(task.dueDate) < new Date();
+  // Calendar-day compare against today's Eastern date, like the dashboard:
+  // red once the due date has passed, amber when due within 2 days.
+  const daysLeft = task.status !== "DONE" && task.dueDate ? daysFromToday(task.dueDate) : null;
+  const overdue = daysLeft !== null && daysLeft < 0;
+  const dueSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 2;
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 hover:bg-muted/30">
@@ -547,7 +549,11 @@ function TaskRow({
         <span
           className={cn(
             "hidden whitespace-nowrap text-xs lg:block",
-            overdue ? "font-medium text-destructive" : "text-muted-foreground",
+            overdue
+              ? "font-medium text-destructive"
+              : dueSoon
+                ? "font-medium text-amber-600 dark:text-amber-400"
+                : "text-muted-foreground",
           )}
         >
           {new Date(task.dueDate).toLocaleDateString(undefined, {

@@ -28,3 +28,11 @@ export function todayUtcMs(now: Date = new Date()): number {
 export function fmtEastern(iso: string | Date, opts: Intl.DateTimeFormatOptions): string {
   return new Date(iso).toLocaleString(APP_LOCALE, { ...opts, timeZone: APP_TIME_ZONE });
 }
+
+/** Whole calendar days from today (Eastern) to a stored date-only value
+ *  (UTC midnight): 0 = due today, negative = past due. */
+export function daysFromToday(dateIso: string | Date, now: Date = new Date()): number {
+  const d = new Date(dateIso);
+  const day = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  return Math.round((day - todayUtcMs(now)) / 86_400_000);
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtEastern, todayUtcMs, todayYmd } from "./tz";
+import { daysFromToday, fmtEastern, todayUtcMs, todayYmd } from "./tz";
 
 describe("todayYmd (US Eastern)", () => {
   it("is still the previous day late in the evening, when UTC has rolled over", () => {
@@ -30,5 +30,19 @@ describe("fmtEastern", () => {
     expect(
       fmtEastern("2026-10-31T03:14:00Z", { weekday: "long", month: "short", day: "numeric", year: "numeric" }),
     ).toBe("Friday, Oct 30, 2026");
+  });
+});
+
+describe("daysFromToday", () => {
+  const due = "2026-10-31T00:00:00.000Z"; // a task due Oct 31
+  it("is not yet due the evening before, after UTC has rolled over", () => {
+    expect(daysFromToday(due, new Date("2026-10-31T01:00:00Z"))).toBe(1); // 9 PM EDT Oct 30
+  });
+  it("is 0 all day on the due date", () => {
+    expect(daysFromToday(due, new Date("2026-10-31T14:00:00Z"))).toBe(0);
+    expect(daysFromToday(due, new Date("2026-11-01T03:30:00Z"))).toBe(0); // 11:30 PM EDT Oct 31
+  });
+  it("is negative the day after", () => {
+    expect(daysFromToday(due, new Date("2026-11-01T14:00:00Z"))).toBe(-1);
   });
 });
