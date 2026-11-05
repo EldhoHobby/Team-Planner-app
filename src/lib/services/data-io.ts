@@ -5,6 +5,8 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { toHex, nextIdentityColor } from "@/lib/scheduling/colors";
 import { endFromDuration } from "@/lib/scheduling/calc";
 import { createJob } from "@/lib/services/field-service";
+import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
+import { TECH_TASK_HISTORY_FIELDS } from "@/lib/services/tech-tasks";
 import { hashPassword } from "@/lib/auth/password";
 import { generateToken } from "@/lib/auth/tokens";
 import { uniqueUsername } from "@/lib/auth/username";
@@ -483,16 +485,22 @@ async function importTechTasks(scope: TenantScope, rows: Record<string, string>[
           (ex.notes ?? "") === (notes ?? "");
         if (same) { res.unchanged++; continue; }
         if (apply) {
-          await prisma.techTask.update({
-            where: { id },
-            data: {
-              ownerId, title, priority, state, targetDate,
-              location, notes,
-              completedAt:
-                state === "DONE"
-                  ? (ex.completedAt ?? new Date())
-                  : null,
-            },
+          // Bump the optimistic-lock version (stale open tickets must not
+          // overwrite imported values) and keep the permanent field history.
+          await prisma.$transaction(async (tx) => {
+            const updated = await tx.techTask.update({
+              where: { id },
+              data: {
+                ownerId, title, priority, state, targetDate,
+                location, notes,
+                completedAt:
+                  state === "DONE"
+                    ? (ex.completedAt ?? new Date())
+                    : null,
+                version: { increment: 1 },
+              },
+            });
+            await recordFieldChanges(tx, scope, "techtask", id, diffFields(ex, updated, TECH_TASK_HISTORY_FIELDS));
           });
         }
         res.updated++;

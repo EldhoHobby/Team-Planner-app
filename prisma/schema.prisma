@@ -38,6 +38,7 @@ model Organization {
   workGroups   WorkGroup[]
   techTaskNotes TechTaskNote[]
   jobNotes      JobNote[]
+  changeHistory ChangeHistory[]
 }
 
 model User {
@@ -609,6 +610,10 @@ model TechTask {
   externalUrl    String?
   lastSyncedAt   DateTime?
   syncDirty      Boolean     @default(false)
+  // Optimistic-locking counter (template for new modules — see
+  // src/lib/db/optimistic.ts). Every update bumps it; a save that names a
+  // stale version is rejected with StaleSaveError instead of overwriting.
+  version      Int           @default(1)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -712,6 +717,30 @@ model AuditLog {
 
   @@index([orgId, entity, entityId])
   @@index([orgId, createdAt]) // audit page: newest-first browsing + retention prune
+}
+
+// PERMANENT field-level change history (who / when / entity / field / old → new).
+// Unlike AuditLog this is NEVER pruned — it is the record of truth for things
+// like agreement-price changes. Written via recordFieldChanges() in
+// src/lib/services/change-history.ts, ideally in the SAME transaction as the
+// update. actorId is a plain string (no FK) so history survives user deletion;
+// actorName is a display-name snapshot. Values are stored as text (null = empty).
+model ChangeHistory {
+  id        String   @id @default(cuid())
+  orgId     String
+  actorId   String? // REAL user (an OWNER using "View as" is recorded as themselves)
+  actorName String
+  entity    String // "techtask" | "agreement" | ...
+  entityId  String
+  field     String
+  oldValue  String?
+  newValue  String?
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, entity, entityId, createdAt])
+  @@index([orgId, createdAt])
 }
 
 // Metadata in Postgres; bytes on the local uploads volume. Downloads are

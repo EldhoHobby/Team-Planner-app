@@ -5,11 +5,12 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 # libc6-compat/openssl for Prisma engines; toolchain for native modules (argon2).
 RUN apk add --no-cache libc6-compat openssl python3 make g++
-COPY package.json package-lock.json* ./
-# npm install (not ci): new deps are added by editing package.json directly on
-# this machine, which has no npm to regenerate the lockfile. install updates the
-# lock inside the build instead of failing on the mismatch.
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+# npm ci: installs EXACTLY what package-lock.json pins (reproducible builds; the
+# ^ ranges in package.json are ignored) and FAILS if the lock is out of sync.
+# After changing package.json, regenerate the lock with Docker (no host npm):
+#   docker run --rm -v "${PWD}:/app" -w /app node:22-alpine npm install --package-lock-only --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 
 # 2. Build the app (also generates the Prisma client)
 FROM node:22-alpine AS builder
