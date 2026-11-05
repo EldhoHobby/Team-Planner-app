@@ -2,6 +2,10 @@
 
 Context for AI assistants working on this repo. Read `PLANNING.md` for the full
 architecture rationale and `README.md` for setup. This file is the quick brief.
+`docs/PROJECT-HISTORY.md` holds the release history, what is deployed where,
+paused WIP branches, open issues and working habits — read it when resuming work.
+`docs/claude-memory/` is a copy of Claude Code's memory notes for this project;
+`MOVING-TO-NEW-PC.md` covers setting up a fresh dev machine.
 
 ## What this is
 
@@ -101,6 +105,7 @@ src/lib/auth/                      # password, tokens, session (+ "view as" acto
                                    #   current-user, guard, bootstrap, password-reset,
                                    #   auth-actions, rate-limit, username, view-as-actions
 src/lib/users.ts                   # displayHandle() + username helpers (pure, client-safe)
+src/lib/tz.ts                      # US Eastern "today" + time formatting (server/browser-safe)
 src/lib/invitations/               # invitation service
 src/lib/email/ingest.ts            # Gmail IMAP → dashboard-task poller (+ 30-day stats log)
 src/lib/email/summarize.ts         # local AI (Ollama) email → task title/summary/date/priority
@@ -326,6 +331,10 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   `backup` compose sidecar dumps `pg_dump -Fc` to `./backups` at startup +
   every 24 h, prunes after `BACKUP_KEEP_DAYS` (14); restore one-liner is
   documented in README (the db container also mounts ./backups read-only).
+- **Eastern-time rendering (v0.0.9–v0.0.10):** done — the server renders in
+  UTC and the browser in Eastern, so anything showing "today" or a time must go
+  through `src/lib/tz.ts` (`todayYmd`, `todayUtcMs`, `daysFromToday`,
+  `fmtEastern`) or React throws hydration error #418.
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog,
   daily agenda email, AI scheduling suggestions, reports page, customers
   directory.

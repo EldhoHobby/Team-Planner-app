@@ -6,7 +6,8 @@ the whole configuration through Excel. Built on a multi-tenant team-planner
 foundation (tasks, projects, calendar). Runs entirely on-prem via Docker Compose.
 
 See `PLANNING.md` for the original architecture rationale and `CLAUDE.md` for the
-quick brief + conventions.
+quick brief + conventions. `docs/PROJECT-HISTORY.md` has the release history and
+current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
 
 ## Stack
 
