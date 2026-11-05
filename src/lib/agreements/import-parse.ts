@@ -21,6 +21,8 @@ export interface ParsedCustomer {
   lastServerSo: string | null;
   qwebLicenses: number | null;
   notes: string | null;
+  /** Where the SO # came from: the Customers sheet, the SO Review suggestion, or a temporary placeholder. */
+  soSource: "sheet" | "review" | "temp";
 }
 
 export interface ParsedPrice {
@@ -123,7 +125,41 @@ export function normName(s: string): string {
 
 const NA = new Set(["NA", "N/A", "NONE", "-", ""]);
 
-export function parsePrototype(sheets: { customers: Cell[][]; pricing: Cell[][]; calls: Cell[][] }): ParsedWorkbook {
+/** Temporary SO # for a customer with none: "TEMP-NEWPORT". Fix it on the Customers tab. */
+export function tempSo(name: string): string {
+  return `TEMP-${normName(name).slice(0, 24) || "CUSTOMER"}`;
+}
+export function isTempSo(so: string): boolean {
+  return so.startsWith("TEMP-");
+}
+
+/**
+ * "SO Number Review v2.xlsx" → name → suggested first-system SO #. Finds the
+ * header row (Customer … "First system SO #") anywhere in the sheet.
+ */
+export function parseSoReview(rows: Cell[][]): Map<string, string> {
+  const out = new Map<string, string>();
+  const h = rows.findIndex((r) => r.some((c) => normHeader(text(c) ?? "") === "firstsystemso"));
+  if (h < 0) return out;
+  const header = rows[h]!.map((c) => normHeader(text(c) ?? ""));
+  const iName = header.indexOf("customer");
+  const iSo = header.indexOf("firstsystemso");
+  if (iName < 0) return out;
+  for (const r of rows.slice(h + 1)) {
+    const name = text(r[iName]);
+    const so = text(r[iSo])?.toUpperCase().replace(/\s+/g, "");
+    if (name && so) out.set(normName(name), so);
+  }
+  return out;
+}
+
+export function parsePrototype(sheets: {
+  customers: Cell[][];
+  pricing: Cell[][];
+  calls: Cell[][];
+  /** Optional: name → suggested SO # (from parseSoReview) for customers with none. */
+  soReview?: Map<string, string>;
+}): ParsedWorkbook {
   const skipped: string[] = [];
   const warnings: string[] = [];
   const customers: ParsedCustomer[] = [];
@@ -134,11 +170,26 @@ export function parsePrototype(sheets: { customers: Cell[][]; pricing: Cell[][];
   for (const o of objects(sheets.customers)) {
     const name = text(o.get("Customer"));
     if (!name) continue;
-    const so = text(o.get("SO #"))?.toUpperCase().replace(/\s+/g, "") ?? null;
+    let so = text(o.get("SO #"))?.toUpperCase().replace(/\s+/g, "") ?? null;
+    let soSource: ParsedCustomer["soSource"] = "sheet";
+    let soNote: string | null = null;
     if (!so) {
-      skipped.push(`Customers row ${o.line}: ${name} has no SO # — fill it in (SO Number Review), then re-import.`);
-      noSo.add(normName(name));
-      continue;
+      const suggested = sheets.soReview?.get(normName(name));
+      if (suggested && !seenSo.has(suggested)) {
+        so = suggested;
+        soSource = "review";
+        soNote = "SO # from SO Number Review v2 (unconfirmed)";
+        warnings.push(`${name}: no SO # — used ${so} from the SO Number Review (unconfirmed).`);
+      } else {
+        so = tempSo(name);
+        soSource = "temp";
+        soNote = "Temporary SO # — enter the real one";
+        warnings.push(
+          suggested
+            ? `${name}: suggested SO # ${suggested} is already used by ${seenSo.get(suggested)} — given ${so} instead.`
+            : `${name}: no SO # and none in the SO Number Review — given ${so}; enter the real one on the Customers tab.`,
+        );
+      }
     }
     if (seenSo.has(so)) {
       skipped.push(`Customers row ${o.line}: ${name} has SO # ${so}, already used by ${seenSo.get(so)}.`);
@@ -153,7 +204,7 @@ export function parsePrototype(sheets: { customers: Cell[][]; pricing: Cell[][];
     }
     const rawSoftware = text(o.get("Software"));
     const software = parseSoftware(rawSoftware);
-    let notes = text(o.get("Notes"));
+    let notes = [text(o.get("Notes")), soNote].filter(Boolean).join(" · ") || null;
     if (rawSoftware && !software && !NA.has(rawSoftware.toUpperCase())) {
       warnings.push(`${name}: software "${rawSoftware}" is not QSCADA-Plus / TDMS / RTU only — left blank, kept in notes.`);
       notes = [notes, `Imported software: ${rawSoftware}`].filter(Boolean).join(" · ");
@@ -176,6 +227,7 @@ export function parsePrototype(sheets: { customers: Cell[][]; pricing: Cell[][];
       lastServerSo: keep(text(o.get("Last server SO #"))),
       qwebLicenses: qweb,
       notes,
+      soSource,
     });
     soByName.set(normName(name), so);
   }

@@ -10,6 +10,7 @@ import type { ImportSummary } from "../types";
 export function ImportCard() {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
+  const reviewRef = useRef<HTMLInputElement>(null);
   const [pending, startTransition] = useTransition();
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,6 +23,8 @@ export function ImportCard() {
       if (apply && !confirm("Import into the live data? Existing rows with the same SO # / year / agreement are updated to match the workbook; nothing is deleted.")) return;
       const fd = new FormData();
       fd.set("file", file);
+      const review = reviewRef.current?.files?.[0];
+      if (review) fd.set("review", review);
       fd.set("apply", String(apply));
       const r = await importPrototypeAction(fd);
       if (r.error) setError(r.error);
@@ -39,11 +42,19 @@ export function ImportCard() {
         <h2 className="font-semibold">Import the Excel prototype</h2>
         <p className="text-xs text-muted-foreground">
           &quot;QEI Service Agreements - Central.xlsm&quot; — reads the Customers, Pricing and Calls sheets. Customers match by SO #;
-          customers with no SO # are skipped (fix them in the SO Number Review first). Preview shows exactly what will change.
-          Safe to re-run; nothing is deleted.
+          a customer with no SO # takes the &quot;First system SO #&quot; from the SO Number Review file if you add it (marked
+          unconfirmed in the notes), otherwise a temporary &quot;TEMP-…&quot; SO # to fix on the Customers tab. Preview shows exactly
+          what will change. Safe to re-run; nothing is deleted.
         </p>
       </div>
-      <input ref={fileRef} type="file" accept=".xlsm,.xlsx" className="block text-xs" onChange={() => setSummary(null)} />
+      <label className="block space-y-1 text-xs">
+        <span className="block text-muted-foreground">Prototype workbook (.xlsm)</span>
+        <input ref={fileRef} type="file" accept=".xlsm,.xlsx" className="block" onChange={() => setSummary(null)} />
+      </label>
+      <label className="block space-y-1 text-xs">
+        <span className="block text-muted-foreground">SO Number Review v2 (.xlsx, optional)</span>
+        <input ref={reviewRef} type="file" accept=".xlsx" className="block" onChange={() => setSummary(null)} />
+      </label>
       <div className="flex gap-2">
         <Button variant="outline" disabled={pending} onClick={() => run(false)}>Preview</Button>
         <Button disabled={pending || !summary || summary.applied} onClick={() => run(true)}>Import</Button>

@@ -5,7 +5,7 @@ import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "@/lib/services/audit";
 import { recordFieldChanges } from "@/lib/services/change-history";
-import { parsePrototype, type Cell } from "@/lib/agreements/import-parse";
+import { normName, parsePrototype, parseSoReview, type Cell } from "@/lib/agreements/import-parse";
 import { AGREEMENT_LABELS } from "@/lib/agreements/constants";
 import { dateOf, ymd } from "@/lib/services/agreements";
 import type { ImportSummary } from "@/app/(app)/agreements/types";
@@ -19,6 +19,10 @@ import type { ImportSummary } from "@/app/(app)/agreements/types";
 function sheet(wb: ExcelJS.Workbook, name: string): Cell[][] {
   const ws = wb.worksheets.find((w) => w.name.trim().toLowerCase() === name.toLowerCase());
   if (!ws) throw new ForbiddenError(`The workbook has no "${name}" sheet.`);
+  return sheetRows(ws);
+}
+
+function sheetRows(ws: ExcelJS.Worksheet): Cell[][] {
   const rows: Cell[][] = [];
   ws.eachRow({ includeEmpty: false }, (row) => {
     const vals = row.values as unknown as Cell[]; // 1-based, index 0 empty
@@ -27,14 +31,33 @@ function sheet(wb: ExcelJS.Workbook, name: string): Cell[][] {
   return rows;
 }
 
-export async function importPrototype(scope: TenantScope, data: Buffer, apply: boolean): Promise<ImportSummary> {
+/**
+ * `review` (optional): "SO Number Review v2.xlsx" — its "First system SO #"
+ * fills customers that have no SO # (flagged unconfirmed in their notes).
+ * Customers with neither get a temporary "TEMP-…" SO #.
+ */
+export async function importPrototype(
+  scope: TenantScope,
+  data: Buffer,
+  apply: boolean,
+  review?: Buffer,
+): Promise<ImportSummary> {
   if (!scope.ctx.isOrgAdmin) throw new ForbiddenError("Only admins can import the prototype workbook.");
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(data as unknown as ArrayBuffer);
+  let soReview: Map<string, string> | undefined;
+  if (review) {
+    const rwb = new ExcelJS.Workbook();
+    await rwb.xlsx.load(review as unknown as ArrayBuffer);
+    const ws = rwb.worksheets.find((w) => /so\s*review/i.test(w.name)) ?? rwb.worksheets[0];
+    soReview = ws ? parseSoReview(sheetRows(ws)) : undefined;
+    if (!soReview?.size) throw new ForbiddenError('The SO review file has no "First system SO #" column.');
+  }
   const parsed = parsePrototype({
     customers: sheet(wb, "Customers"),
     pricing: sheet(wb, "Pricing"),
     calls: sheet(wb, "Calls"),
+    soReview,
   });
 
   const orgId = scope.ctx.orgId;
@@ -52,10 +75,13 @@ export async function importPrototype(scope: TenantScope, data: Buffer, apply: b
       // ── customers ──
       const existing = await tx.saCustomer.findMany({ where: { orgId } });
       const bySo = new Map(existing.map((c) => [c.soNumber, c]));
+      const byName = new Map(existing.map((c) => [normName(c.name), c]));
       const idBySo = new Map<string, string>(existing.map((c) => [c.soNumber, c.id]));
       const fields = ["name", "status", "state", "software", "softwareVersion", "wvPeVersion", "server", "serverInstall", "lastServerSo", "qwebLicenses", "notes"] as const;
-      for (const c of parsed.customers) {
-        const ex = bySo.get(c.soNumber);
+      for (const { soSource, ...c } of parsed.customers) {
+        // A customer imported earlier with a suggested/temporary SO # may have
+        // had it corrected in the app since: match by name and KEEP their SO #.
+        const ex = bySo.get(c.soNumber) ?? (soSource !== "sheet" ? byName.get(normName(c.name)) : undefined);
         if (!ex) {
           summary.customers.created++;
           if (apply) {
@@ -64,13 +90,19 @@ export async function importPrototype(scope: TenantScope, data: Buffer, apply: b
           }
           continue;
         }
+        idBySo.set(c.soNumber, ex.id);
+        // Matched by name after an SO # correction: keep their notes too (the
+        // parsed notes carry the "unconfirmed / temporary SO #" flag).
+        if (ex.soNumber !== c.soNumber) c.notes = ex.notes;
         const changes = fields
           .filter((f) => (ex[f] ?? null) !== (c[f] ?? null))
           .map((f) => ({ field: f, oldValue: ex[f] === null ? null : String(ex[f]), newValue: c[f] === null ? null : String(c[f]) }));
         if (!changes.length) { summary.customers.unchanged++; continue; }
         summary.customers.updated++;
         if (apply) {
-          await tx.saCustomer.update({ where: { id: ex.id }, data: { ...c, version: { increment: 1 } } });
+          const { soNumber, ...rest } = c;
+          void soNumber; // never overwrite the existing SO # on re-import
+          await tx.saCustomer.update({ where: { id: ex.id }, data: { ...rest, version: { increment: 1 } } });
           await recordFieldChanges(tx, scope, "sa_customer", ex.id, changes.map((ch) => ({ ...ch, field: `${ch.field} (import)` })));
         }
       }

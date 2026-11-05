@@ -192,8 +192,10 @@ export async function importPrototypeAction(formData: FormData): Promise<ActionR
     const file = formData.get("file");
     if (!(file instanceof File) || file.size === 0) return { error: "Choose the .xlsm / .xlsx file first." };
     if (file.size > 9 * 1024 * 1024) return { error: "That file is larger than 9 MB." };
+    const review = formData.get("review");
+    const reviewBuf = review instanceof File && review.size > 0 ? Buffer.from(await review.arrayBuffer()) : undefined;
     const apply = formData.get("apply") === "true";
-    const summary = await importPrototype(scope, Buffer.from(await file.arrayBuffer()), apply);
+    const summary = await importPrototype(scope, Buffer.from(await file.arrayBuffer()), apply, reviewBuf);
     if (apply) refresh();
     return { ok: true, summary };
   } catch (e) {
