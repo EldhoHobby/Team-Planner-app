@@ -9,8 +9,14 @@
 # internet + ports 80/443 reachable from outside), add a block like:
 #   your-domain.example.org {
 #     encode gzip
-#     reverse_proxy app:3000
+#     reverse_proxy app:3000 {
+#       header_up X-Real-IP {remote_host}
+#     }
 #   }
+#
+# X-Real-IP: Caddy OVERWRITES it with the TCP peer address, so a client can't
+# spoof it. The app's login/reset rate limiter keys on it (rate-limit.ts) —
+# keep this line in every site block.
 
 # Global options must come first. default_sni picks the certificate when a client
 # connects by IP and sends no server name (Windows/browsers do this for IPs);
@@ -21,6 +27,8 @@
 
 planner.localhost, 10.210.4.130 {
   encode gzip
-  reverse_proxy app:3000
+  reverse_proxy app:3000 {
+    header_up X-Real-IP {remote_host}
+  }
   tls internal
 }

@@ -67,6 +67,24 @@ helper (`src/lib/auth/tokens.ts`): hand the user a 256-bit random token, store o
 its SHA-256 hash. Compare hashes; never store raw tokens. Passwords are Argon2id
 (`src/lib/auth/password.ts`).
 
+**Permanent change history.** `AuditLog` is pruned (AUDIT_RETENTION_DAYS). Field-level
+history that must be kept forever (who / when / entity / field / old → new — e.g.
+agreement prices) goes to the `ChangeHistory` table via `recordFieldChanges(tx, …)`
++ `diffFields()` in `src/lib/services/change-history.ts`, written in the SAME
+transaction as the update. Never pruned; included in the full backup.
+
+**Optimistic locking (multi-user edits).** Editable models get `version Int
+@default(1)`; saves send back the version they loaded and update with
+`updateMany({ where: { id, orgId, ...versionGuard(v) }, data: { …, version: {
+increment: 1 } } })` + `assertFreshWrite(count)` → `StaleSaveError` (helpers in
+`src/lib/db/optimistic.ts`). Template: `TechTask` / `updateTechTask` + the
+dashboard ticket (`task-ticket.tsx`), tested in `tech-tasks.locking.test.ts`.
+
+**Client IP.** Caddy sets `X-Real-IP {remote_host}` (keep `header_up` in every
+Caddyfile site block); `clientIp()` in `rate-limit.ts` trusts that, never the
+first X-Forwarded-For entry. There is no `SESSION_SECRET` (sessions are
+hashed random tokens, nothing is signed).
+
 **Server actions** live next to their route in `actions.ts` with `"use server"` —
 only export async functions from those files (shared types go in a sibling
 `types.ts`). Client form components use `useActionState` + `useFormStatus`.
@@ -183,9 +201,11 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
 - **Prisma + standalone:** the slim runtime image can't run the Prisma CLI (missing
   deps). Schema sync runs in the separate `migrate` image (full `node_modules`),
   NOT in the app entrypoint. Keep it that way.
-- **New deps:** edit `package.json` only — the Docker deps stage runs
-  `npm install` (NOT `npm ci`), because this machine has no npm to regenerate
-  `package-lock.json`. The lockfile in the repo may lag behind; that's expected.
+- **New deps / lockfile:** the Docker deps stage runs `npm ci`, which installs
+  exactly what `package-lock.json` pins and FAILS if it is out of sync with
+  `package.json`. After editing `package.json`, regenerate the lock with Docker
+  (the host has no npm) and commit it:
+  `docker run --rm -v "${PWD}:/app" -w /app node:22-alpine npm install --package-lock-only --no-audit --no-fund`
 - **Native module (argon2):** the deps stage installs `python3 make g++` to
   compile it on Alpine. Don't remove.
 - **PowerShell:** the user is on Windows PowerShell 5.1 — chain commands with `;`,
@@ -278,7 +298,7 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   "Clear log" button (inline confirm; the wipe itself is logged as the
   first entry of the fresh log — `clearAuditLogAction` in
   `settings/audit/actions.ts`). Retention: `pruneAuditLog()`
-  (30 days) runs daily via `src/instrumentation.ts` + on every audit page
+  (`AUDIT_RETENTION_DAYS` env, default 30) runs daily via `src/instrumentation.ts` + on every audit page
   visit. New index `@@index([orgId, createdAt])` on AuditLog.
 - **View as (impersonation):** done — OWNER-only testing tool. Sidebar dropdown
   (`ViewAsPicker` in `src/components/view-as.tsx`, actions in
@@ -301,8 +321,7 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   in UID mode; failed messages are marked \Seen (attempted once, error kept in
   the history) — `prisma/pre-push.sql` de-dupes legacy rows before db push.
   Config via EMAIL_INGEST_ENABLED / IMAP_* / EMAIL_POLL_SECONDS (Gmail app
-  password; off by default). NOTE: deps stage now runs `npm install` (not
-  `npm ci`) because the dev host has no npm to regenerate the lockfile.
+  password; off by default).
 - **Local AI email assist:** done — optional, fully on-prem. An `ollama`
   service (+ one-shot `ollama-init` model pull, gated on the flag) runs on the
   internal Compose network; `src/lib/email/summarize.ts` calls it with a JSON

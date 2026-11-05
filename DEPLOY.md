@@ -45,8 +45,8 @@ docker build --target runner   -t team-planner-app:latest .
 docker build --target migrator -t team-planner-app-migrator:latest .
 
 # Make sure the base images are present locally
-docker pull caddy:2-alpine
-docker pull postgres:16-alpine
+docker pull caddy:2.11.8-alpine
+docker pull postgres:16.15-alpine
 ```
 
 Bundle **all four** images into one file (the host can't pull Caddy/Postgres either,
@@ -56,8 +56,8 @@ so they must travel too):
 docker save -o team-planner-bundle.tar `
   team-planner-app:latest `
   team-planner-app-migrator:latest `
-  caddy:2-alpine `
-  postgres:16-alpine
+  caddy:2.11.8-alpine `
+  postgres:16.15-alpine
 ```
 
 > If the host's `docker load` ever complains about platform/manifest, rebuild the two
@@ -94,10 +94,8 @@ Do **not** copy `.env` — create it fresh on the host (secrets shouldn't ride o
 
    ```powershell
    $dbpw   = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
-   $secret = [Convert]::ToBase64String((1..32 | ForEach-Object {Get-Random -Maximum 256}))
    @"
    DB_PASSWORD=$dbpw
-   SESSION_SECRET=$secret
    APP_URL=https://planner.localhost:8443
    HTTPS_PORT=8443
    MAX_UPLOAD_MB=10
@@ -124,7 +122,9 @@ Do **not** copy `.env` — create it fresh on the host (secrets shouldn't ride o
 
    planner.localhost, 10.210.4.65 {
      encode gzip
-     reverse_proxy app:3000
+     reverse_proxy app:3000 {
+       header_up X-Real-IP {remote_host}
+     }
      tls internal
    }
    ```

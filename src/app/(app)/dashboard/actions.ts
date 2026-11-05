@@ -13,8 +13,11 @@ import {
   deleteTaskComment,
 } from "@/lib/services/tech-tasks";
 import type { TechTaskState, NoteRow } from "@/lib/services/tech-tasks";
+import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
 
 type State = { error?: string; success?: boolean };
+/** `stale`: someone else saved first — the UI should reload, not retry blindly. */
+type UpdateState = State & { stale?: boolean; version?: number };
 type ThreadState = { error?: string; notes?: NoteRow[] };
 type NoteState = { error?: string; note?: NoteRow };
 
@@ -51,17 +54,24 @@ export async function updateTechTaskAction(input: {
   state?: TechTaskState;
   location?: string;
   ownerId?: string; // reassign to another person
-}): Promise<State> {
+  /** Optimistic lock: the task version the client loaded (see optimistic.ts). */
+  expectedVersion?: number;
+}): Promise<UpdateState> {
   const { scope } = await requireScope();
-  const { id, targetDate, ...rest } = input;
+  const { id, targetDate, expectedVersion, ...rest } = input;
   try {
-    await updateTechTask(scope, id, {
+    const task = await updateTechTask(scope, id, {
       ...rest,
       targetDate: targetDate === undefined ? undefined : targetDate ? new Date(targetDate) : null,
+      expectedVersion: parseExpectedVersion(expectedVersion),
     });
     revalidatePath("/dashboard");
-    return { success: true };
+    return { success: true, version: task.version };
   } catch (e) {
+    if (e instanceof StaleSaveError) {
+      revalidatePath("/dashboard");
+      return { error: e.message, stale: true };
+    }
     if (e instanceof ForbiddenError) return { error: e.message };
     return { error: "Could not update the task." };
   }

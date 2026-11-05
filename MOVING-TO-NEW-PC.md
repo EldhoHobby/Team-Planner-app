@@ -111,7 +111,8 @@ cd "C:\Users\eldho\Claude\Projects\Team Planner app"; git config user.name "Your
 To get the WIP branches locally later: `git checkout wip/sales-orders` (then back with `git checkout main`).
 
 **c. Put the `.env` file back** into the project folder (or `copy .env.example .env`
-and fill in `DB_PASSWORD` + `SESSION_SECRET` with long random strings).
+and fill in `DB_PASSWORD` with a long random string; `SESSION_SECRET` is no
+longer used).
 
 **d. Create the backups folder and copy the dump into it** (the `db` container
 mounts `./backups` read-only at `/backups`):

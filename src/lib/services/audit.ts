@@ -146,9 +146,31 @@ export function recordPageView(scope: TenantScope, section: string): Promise<voi
   );
 }
 
-export const AUDIT_RETENTION_DAYS = 30;
+export const DEFAULT_AUDIT_RETENTION_DAYS = 30;
+const MAX_AUDIT_RETENTION_DAYS = 36500; // ~100 years ≈ "keep forever"
 
-/** Delete audit entries older than the retention window (all orgs). Best-effort. */
+/**
+ * Parse AUDIT_RETENTION_DAYS (pure; exported for tests). Whole days, 1..36500;
+ * blank or invalid → the 30-day default. Set a large value (e.g. 3650) to keep
+ * the activity log longer. Permanent field-level history does NOT depend on
+ * this: it lives in ChangeHistory (src/lib/services/change-history.ts), which
+ * is never pruned.
+ */
+export function parseRetentionDays(raw: string | undefined): number {
+  const v = raw?.trim();
+  if (!v || !/^\d+$/.test(v)) return DEFAULT_AUDIT_RETENTION_DAYS;
+  const n = Number(v);
+  if (n < 1) return DEFAULT_AUDIT_RETENTION_DAYS;
+  return Math.min(n, MAX_AUDIT_RETENTION_DAYS);
+}
+
+/** Audit-log (AuditLog) retention window in days, from AUDIT_RETENTION_DAYS. */
+export const AUDIT_RETENTION_DAYS = parseRetentionDays(process.env.AUDIT_RETENTION_DAYS);
+
+/**
+ * Delete AuditLog entries older than the retention window (all orgs).
+ * Best-effort. Does NOT touch ChangeHistory (permanent by design).
+ */
 export async function pruneAuditLog(): Promise<void> {
   try {
     const cutoff = new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);

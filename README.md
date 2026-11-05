@@ -78,7 +78,7 @@ current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
 ## Run the full stack (Docker)
 
 ```powershell
-copy .env.example .env          # set DB_PASSWORD, SESSION_SECRET (and APP_DOMAIN)
+copy .env.example .env          # set DB_PASSWORD (and APP_DOMAIN)
 docker compose up -d --build
 ```
 

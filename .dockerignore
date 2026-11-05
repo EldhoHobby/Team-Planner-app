@@ -7,14 +7,22 @@ node_modules
 out
 build
 
-# secrets & local env
+# secrets & local env — at ANY depth (e.g. "USB Files/.../.env")
 .env
 .env*.local
+**/.env
+**/.env*.local
+
+# machine-move bundles and DB dumps — contain credentials + customer data
+USB Files
+**/*.dump
+**/*.dump.part
 
 # image bundles / notes / misc
 *.tar
 *.tar.gz
 backups
+backups/
 process.txt
 npm-debug.log*
 *.tsbuildinfo

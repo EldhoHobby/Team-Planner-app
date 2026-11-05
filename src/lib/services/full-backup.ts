@@ -49,6 +49,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     workGroups, workGroupMemberships, projects, boards, boardColumns,
     tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
     holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
+    changeHistory,
   ] = await Promise.all([
     prisma.user.findMany({ where: { memberships: { some: { orgId } } } }),
     prisma.membership.findMany({ where: { orgId } }),
@@ -71,6 +72,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.techTask.findMany({ where: { orgId } }),
     prisma.techTaskNote.findMany({ where: { orgId } }),
     prisma.jobNote.findMany({ where: { orgId } }),
+    prisma.changeHistory.findMany({ where: { orgId } }),
   ]);
 
   await writeAudit(scope, {
@@ -90,6 +92,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
       workGroups, workGroupMemberships, projects, boards, boardColumns,
       tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
       holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
+      changeHistory,
     },
   };
 }
@@ -219,6 +222,12 @@ export async function restoreFullBackup(
       await tx.techTaskNote.createMany({ data: reOrg(rows(backup, "techTaskNotes"), orgId) });
       // Job comment threads. Absent in older backups → empty (createMany handles []).
       await tx.jobNote.createMany({ data: reOrg(rows(backup, "jobNotes"), orgId) });
+      // Permanent field history. Replaced ONLY when the file carries it, so
+      // restoring an older backup (no "changeHistory" key) never erases it.
+      if (Array.isArray(backup.data?.changeHistory)) {
+        await tx.changeHistory.deleteMany({ where: { orgId } });
+        await tx.changeHistory.createMany({ data: reOrg(rows(backup, "changeHistory"), orgId) });
+      }
 
       // ── 5. Orphan cleanup: users with no membership anywhere (and not in the
       //       file) lost their account in the replace — e.g. the wizard user. ──
