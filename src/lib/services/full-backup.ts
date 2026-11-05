@@ -49,7 +49,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     workGroups, workGroupMemberships, projects, boards, boardColumns,
     tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
     holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
-    changeHistory,
+    changeHistory, saCustomers, saPrices, saCalls, saSettings,
   ] = await Promise.all([
     prisma.user.findMany({ where: { memberships: { some: { orgId } } } }),
     prisma.membership.findMany({ where: { orgId } }),
@@ -73,6 +73,10 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.techTaskNote.findMany({ where: { orgId } }),
     prisma.jobNote.findMany({ where: { orgId } }),
     prisma.changeHistory.findMany({ where: { orgId } }),
+    prisma.saCustomer.findMany({ where: { orgId } }),
+    prisma.saPrice.findMany({ where: { orgId } }),
+    prisma.saCallsRepairs.findMany({ where: { orgId } }),
+    prisma.saSettings.findMany({ where: { orgId } }),
   ]);
 
   await writeAudit(scope, {
@@ -92,7 +96,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
       workGroups, workGroupMemberships, projects, boards, boardColumns,
       tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
       holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
-      changeHistory,
+      changeHistory, saCustomers, saPrices, saCalls, saSettings,
     },
   };
 }
@@ -224,6 +228,18 @@ export async function restoreFullBackup(
       await tx.jobNote.createMany({ data: reOrg(rows(backup, "jobNotes"), orgId) });
       // Permanent field history. Replaced ONLY when the file carries it, so
       // restoring an older backup (no "changeHistory" key) never erases it.
+      // Service agreements. Replaced ONLY when the file carries them (older
+      // backups predate the module and must not wipe it).
+      if (Array.isArray(backup.data?.saCustomers)) {
+        await tx.saCallsRepairs.deleteMany({ where: { orgId } });
+        await tx.saPrice.deleteMany({ where: { orgId } });
+        await tx.saCustomer.deleteMany({ where: { orgId } });
+        await tx.saSettings.deleteMany({ where: { orgId } });
+        await tx.saCustomer.createMany({ data: reOrg(rows(backup, "saCustomers"), orgId) });
+        await tx.saPrice.createMany({ data: reOrg(rows(backup, "saPrices"), orgId) });
+        await tx.saCallsRepairs.createMany({ data: reOrg(rows(backup, "saCalls"), orgId) });
+        await tx.saSettings.createMany({ data: reOrg(rows(backup, "saSettings"), orgId) });
+      }
       if (Array.isArray(backup.data?.changeHistory)) {
         await tx.changeHistory.deleteMany({ where: { orgId } });
         await tx.changeHistory.createMany({ data: reOrg(rows(backup, "changeHistory"), orgId) });
