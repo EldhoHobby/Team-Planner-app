@@ -354,6 +354,17 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   UTC and the browser in Eastern, so anything showing "today" or a time must go
   through `src/lib/tz.ts` (`todayYmd`, `todayUtcMs`, `daysFromToday`,
   `fmtEastern`) or React throws hydration error #418.
+- **Service agreements (`/agreements`, v0.0.12):** Phase 1 screens done — Customer View
+  (picker by name/SO #, last 5 signed years, calls/repairs, editable proposal, New Proposal /
+  Mark Signed, change history), Renewals (bulk proposals by end month + bulk print), Pricing,
+  Customers, Calls, Settings. Models `SaCustomer` (keyed by the SERVICE SO # — not
+  `Task.soNumber`), `SaPrice`, `SaCallsRepairs`, `SaSettings`; service
+  `src/lib/services/agreements.ts`; pure rules in `src/lib/agreements/` (pricing per policy
+  Rev 062426: per-line 5/4/3% tiers, TDMS ×2 every renewal, After Hours waived at SCADA ≥ $25k).
+  Edit rights: org admins + "Customer Service" work group. Admin importer for the Excel
+  prototype (+ optional SO Number Review v2 to fill missing SO #; else `TEMP-…`). NOT yet built:
+  Excel report generators (Maintenance package, Customer SA 5-year), report_runs,
+  Terminations, Warranties.
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog,
   daily agenda email, AI scheduling suggestions, reports page, customers
   directory.
