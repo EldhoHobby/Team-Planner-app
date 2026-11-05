@@ -12,7 +12,14 @@
 #     reverse_proxy app:3000
 #   }
 
-planner.localhost, 10.210.4.65 {
+# Global options must come first. default_sni picks the certificate when a client
+# connects by IP and sends no server name (Windows/browsers do this for IPs);
+# keep it in step with the LAN IP below.
+{
+  default_sni 10.210.4.130
+}
+
+planner.localhost, 10.210.4.130 {
   encode gzip
   reverse_proxy app:3000
   tls internal
