@@ -1,5 +1,6 @@
 # Self-hosted Team Planner — three services on a private network.
-# Only the proxy is published to the host; app and db stay internal.
+# The proxy is published to the host; db publishes only its read-only Excel
+# port (localhost by default); app stays internal.
 
 services:
   proxy:
@@ -26,6 +27,7 @@ services:
       target: migrator
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
+      EXCEL_DB_PASSWORD: ${EXCEL_DB_PASSWORD:-}   # blank = Excel login disabled
     depends_on:
       db:
         condition: service_healthy
@@ -114,6 +116,11 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Read-only Excel/ODBC access (login excel_reader, reporting views only).
+    # Localhost-only by default; set EXCEL_DB_BIND=0.0.0.0 in .env to let other
+    # PCs on the LAN connect. See README "Excel live data".
+    ports:
+      - "${EXCEL_DB_BIND:-127.0.0.1}:${EXCEL_DB_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: planner
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -128,7 +135,7 @@ services:
       retries: 10
     networks:
       - internal
-    # No host ports — internal network only.
+    # Only the Excel port above is published (see ports).
 
   # Nightly Postgres backups → ./backups on the host (compressed pg_dump format).
   # Dumps once at startup, then every 24 h; prunes dumps older than

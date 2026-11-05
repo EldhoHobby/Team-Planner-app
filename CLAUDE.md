@@ -175,6 +175,15 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   runs `prisma/migrate.sh` → pre-push.sql fixes → one-time baseline of old
   `db push` databases (`migrate resolve --applied 0_init`) → `migrate deploy`.
   NEVER hand-edit an applied migration; add a new one.
+- **Excel reporting views (keep in sync!):** `prisma/reporting.sql` defines
+  read-only views in a separate `reporting` schema (Prisma ignores it) for the
+  `excel_reader` ODBC login (`prisma/reporting-login.js`, enabled by
+  `EXCEL_DB_PASSWORD`; db port published via `EXCEL_DB_BIND`/`EXCEL_DB_PORT`).
+  `migrate.sh` drops the schema BEFORE `migrate deploy` and rebuilds it after,
+  so migrations never trip over the views. **When you rename/remove a column a
+  view reads, update `reporting.sql` in the same change** (a failure only logs a
+  warning and leaves Excel without views). Never grant `excel_reader` anything
+  on `public`. README "Excel live data" has the user steps.
 - **Prisma + standalone:** the slim runtime image can't run the Prisma CLI (missing
   deps). Schema sync runs in the separate `migrate` image (full `node_modules`),
   NOT in the app entrypoint. Keep it that way.

@@ -40,6 +40,7 @@ services:
     pull_policy: never
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
+      EXCEL_DB_PASSWORD: ${EXCEL_DB_PASSWORD:-}   # blank = Excel login disabled
     depends_on:
       db:
         condition: service_healthy
@@ -88,6 +89,11 @@ services:
     image: postgres:16-alpine
     pull_policy: never
     restart: unless-stopped
+    # Read-only Excel/ODBC access (login excel_reader, reporting views only).
+    # Localhost-only by default; set EXCEL_DB_BIND=0.0.0.0 in .env to let other
+    # PCs on the LAN connect. See README "Excel live data".
+    ports:
+      - "${EXCEL_DB_BIND:-127.0.0.1}:${EXCEL_DB_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: planner
       POSTGRES_PASSWORD: ${DB_PASSWORD}

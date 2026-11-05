@@ -104,6 +104,69 @@ docker compose up -d --build
 > self-hosted tool — keep it updated, and prefer a VPN/tunnel over exposing ports
 > where you can.
 
+## Excel live data (read-only)
+
+Excel can pull live, refreshable tables straight from the database over ODBC.
+It logs in as **`excel_reader`**, a read-only login that can see **only** the
+views in the `reporting` schema — never the raw tables, password hashes or
+sessions. The views are rebuilt by the `migrate` service on every start
+(`prisma/reporting.sql`, login in `prisma/reporting-login.js`).
+
+| View | What's in it |
+|------|--------------|
+| `reporting.jobs` | Field-service jobs: SO, customer, job, type, status, technician, work group, dates, days, scheduled/tentative/unscheduled, comment count |
+| `reporting.job_comments` | Job comment threads |
+| `reporting.dashboard_tasks` | Dashboard open items: owner, priority, state, target date, Overdue / Due soon, days overdue |
+| `reporting.people` | People, department, role, work groups (no secrets) |
+| `reporting.departments` | Departments, parent, managers, head-count |
+| `reporting.time_off` | Time off per person |
+| `reporting.holidays` | Company holidays |
+| `reporting.timesheet_hours` | Timesheet lines with daily + total hours |
+
+Dates are plain dates; timestamps are US Eastern.
+
+**1. Turn it on (host, once).** In `.env` set a long random
+`EXCEL_DB_PASSWORD` (not your app password). For other PCs to connect, also set
+`EXCEL_DB_BIND=0.0.0.0`, and allow inbound TCP **5432** in Windows Firewall
+(PowerShell as admin):
+
+```powershell
+New-NetFirewallRule -DisplayName "Team Planner Excel (Postgres)" -Direction Inbound -Protocol TCP -LocalPort 5432 -Action Allow -Profile Domain,Private
+```
+
+Then restart the stack (`docker compose up -d`, or the offline compose file).
+The `migrate` log should say `excel_reader: login enabled` and
+`reporting views ready`. Blank password = login disabled. If 5432 is already
+taken on the host, set `EXCEL_DB_PORT` to another port.
+
+**2. Install the driver (each Excel PC, once).** Install the free
+**psqlODBC** driver, 64-bit (`psqlodbc_x64.msi`, from postgresql.org →
+Download → ODBC). For the offline host, download it on a connected PC and carry
+it over.
+
+**3. Connect from Excel.** Data → Get Data → From Other Sources → **From
+ODBC** → expand *Advanced options* and paste a connection string:
+
+```
+Driver={PostgreSQL Unicode(x64)};Server=<host-ip-or-localhost>;Port=5432;Database=planner;
+```
+
+Choose **Database** credentials: user `excel_reader`, the password from `.env`.
+In the navigator open **planner → reporting**, tick the views you want, Load.
+**Data → Refresh All** pulls the latest data any time (or set auto-refresh under
+Query Properties).
+
+**Ready-made workbook:** `excel/Team Planner Schedule.xlsm` loads every dated
+(scheduled or tentative) job that is not marked completed — jobs whose dates
+are over get a red "Past End Date" flag — with a **Load schedule** button. Type the server (IP, or `localhost` on the host itself) in
+cell B2. The button's macro is `excel/RefreshSchedule.bas` — if the workbook
+says the macro is missing, import it once (Alt+F11 → File → Import File… →
+`RefreshSchedule.bas`, then save).
+
+Notes: traffic on the LAN is not encrypted (the password itself is never sent in
+clear) — keep it on the internal network, never forward 5432 to the internet.
+The views include every organisation in the database (one on a normal install).
+
 ## Local (non-Docker) dev
 
 ```bash
