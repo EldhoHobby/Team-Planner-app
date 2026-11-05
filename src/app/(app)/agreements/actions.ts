@@ -12,7 +12,7 @@ import {
   addLine, bulkCreateProposals, createProposal, removeLine, setLinePrice, transitionProposal, updateProposalHeader,
   type ProposalAction,
 } from "@/lib/services/agreements/proposals";
-import { importPrototype } from "@/lib/services/agreements/import";
+import { importPrototype, resetAgreements } from "@/lib/services/agreements/import";
 import type { SaAgreement } from "@/lib/agreements/constants";
 import type { ActionResult, BulkResult, ImportResult } from "./types";
 
@@ -166,4 +166,11 @@ export async function importPrototypeAction(formData: FormData): Promise<ImportR
   } catch (e) {
     return fail(e, "Could not read that workbook.");
   }
+}
+
+export async function resetAgreementsAction(input: { confirm: string }): Promise<ActionResult> {
+  if (input.confirm !== "RESET") return { error: 'Type RESET to confirm.' };
+  return run("Could not reset the service-agreement data.", async (scope) => {
+    await resetAgreements(scope);
+  });
 }

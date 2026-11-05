@@ -41,9 +41,9 @@ export function ImportCard() {
       <div>
         <h2 className="font-semibold">Import from the Excel prototype</h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          Signed prices become each customer&apos;s agreements; open &quot;Proposed&quot; rows become draft proposals; older unsigned ones are
-          kept as withdrawn. Customers with no SO # take the suggestion from the SO Number Review (marked unconfirmed) or a temporary
-          TEMP-… number. Preview first; safe to re-run; nothing is deleted.
+          Signed prices become each customer&apos;s agreements; &quot;Proposed&quot; rows are not imported. With the SO Number Review, SO
+          numbers follow your decisions there (Use first system / Keep today&apos;s / Other); customers without one keep the
+          workbook&apos;s SO #, else the review&apos;s suggestion (unconfirmed), else a TEMP-… number. Preview first; safe to re-run.
         </p>
       </div>
       <label className="block space-y-1 text-xs">
@@ -66,7 +66,7 @@ export function ImportCard() {
           <ul className="list-disc pl-5">
             {counts("Customers", summary.customers)}
             {counts("Agreement lines", summary.contracts)}
-            <li>Proposals: {summary.proposals.created} new{summary.proposals.skipped ? `, ${summary.proposals.skipped} already there` : ""}</li>
+            <li>Proposed rows: {summary.proposals.skipped} not imported (create proposals in the app)</li>
             {counts("Calls / repairs years", summary.calls)}
           </ul>
           {summary.skipped.length > 0 && (

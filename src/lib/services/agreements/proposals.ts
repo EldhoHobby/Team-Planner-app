@@ -138,6 +138,7 @@ export async function listProposals(scope: TenantScope) {
     customerId: p.customerId,
     customerName: p.customer.name,
     soNumber: p.customer.soNumber,
+    customerStatus: p.customer.status,
     /** Month the renewed agreements end ("YYYY-MM"), i.e. the proposal end date minus one year. */
     renewsMonth: p.endDate ? minusYear(ymd(p.endDate)!).slice(0, 7) : null,
     createdAt: p.createdAt.toISOString(),

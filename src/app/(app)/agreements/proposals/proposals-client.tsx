@@ -23,6 +23,7 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
   const [q, setQ] = useState("");
   const [status, setStatus] = useState(initialStatus);
   const [month, setMonth] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMonth, setBulkMonth] = useState("");
   const [preview, setPreview] = useState<BulkRow[] | null>(null);
@@ -36,9 +37,10 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
       (r) =>
         (status === "" || (status === "OPEN" ? r.status === "DRAFT" || r.status === "SENT" : r.status === status)) &&
         (!month || r.renewsMonth === month) &&
+        (showInactive || r.customerStatus === "ACTIVE") &&
         (!n || r.customerName.toLowerCase().includes(n) || r.soNumber.toLowerCase().includes(n)),
     );
-  }, [rows, q, status, month]);
+  }, [rows, q, status, month, showInactive]);
 
   const allSelected = shown.length > 0 && shown.every((r) => selected.has(r.id));
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(shown.map((r) => r.id)));
@@ -102,6 +104,10 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
         <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
           Renews agreements ending
           <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className={SELECT} />
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          Include inactive / not renewed customers
         </label>
         <Button variant="outline" className="ml-auto" disabled={!printIds.length} asChild={printIds.length > 0}>
           {printIds.length ? (

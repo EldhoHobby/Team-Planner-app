@@ -18,5 +18,5 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pr
     software: r.software, annualValue: r.renewal.annualValue, currentYear: r.renewal.currentYear,
     nextEndDate: r.renewal.nextEndDate, renewal: r.renewal.state, agreements: r.renewal.currentLines.length,
   }));
-  return <CustomersTable rows={list} canEdit={canEdit} initialStatus={sp.status ?? ""} initialRenewal={sp.renewal ?? ""} />;
+  return <CustomersTable rows={list} canEdit={canEdit} initialStatus={sp.status ?? "ACTIVE"} initialRenewal={sp.renewal ?? ""} />;
 }

@@ -81,7 +81,7 @@ export function CustomersTable({
       <div className="flex flex-wrap items-center gap-2">
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, SO # or state" className="w-60" aria-label="Search customers" />
         <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Customer status">
-          <option value="">All statuses</option>
+          <option value="">All statuses (incl. inactive)</option>
           {CUSTOMER_STATUSES.map((s) => <option key={s} value={s}>{CUSTOMER_STATUS_LABELS[s]}</option>)}
         </select>
         <select value={renewal} onChange={(e) => setRenewal(e.target.value)} className={SELECT} aria-label="Renewal state">

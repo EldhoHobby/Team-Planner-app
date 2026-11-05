@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { parsePrototype, parseSoReview, plain, dateCell, num } from "./import-parse";
+import { parsePrototype, parseSoReview, plain, dateCell, num, type SoReviewRow } from "./import-parse";
 
 const CUST_H = ["Customer", "SO #", "Status", "State", "Software", "Software version", "WV / PE version", "Server", "Server install", "Last server SO #", "QWEB licenses", "Notes"];
 const PRICE_H = ["Customer", "Year", "Agreement", "Price", "Status", "End date", "SO #", "Signed date", "Notes", "Created"];
 const CALLS_H = ["Customer", "Year", "Calls", "Repairs"];
 
-function parse(soReview?: Map<string, string>) {
+function parse(soReview?: Map<string, SoReviewRow>) {
   return parsePrototype({
     soReview,
     customers: [
@@ -56,12 +56,30 @@ describe("parsePrototype", () => {
       ["Amtrak NY", "Active", null, null, "s 12345"],
     ]);
     const r = parse(review);
-    expect(r.customers[1]).toMatchObject({ soNumber: "S12345", soSource: "review", notes: "SO # from SO Number Review v2 (unconfirmed)" });
+    expect(r.customers[1]).toMatchObject({ soNumber: "S12345", soSource: "review", soConfirmed: false, notes: "SO # from SO Number Review v2 (unconfirmed)" });
     expect(r.prices.filter((p) => p.soNumber === "S12345")).toHaveLength(2);
   });
 
+  it("follows your decisions in the SO Number Review", () => {
+    const review = parseSoReview([
+      ["Customer", "Status", "SO # today", "Earlier decision", "First system SO #", "Year", "Finding", "Matched by", "Entries", "Every SO #", "Notes", "Your decision", "Correct SO # (if Other)"],
+      ["ALBEMARLE", "Active", "S21008", "Keep current", "S91049", null, null, null, null, null, null, "Use first system", null],
+      ["AMTRAK NY", "Active", null, null, "S77777", null, null, null, null, null, null, "Other (type it)", "TMP-002"],
+      ["CONCORD", "Not renewed", "S04118", null, "S93060", null, null, null, null, null, null, "Keep today's", null],
+    ]);
+    const r = parse(review);
+    expect(r.customers.map((c) => [c.name, c.soNumber, c.soSource, c.soConfirmed])).toEqual([
+      ["ALBEMARLE", "S91049", "decision", true],
+      ["AMTRAK NY", "TMP-002", "decision", false],
+      ["CONCORD", "S04118", "decision", true],
+    ]);
+    // Rows still find their customer by name after an SO # change.
+    expect(r.prices.filter((p) => p.soNumber === "S91049")).toHaveLength(2);
+    expect(r.warnings.join(" | ")).toMatch(/S21008 → S91049 \(your decision/);
+  });
+
   it("falls back to a temporary SO # when the suggestion is already taken", () => {
-    const r = parse(new Map([["AMTRAKNY", "S21008"]]));
+    const r = parse(new Map([["AMTRAKNY", { today: null, firstSystem: "S21008", decision: null, other: null }]]));
     expect(r.customers[1]).toMatchObject({ soNumber: "TEMP-AMTRAKNY", soSource: "temp" });
     expect(r.warnings.join(" | ")).toMatch(/S21008 is already used by ALBEMARLE/);
   });

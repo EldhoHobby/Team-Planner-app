@@ -29,7 +29,10 @@ export interface ParsedCustomer {
   qwebLicenses: number | null;
   notes: string | null;
   /** Where the SO # came from: the Customers sheet, the SO Review suggestion, or a temporary placeholder. */
-  soSource: "sheet" | "review" | "temp";
+  /** Where the SO # came from: your decision in the SO Number Review, the Customers sheet, the review's suggestion, or a placeholder. */
+  soSource: "decision" | "sheet" | "review" | "temp";
+  /** False for suggestions and placeholders (TEMP-… / TMP-…) — shown as "SO # unconfirmed". */
+  soConfirmed: boolean;
 }
 
 export interface ParsedPrice {
@@ -140,32 +143,74 @@ export function isTempSo(so: string): boolean {
   return so.startsWith("TEMP-");
 }
 
-/**
- * "SO Number Review v2.xlsx" → name → suggested first-system SO #. Finds the
- * header row (Customer … "First system SO #") anywhere in the sheet.
- */
-export function parseSoReview(rows: Cell[][]): Map<string, string> {
-  const out = new Map<string, string>();
+/** One row of "SO Number Review v2.xlsx". */
+export interface SoReviewRow {
+  today: string | null;
+  firstSystem: string | null;
+  /** "Use first system" | "Keep today's" | "Other (type it)" | null */
+  decision: string | null;
+  /** "Correct SO # (if Other)". */
+  other: string | null;
+}
+
+const cleanSo = (v: string | null | undefined) => {
+  const s = v?.split("\n")[0]?.toUpperCase().replace(/\s+/g, "") ?? "";
+  return s || null;
+};
+
+/** "SO Number Review v2.xlsx" → normalised customer name → its row. Finds the header row anywhere. */
+export function parseSoReview(rows: Cell[][]): Map<string, SoReviewRow> {
+  const out = new Map<string, SoReviewRow>();
   const h = rows.findIndex((r) => r.some((c) => normHeader(text(c) ?? "") === "firstsystemso"));
   if (h < 0) return out;
   const header = rows[h]!.map((c) => normHeader(text(c) ?? ""));
-  const iName = header.indexOf("customer");
-  const iSo = header.indexOf("firstsystemso");
+  const col = (name: string) => header.indexOf(name);
+  const iName = col("customer");
   if (iName < 0) return out;
+  const [iToday, iFirst, iDecision, iOther] = [col("sotoday"), col("firstsystemso"), col("yourdecision"), col("correctsoifother")];
   for (const r of rows.slice(h + 1)) {
     const name = text(r[iName]);
-    const so = text(r[iSo])?.toUpperCase().replace(/\s+/g, "");
-    if (name && so) out.set(normName(name), so);
+    if (!name) continue;
+    out.set(normName(name), {
+      today: iToday >= 0 ? cleanSo(text(r[iToday])) : null,
+      firstSystem: cleanSo(text(r[iFirst])),
+      decision: iDecision >= 0 ? text(r[iDecision]) : null,
+      other: iOther >= 0 ? cleanSo(text(r[iOther])) : null,
+    });
   }
   return out;
+}
+
+const isPlaceholder = (so: string) => /^(TEMP|TMP)-/.test(so);
+
+/**
+ * The SO # for one customer, in this order: your decision in the SO Number
+ * Review ("Use first system" / "Keep today's" / "Other" + the number you
+ * typed), then the Customers sheet's SO #, then the review's first-system
+ * suggestion (unconfirmed), then a TEMP-… placeholder.
+ */
+export function resolveSo(
+  name: string,
+  sheetSo: string | null,
+  review: SoReviewRow | undefined,
+): { so: string; source: ParsedCustomer["soSource"]; note: string | null } {
+  const d = (review?.decision ?? "").toLowerCase();
+  if (d.startsWith("use first") && review?.firstSystem) return { so: review.firstSystem, source: "decision", note: null };
+  if (d.startsWith("keep") && (sheetSo ?? review?.today)) return { so: (sheetSo ?? review!.today)!, source: "decision", note: null };
+  if (d.startsWith("other") && review?.other) {
+    return { so: review.other, source: "decision", note: isPlaceholder(review.other) ? "Placeholder SO # — enter the real one" : null };
+  }
+  if (sheetSo) return { so: sheetSo, source: "sheet", note: null };
+  if (review?.firstSystem) return { so: review.firstSystem, source: "review", note: "SO # from SO Number Review v2 (unconfirmed)" };
+  return { so: tempSo(name), source: "temp", note: "Temporary SO # — enter the real one" };
 }
 
 export function parsePrototype(sheets: {
   customers: Cell[][];
   pricing: Cell[][];
   calls: Cell[][];
-  /** Optional: name → suggested SO # (from parseSoReview) for customers with none. */
-  soReview?: Map<string, string>;
+  /** Optional: the SO Number Review (parseSoReview) — your decisions + first-system suggestions. */
+  soReview?: Map<string, SoReviewRow>;
 }): ParsedWorkbook {
   const skipped: string[] = [];
   const warnings: string[] = [];
@@ -177,26 +222,19 @@ export function parsePrototype(sheets: {
   for (const o of objects(sheets.customers)) {
     const name = text(o.get("Customer"));
     if (!name) continue;
-    let so = text(o.get("SO #"))?.toUpperCase().replace(/\s+/g, "") ?? null;
-    let soSource: ParsedCustomer["soSource"] = "sheet";
-    let soNote: string | null = null;
-    if (!so) {
-      const suggested = sheets.soReview?.get(normName(name));
-      if (suggested && !seenSo.has(suggested)) {
-        so = suggested;
-        soSource = "review";
-        soNote = "SO # from SO Number Review v2 (unconfirmed)";
-        warnings.push(`${name}: no SO # — used ${so} from the SO Number Review (unconfirmed).`);
-      } else {
-        so = tempSo(name);
-        soSource = "temp";
-        soNote = "Temporary SO # — enter the real one";
-        warnings.push(
-          suggested
-            ? `${name}: suggested SO # ${suggested} is already used by ${seenSo.get(suggested)} — given ${so} instead.`
-            : `${name}: no SO # and none in the SO Number Review — given ${so}; enter the real one on the Customers tab.`,
-        );
-      }
+    const sheetSo = cleanSo(text(o.get("SO #")));
+    let { so, source: soSource, note: soNote } = resolveSo(name, sheetSo, sheets.soReview?.get(normName(name)));
+    if (seenSo.has(so) && soSource !== "sheet") {
+      warnings.push(`${name}: SO # ${so} is already used by ${seenSo.get(so)} — given ${tempSo(name)} instead.`);
+      so = tempSo(name);
+      soSource = "temp";
+      soNote = "Temporary SO # — enter the real one";
+    } else if (soSource === "review") {
+      warnings.push(`${name}: no SO # — used ${so} from the SO Number Review (unconfirmed).`);
+    } else if (soSource === "temp") {
+      warnings.push(`${name}: no SO # anywhere — given ${so}; enter the real one on the customer page.`);
+    } else if (soSource === "decision" && sheetSo && sheetSo !== so) {
+      warnings.push(`${name}: SO # ${sheetSo} → ${so} (your decision in the SO Number Review).`);
     }
     if (seenSo.has(so)) {
       skipped.push(`Customers row ${o.line}: ${name} has SO # ${so}, already used by ${seenSo.get(so)}.`);
@@ -235,16 +273,19 @@ export function parsePrototype(sheets: {
       qwebLicenses: qweb,
       notes,
       soSource,
+      soConfirmed: (soSource === "sheet" || soSource === "decision") && !isPlaceholder(so),
     });
     soByName.set(normName(name), so);
   }
 
   const resolve = (nameCell: Cell, soCell: Cell | null, where: string): string | null => {
+    // By name first: SO numbers can change through the SO Number Review, the
+    // rows' own SO # column still has the old one.
     const so = text(soCell)?.toUpperCase().replace(/\s+/g, "");
-    if (so && seenSo.has(so)) return so;
     const name = text(nameCell);
     const byName = name ? soByName.get(normName(name)) : undefined;
     if (byName) return byName;
+    if (so && seenSo.has(so)) return so;
     if (name && noSo.has(normName(name))) return null; // already reported once under Customers
     skipped.push(`${where}: customer "${name ?? "?"}"${so ? ` / SO # ${so}` : ""} not found in Customers.`);
     return null;
