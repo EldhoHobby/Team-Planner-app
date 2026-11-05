@@ -15,6 +15,7 @@ type Row = {
 // title-cased as-is.
 const ENTITY_LABELS: Record<string, string> = {
   job: "Job",
+  salesorder: "Sales order",
   task: "Task",
   project: "Project",
   technician: "Person",

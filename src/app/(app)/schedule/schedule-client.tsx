@@ -122,6 +122,7 @@ export function ScheduleClient({
   people,
   currentUserId,
   isAdmin,
+  salesOrders,
 }: {
   jobs: JobRow[];
   technicians: TechnicianOption[];
@@ -136,6 +137,8 @@ export function ScheduleClient({
   people: OwnerLite[];
   currentUserId: string;
   isAdmin: boolean;
+  /** Existing orders, for the SO picker in the job dialogs. */
+  salesOrders: { number: string; label: string; customer: string }[];
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -985,6 +988,7 @@ export function ScheduleClient({
           onClose={() => setNewOpen(false)}
           technicians={technicians}
           allJobs={jobs}
+          salesOrders={salesOrders}
         />
       )}
       {importOpen && (
@@ -1070,6 +1074,7 @@ export function ScheduleClient({
           }
           currentUserId={currentUserId}
           isAdmin={isAdmin}
+          salesOrders={salesOrders}
         />
       )}
 

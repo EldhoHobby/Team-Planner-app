@@ -38,6 +38,7 @@ model Organization {
   workGroups   WorkGroup[]
   techTaskNotes TechTaskNote[]
   jobNotes      JobNote[]
+  salesOrders   SalesOrder[]
 }
 
 model User {
@@ -424,12 +425,16 @@ model Task {
   attachments Attachment[]
   jobNotes    JobNote[] // field-service job comment thread (reason-for-change etc.)
 
+  salesOrderId String?
+  salesOrder   SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+
   @@index([orgId, teamId, status])
   @@index([projectId, columnId, position])
   @@index([dueDate])
   @@index([orgId, kind, startDate])
   @@index([technicianId, startDate])
   @@index([orgId, externalSource, externalId])
+  @@index([salesOrderId])
 }
 
 model TaskAssignment {
@@ -670,6 +675,59 @@ model JobNote {
 
   @@index([jobId, createdAt])
   @@index([orgId])
+}
+
+// A sales order (internally "SYS#") — the thing the team actually manages work
+// against. Jobs hang off it; `Task.soNumber` is kept as a denormalised mirror so
+// the Excel round-trip, print grouping, board filter and audit references keep
+// working unchanged. Names follow accounting's triple:
+// <contractor> / <endCustomer> / <projectType>.
+model SalesOrder {
+  id          String    @id @default(cuid())
+  orgId       String
+  number      String // "24020" (accounting writes SYS-24020)
+  contractor  String? // firm holding the contract
+  endCustomer String? // authority the work is for
+  projectType String? // SAS | Master | System | QSCADA | MS Upgrade | RTU …
+  scope       String? // hardware scope, e.g. "(3) RTU'S AND LOOSE DIO"
+  status      SoStatus  @default(OPEN)
+  startDate   DateTime?
+
+  // Field-service hours economics (mirrors the FS Status sheet). `remaining` is
+  // derived (quoted - toDate) and may legitimately be negative.
+  quotedHours Float? // "Estimate From Quote"
+  hoursToDate Float? // "Hrs. to Date"
+  etcHours    Float? // "Current Estimate (ETC)"
+
+  // From the SYSTAT weekly status report.
+  contractValue Float? // dollars; the sheet writes "$929.8K" / "$3.5 MIL"
+  shipDate      DateTime?
+  pmOwner       String? // owning project manager (SYSTAT legend)
+  remarks       String? // SYSTAT REMARKS column, distinct from `notes`
+
+  poNumber    String?
+  site        String?
+  contactName String?
+  contactInfo String?
+  // CS FS STATUS "Quote F/S Breakdown" — the planned trips, each with a status
+  // ("2 Weeks Field Acceptance - TBD"). Jobs are the schedule of record; this
+  // preserves the quoted allowance per line, which a job does not carry.
+  quoteBreakdown String?
+  notes       String? // running log, as the sheet's Comments column
+  archived    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  jobs Task[]
+
+  @@unique([orgId, number])
+  @@index([orgId, status])
+}
+
+enum SoStatus {
+  OPEN
+  CLOSED
 }
 
 // One row per email seen by the ingest poller — feeds the Settings → Email

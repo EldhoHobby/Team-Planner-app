@@ -28,12 +28,14 @@ export function NewJobDialog({
   onClose,
   technicians,
   allJobs,
+  salesOrders,
 }: {
   open: boolean;
   onClose: () => void;
   technicians: TechnicianOption[];
   /** Existing jobs — used to warn about a duplicate SO + title before creating. */
   allJobs: JobRow[];
+  salesOrders: { number: string; label: string; customer: string }[];
 }) {
   const [state, formAction] = useActionState(createJobAction, {} as JobFormState);
   const router = useRouter();
@@ -43,6 +45,11 @@ export function NewJobDialog({
   const [startDate, setStartDate] = useState("");
   const [tentative, setTentative] = useState(false);
   const [dupError, setDupError] = useState<string | null>(null);
+  // SO + Customer are controlled so picking an existing order can fill the
+  // customer in for you (only when you have not typed one yourself).
+  const [soNumber, setSoNumber] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [customerTouched, setCustomerTouched] = useState(false);
 
   // Reset the controlled fields each time the dialog opens.
   useEffect(() => {
@@ -95,11 +102,37 @@ export function NewJobDialog({
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
             <Label htmlFor="soNumber">SO Number</Label>
-            <Input id="soNumber" name="soNumber" placeholder="SO-10421" />
+            {/* Pick an existing order or type a new number — the server creates
+                it if it does not exist yet. */}
+            <Input
+              id="soNumber"
+              name="soNumber"
+              list="so-options"
+              placeholder="24020"
+              autoComplete="off"
+              value={soNumber}
+              onChange={(e) => {
+                const v = e.target.value;
+                setSoNumber(v);
+                const hit = salesOrders.find((o) => o.number.toUpperCase() === v.trim().toUpperCase());
+                if (hit?.customer && !customerTouched) setCustomerName(hit.customer);
+              }}
+            />
+            <datalist id="so-options">
+              {salesOrders.map((o) => (
+                <option key={o.number} value={o.number}>{o.label}</option>
+              ))}
+            </datalist>
           </div>
           <div className="space-y-2">
             <Label htmlFor="customerName">Customer</Label>
-            <Input id="customerName" name="customerName" placeholder="Acme Utilities" />
+            <Input
+              id="customerName"
+              name="customerName"
+              placeholder="Acme Utilities"
+              value={customerName}
+              onChange={(e) => { setCustomerTouched(true); setCustomerName(e.target.value); }}
+            />
           </div>
         </div>
 

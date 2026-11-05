@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, CalendarX, Clock, Database, FolderOpen, History, LayoutDashboard, ListChecks, Mail, ScrollText, UserRound, Users } from "lucide-react";
+import { CalendarDays, CalendarX, ClipboardList, Clock, Database, FolderOpen, History, LayoutDashboard, ListChecks, Mail, ScrollText, UserRound, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -12,6 +12,7 @@ import { VERSION_LABEL } from "@/lib/version";
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
+  { href: "/sales-orders", label: "Sales Orders", icon: ClipboardList },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/timesheet", label: "Timesheet", icon: Clock },
   { href: "/projects", label: "Projects", icon: FolderOpen },

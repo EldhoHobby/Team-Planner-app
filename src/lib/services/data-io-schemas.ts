@@ -193,6 +193,39 @@ export const TeamRowSchema = z.object({
 });
 export type TeamRow = z.infer<typeof TeamRowSchema>;
 
+export const SALES_ORDER_COLUMNS = [
+  "id", "number", "contractor", "endCustomer", "projectType", "scope",
+  "status", "startDate", "quotedHours", "hoursToDate", "etcHours",
+  "contractValue", "shipDate", "pmOwner", "remarks",
+  "poNumber", "site", "contactName", "contactInfo", "quoteBreakdown", "notes", "archived",
+] as const;
+
+export const SalesOrderRowSchema = z.object({
+  id: trimmed,
+  number: trimmed.refine(nonEmpty("number is required"), "number is required"),
+  contractor: optStr,
+  endCustomer: optStr,
+  projectType: optStr,
+  scope: optStr,
+  status: optStr,
+  startDate: optStr,
+  quotedHours: optStr,
+  hoursToDate: optStr,
+  etcHours: optStr,
+  contractValue: optStr,
+  shipDate: optStr,
+  pmOwner: optStr,
+  remarks: optStr,
+  poNumber: optStr,
+  site: optStr,
+  contactName: optStr,
+  contactInfo: optStr,
+  quoteBreakdown: optStr,
+  notes: optStr,
+  archived: boolField(false),
+});
+export type SalesOrderSheetRow = z.infer<typeof SalesOrderRowSchema>;
+
 export const ProjectRowSchema = z.object({
   id: trimmed,
   name: trimmed.refine(nonEmpty("name is required"), "name is required"),

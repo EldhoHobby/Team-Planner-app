@@ -4,6 +4,8 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import type { JobType, JobStatus, TaskKind } from "@prisma/client";
 import { endFromDuration, inclusiveDayCount, toUtcMidnight } from "@/lib/scheduling/calc";
 import { writeAudit } from "@/lib/services/audit";
+import { resolveSalesOrder } from "@/lib/services/sales-orders";
+import { normalizeSoNumber } from "@/lib/services/sales-order-format";
 
 export type { JobType, JobStatus };
 
@@ -204,6 +206,9 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
   await assertUniqueSoTitle(scope, input.soNumber, input.title.trim());
 
   const { start, end, duration, status } = deriveSchedule(input);
+  // An SO typed here becomes (or joins) a real SalesOrder; `soNumber` is kept as
+  // the denormalised mirror so print/Excel/filters/audit keep working.
+  const order = await resolveSalesOrder(scope, input.soNumber, { customerName: input.customerName });
 
   const job = await prisma.task.create({
     data: {
@@ -214,7 +219,8 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
       title: input.title.trim(),
       description: input.description?.trim() || null,
       priority: input.priority ?? "MEDIUM",
-      soNumber: input.soNumber?.trim() || null,
+      soNumber: order?.number ?? (normalizeSoNumber(input.soNumber) || null),
+      salesOrderId: order?.id ?? null,
       customerName: input.customerName?.trim() || null,
       jobType: input.jobType ?? null,
       hardwareTarget: input.hardwareTarget?.trim() || null,
@@ -321,6 +327,13 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
   const nextDuration =
     input.durationDays !== undefined ? input.durationDays : (job.durationDays ?? 1);
   const nextTech = input.technicianId !== undefined ? input.technicianId : job.technicianId;
+  // Re-point the order only when the SO field itself was edited.
+  const order =
+    input.soNumber !== undefined
+      ? await resolveSalesOrder(scope, input.soNumber, {
+          customerName: input.customerName ?? job.customerName,
+        })
+      : undefined;
 
   const { start, end, duration, status } = deriveSchedule({
     startDate: nextStart,
@@ -334,7 +347,11 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
     data: {
       title: input.title !== undefined ? input.title.trim() : undefined,
       description: input.description !== undefined ? (input.description?.trim() || null) : undefined,
-      soNumber: input.soNumber !== undefined ? (input.soNumber?.trim() || null) : undefined,
+      soNumber:
+        input.soNumber !== undefined
+          ? (order?.number ?? (normalizeSoNumber(input.soNumber) || null))
+          : undefined,
+      salesOrderId: input.soNumber !== undefined ? (order?.id ?? null) : undefined,
       customerName:
         input.customerName !== undefined ? (input.customerName?.trim() || null) : undefined,
       jobType: input.jobType !== undefined ? input.jobType : undefined,

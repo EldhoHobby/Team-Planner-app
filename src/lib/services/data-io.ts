@@ -1,5 +1,7 @@
 import ExcelJS from "exceljs";
 import { prisma } from "@/lib/db/client";
+import { resolveSalesOrder } from "@/lib/services/sales-orders";
+import { normalizeSoNumber } from "@/lib/services/sales-order-format";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { toHex, nextIdentityColor } from "@/lib/scheduling/colors";
@@ -13,6 +15,8 @@ import {
   ymd,
   sheetRows,
   JOBS_COLUMNS,
+  SALES_ORDER_COLUMNS,
+  SalesOrderRowSchema,
   PersonRowSchema,
   TechTaskRowSchema,
   TeamRowSchema,
@@ -62,6 +66,7 @@ const SHEET = {
   timeOff: "Time Off",
   teams: "Departments",
   projects: "Projects",
+  salesOrders: "Sales Orders",
   jobs: "Jobs",
   holidays: "Holidays",
   members: "Members",
@@ -248,6 +253,7 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
     })));
 
   // Jobs (field-service tasks) — uses the shared column list + row builder.
+  addSheet(wb, SHEET.salesOrders, [...SALES_ORDER_COLUMNS], await salesOrdersExportRows(scope));
   addSheet(wb, SHEET.jobs, [...JOBS_COLUMNS], await jobsExportRows(scope));
 
   // Holidays
@@ -621,6 +627,119 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
   return res;
 }
 
+async function salesOrdersExportRows(scope: TenantScope): Promise<Record<string, string>[]> {
+  const rows = await prisma.salesOrder.findMany({
+    where: { orgId: scope.ctx.orgId },
+    orderBy: { number: "desc" },
+  });
+  return rows.map((o) => ({
+    id: o.id,
+    number: o.number,
+    contractor: o.contractor ?? "",
+    endCustomer: o.endCustomer ?? "",
+    projectType: o.projectType ?? "",
+    scope: o.scope ?? "",
+    status: o.status,
+    startDate: ymd(o.startDate),
+    quotedHours: o.quotedHours != null ? String(o.quotedHours) : "",
+    hoursToDate: o.hoursToDate != null ? String(o.hoursToDate) : "",
+    etcHours: o.etcHours != null ? String(o.etcHours) : "",
+    contractValue: o.contractValue != null ? String(o.contractValue) : "",
+    shipDate: ymd(o.shipDate),
+    pmOwner: o.pmOwner ?? "",
+    remarks: o.remarks ?? "",
+    poNumber: o.poNumber ?? "",
+    site: o.site ?? "",
+    contactName: o.contactName ?? "",
+    contactInfo: o.contactInfo ?? "",
+    quoteBreakdown: o.quoteBreakdown ?? "",
+    notes: o.notes ?? "",
+    archived: o.archived ? "yes" : "no",
+  }));
+}
+
+/** Sales Orders sheet: upsert by id; a blank id matches on number, else creates. */
+async function importSalesOrders(
+  scope: TenantScope,
+  rows: Record<string, string>[],
+  apply: boolean,
+): Promise<SheetResult> {
+  const res: SheetResult = { sheet: SHEET.salesOrders, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
+  const num = (v: string | null | undefined): number | null => {
+    const t = (v ?? "").trim();
+    if (!t) return null;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : null;
+  };
+  const day = (v: string | null | undefined): Date | null => {
+    const t = (v ?? "").trim();
+    if (!t) return null;
+    const d = new Date(`${t}T00:00:00.000Z`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  for (const [i, raw] of rows.entries()) {
+    const line = i + 2;
+    const parsed = SalesOrderRowSchema.safeParse(raw);
+    if (!parsed.success) {
+      res.skipped++;
+      res.errors.push(`${SHEET.salesOrders} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`);
+      continue;
+    }
+    const r = parsed.data;
+    const number = normalizeSoNumber(r.number);
+    if (!number) { res.skipped++; res.errors.push(`${SHEET.salesOrders} row ${line}: number is required`); continue; }
+    const data = {
+      number,
+      contractor: r.contractor || null,
+      endCustomer: r.endCustomer || null,
+      projectType: r.projectType || null,
+      scope: r.scope || null,
+      status: (r.status || "").toUpperCase() === "CLOSED" ? ("CLOSED" as const) : ("OPEN" as const),
+      startDate: day(r.startDate),
+      quotedHours: num(r.quotedHours),
+      hoursToDate: num(r.hoursToDate),
+      etcHours: num(r.etcHours),
+      contractValue: num(r.contractValue),
+      shipDate: day(r.shipDate),
+      pmOwner: r.pmOwner || null,
+      remarks: r.remarks || null,
+      poNumber: r.poNumber || null,
+      site: r.site || null,
+      contactName: r.contactName || null,
+      contactInfo: r.contactInfo || null,
+      quoteBreakdown: r.quoteBreakdown || null,
+      notes: r.notes || null,
+      archived: r.archived,
+    };
+    try {
+      const existing = r.id
+        ? await prisma.salesOrder.findFirst({ where: { id: r.id, orgId: scope.ctx.orgId } })
+        : await prisma.salesOrder.findFirst({ where: { orgId: scope.ctx.orgId, number } });
+      if (r.id && !existing) {
+        res.skipped++; res.errors.push(`${SHEET.salesOrders} row ${line}: id not found`); continue;
+      }
+      if (existing) {
+        const same = SALES_ORDER_COLUMNS.every((c) => {
+          if (c === "id") return true;
+          const a = (existing as Record<string, unknown>)[c];
+          const b = (data as Record<string, unknown>)[c];
+          if (c === "startDate" || c === "shipDate") return ymd(a as Date | null) === ymd(b as Date | null);
+          return (a ?? null) === (b ?? null);
+        });
+        if (same) { res.unchanged++; continue; }
+        if (apply) await prisma.salesOrder.update({ where: { id: existing.id }, data });
+        res.updated++;
+      } else {
+        if (apply) await prisma.salesOrder.create({ data: { orgId: scope.ctx.orgId, ...data } });
+        res.created++;
+      }
+    } catch {
+      res.skipped++; res.errors.push(`${SHEET.salesOrders} row ${line}: could not save`);
+    }
+  }
+  return res;
+}
+
 async function importJobs(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
   const res: SheetResult = { sheet: SHEET.jobs, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [], warnings: [] };
   const techs = await techMap(scope);
@@ -695,9 +814,13 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: id not found`); continue; }
         const dur = durationDays ?? ex.durationDays ?? 1;
         const end = start ? endFromDuration(start, dur) : null;
+        // Keep the order link in step — the create path goes through createJob,
+        // which already resolves it, but this path writes the row directly.
+        const soOrder = await resolveSalesOrder(scope, soNumber, { customerName: customer, create: apply });
         const data = {
           title,
-          soNumber,
+          soNumber: soOrder?.number ?? (normalizeSoNumber(soNumber) || null),
+          salesOrderId: soOrder?.id ?? null,
           customerName: customer,
           description: scopeText,
           jobType,
@@ -812,6 +935,7 @@ export async function buildJobsWorkbook(scope: TenantScope): Promise<ExcelJS.Buf
     "project is informational (export only) and ignored on import.",
   ].forEach((t) => info.addRow({ t }));
 
+  addSheet(wb, SHEET.salesOrders, [...SALES_ORDER_COLUMNS], await salesOrdersExportRows(scope));
   addSheet(wb, SHEET.jobs, [...JOBS_COLUMNS], await jobsExportRows(scope));
   return wb.xlsx.writeBuffer();
 }
@@ -862,6 +986,7 @@ export async function runImport(
   await run(SHEET.techTasks, importTechTasks);
   await run(SHEET.projects, importProjects);
   await run(SHEET.timeOff, importTimeOff);
+  await run(SHEET.salesOrders, importSalesOrders);
   await run(SHEET.jobs, importJobs);
   await run(SHEET.holidays, importHolidays);
 

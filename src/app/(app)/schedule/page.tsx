@@ -11,6 +11,7 @@ import { listHolidays } from "@/lib/services/holidays";
 import { recordPageView } from "@/lib/services/audit";
 import { listTargetedTasks, listOrgPeople } from "@/lib/services/tech-tasks";
 import { ScheduleClient } from "./schedule-client";
+import { listSalesOrders } from "@/lib/services/sales-orders";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 
 export const dynamic = "force-dynamic";
@@ -65,7 +66,7 @@ export default async function SchedulePage({
   // off by default, so production starts with no technicians). No-op otherwise.
   await ensureDefaultTechnicians(scope);
 
-  const [jobs, techs, timeOff, holidays, defaultTechIds, targetedTasks, people] = await Promise.all([
+  const [jobs, techs, timeOff, holidays, defaultTechIds, targetedTasks, people, orders] = await Promise.all([
     listFieldJobs(scope),
     listTechnicians(scope),
     listTechTimeOff(scope),
@@ -73,6 +74,7 @@ export default async function SchedulePage({
     defaultTechIdsFor(user.id, scope.ctx.orgId, scope.ctx.isOrgAdmin),
     listTargetedTasks(scope),
     listOrgPeople(scope),
+    listSalesOrders(scope),
   ]);
 
   const jobRows: JobRow[] = jobs.map((j) => ({
@@ -125,6 +127,13 @@ export default async function SchedulePage({
       people={people}
       currentUserId={user.id}
       isAdmin={scope.ctx.isOrgAdmin}
+      salesOrders={orders.map((o) => ({
+        number: o.number,
+        label: [o.contractor, o.endCustomer, o.projectType].filter(Boolean).join(" / "),
+        // Written back into the job's Customer field, in the CONTRACTOR/CUSTOMER
+        // shape the existing data already uses.
+        customer: [o.contractor, o.endCustomer].filter(Boolean).join("/"),
+      }))}
     />
   );
 }

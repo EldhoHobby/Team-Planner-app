@@ -49,6 +49,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     workGroups, workGroupMemberships, projects, boards, boardColumns,
     tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
     holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
+    salesOrders,
   ] = await Promise.all([
     prisma.user.findMany({ where: { memberships: { some: { orgId } } } }),
     prisma.membership.findMany({ where: { orgId } }),
@@ -71,6 +72,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.techTask.findMany({ where: { orgId } }),
     prisma.techTaskNote.findMany({ where: { orgId } }),
     prisma.jobNote.findMany({ where: { orgId } }),
+    prisma.salesOrder.findMany({ where: { orgId } }),
   ]);
 
   await writeAudit(scope, {
@@ -90,6 +92,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
       workGroups, workGroupMemberships, projects, boards, boardColumns,
       tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
       holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
+      salesOrders,
     },
   };
 }
@@ -155,6 +158,7 @@ export async function restoreFullBackup(
       await tx.attachment.deleteMany({ where: { orgId } });
       await tx.taskAssignment.deleteMany({ where: { task: { orgId } } });
       await tx.task.deleteMany({ where: { orgId } });
+      await tx.salesOrder.deleteMany({ where: { orgId } });
       await tx.boardColumn.deleteMany({ where: { board: { project: { orgId } } } });
       await tx.board.deleteMany({ where: { project: { orgId } } });
       await tx.project.deleteMany({ where: { orgId } });
@@ -206,6 +210,8 @@ export async function restoreFullBackup(
       await tx.project.createMany({ data: reOrg(rows(backup, "projects"), orgId) });
       await tx.board.createMany({ data: rows(backup, "boards") });
       await tx.boardColumn.createMany({ data: rows(backup, "boardColumns") });
+      // Orders before tasks — Task.salesOrderId points at them. Absent in older backups → empty.
+      await tx.salesOrder.createMany({ data: reOrg(rows(backup, "salesOrders"), orgId) });
       await tx.task.createMany({ data: reOrg(rows(backup, "tasks"), orgId) });
       await tx.taskAssignment.createMany({ data: rows(backup, "taskAssignments") });
       await tx.calendarEvent.createMany({ data: reOrg(rows(backup, "calendarEvents"), orgId) });

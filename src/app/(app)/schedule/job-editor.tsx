@@ -51,6 +51,7 @@ export function JobEditor({
   conflictReason,
   currentUserId,
   isAdmin,
+  salesOrders,
 }: {
   job: JobRow | null;
   technicians: TechnicianOption[];
@@ -66,6 +67,8 @@ export function JobEditor({
   /** For the comment thread: who's viewing (edit own) and whether they're an admin (delete any). */
   currentUserId: string;
   isAdmin: boolean;
+  /** Existing orders for the SO picker. */
+  salesOrders: { number: string; label: string; customer: string }[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -328,15 +331,31 @@ Changed: ${changed.join("; ")}`;
             <Label htmlFor="ed-so">SO Number</Label>
             <Input
               id="ed-so"
+              list="so-options-ed"
+              autoComplete="off"
               value={form.soNumber}
               disabled={pending}
-              onChange={(e) => setForm((f) => ({ ...f, soNumber: e.target.value }))}
+              onChange={(e) => {
+                const v = e.target.value;
+                // Picking a known order fills a blank Customer for you.
+                const hit = salesOrders.find((o) => o.number.toUpperCase() === v.trim().toUpperCase());
+                setForm((f) => ({
+                  ...f,
+                  soNumber: v,
+                  customerName: !f.customerName.trim() && hit?.customer ? hit.customer : f.customerName,
+                }));
+              }}
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v !== (job.soNumber ?? ""))
                   run(() => updateJobAction({ jobId: job.id, soNumber: v || null }));
               }}
             />
+            <datalist id="so-options-ed">
+              {salesOrders.map((o) => (
+                <option key={o.number} value={o.number}>{o.label}</option>
+              ))}
+            </datalist>
           </div>
           <div className="space-y-2">
             <Label htmlFor="ed-customer">Customer</Label>
