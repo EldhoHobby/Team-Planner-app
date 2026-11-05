@@ -162,6 +162,11 @@ export async function saveSettingsAction(input: PricingRules & { version: number
       escalating: input.escalating,
       autoWaiveAfterHours: !!input.autoWaiveAfterHours,
       afterHoursWaiveAt: Number(input.afterHoursWaiveAt),
+      fixedPrices: Object.fromEntries(
+        Object.entries(input.fixedPrices ?? {})
+          .filter(([, v]) => v !== null && v !== undefined)
+          .map(([k, v]) => [k, Number(v)]),
+      ),
       expectedVersion: version(input.version),
     });
     refresh();

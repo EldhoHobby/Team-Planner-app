@@ -901,6 +901,13 @@ model SaSettings {
   escalating        SaAgreement[] @default([SCADA_SOFTWARE, CONFIGWIZ, RTU_HARDWARE, SERVER_HARDWARE, QWEB])
   autoWaiveAfterHours Boolean     @default(true)
   afterHoursWaiveAt Int           @default(25000) // SCADA Software ≥ this → After Hours $0
+  // Standard prices entered by the manager for NEW proposals (whole dollars).
+  // Blank (null) = keep the customer's last signed price for that agreement.
+  priceAfterHours   Int?
+  priceDiagnostic   Int?
+  priceBackupDr     Int?
+  priceWebTraining  Int?
+  priceNercRider    Int?
   version           Int           @default(1)
   updatedAt         DateTime      @updatedAt
 

@@ -14,7 +14,27 @@ export interface PricingRules {
   escalating: SaAgreement[];
   autoWaiveAfterHours: boolean;
   afterHoursWaiveAt: number;
+  /**
+   * Standard prices the manager enters for new proposals. When set, a customer
+   * who had that agreement last year is proposed at this price instead of
+   * last year's. Missing = keep last year's price.
+   */
+  fixedPrices: Partial<Record<SaAgreement, number>>;
 }
+
+/** Agreements whose new-proposal price can be entered in Settings. */
+export const FIXED_PRICE_AGREEMENTS: readonly SaAgreement[] = [
+  "AFTER_HOURS", "DIAGNOSTIC", "BACKUP_DR", "WEB_TRAINING", "NERC_RIDER",
+];
+
+/** Policy Rev 062426 values, shown as hints next to the Settings fields. */
+export const POLICY_PRICE_HINTS: Partial<Record<SaAgreement, string>> = {
+  AFTER_HOURS: "$1,955 enrollment",
+  DIAGNOSTIC: "$1,700",
+  BACKUP_DR: "$4,500",
+  WEB_TRAINING: "$292 / hour",
+  NERC_RIDER: "$2,500 ConfigWiz/Automation · $5,000 Master Station",
+};
 
 export const POLICY_DEFAULTS: PricingRules = {
   tierLowMax: 5000,
@@ -27,6 +47,7 @@ export const POLICY_DEFAULTS: PricingRules = {
   escalating: ["SCADA_SOFTWARE", "CONFIGWIZ", "RTU_HARDWARE", "SERVER_HARDWARE", "QWEB"],
   autoWaiveAfterHours: true,
   afterHoursWaiveAt: 25000,
+  fixedPrices: {},
 };
 
 /** Escalation % for ONE agreement line, picked by that line's own existing value (per policy). */
@@ -58,13 +79,14 @@ export interface ProposedLine {
   price: number;
   /** Increase % shown on the Customer View (null when last price is 0). */
   pct: number | null;
-  rule: "tdms" | "tier" | "keep" | "waived";
+  rule: "tdms" | "tier" | "keep" | "fixed" | "waived";
 }
 
 /**
  * Propose next year's prices from the last signed year.
  * - SCADA Software on TDMS: × tdmsMultiplier on every renewal (tdmsMode EVERY_YEAR).
  * - Escalating agreements: per-line tier % (≤$5k 5%, ≤$10k 4%, else 3%).
+ * - A standard price entered in Settings (fixedPrices) replaces last year's price.
  * - Everything else keeps last year's price.
  * - After Hours: $0 when the PROPOSED SCADA Software price ≥ afterHoursWaiveAt.
  */
@@ -78,7 +100,11 @@ export function proposePrices(
     if (lastPrice === undefined || lastPrice === null) continue;
     let price: number;
     let rule: ProposedLine["rule"];
-    if (agreement === "SCADA_SOFTWARE" && software === "TDMS" && rules.tdmsMode === "EVERY_YEAR") {
+    const fixed = rules.fixedPrices[agreement];
+    if (fixed !== undefined && fixed !== null) {
+      price = roundPrice(fixed);
+      rule = "fixed";
+    } else if (agreement === "SCADA_SOFTWARE" && software === "TDMS" && rules.tdmsMode === "EVERY_YEAR") {
       price = roundPrice(lastPrice * rules.tdmsMultiplier);
       rule = "tdms";
     } else if (rules.escalating.includes(agreement)) {

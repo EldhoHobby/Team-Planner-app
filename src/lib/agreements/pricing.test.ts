@@ -56,6 +56,31 @@ describe("proposePrices", () => {
     ).toBe(1955);
   });
 
+  it("uses the standard prices entered in Settings for new proposals", () => {
+    const lines = proposePrices(
+      { DIAGNOSTIC: 1500, BACKUP_DR: 4000, WEB_TRAINING: 900, NERC_RIDER: 2000, AFTER_HOURS: 1800, ONSITE: 6000 },
+      "QSCADA_PLUS",
+      { ...r, fixedPrices: { DIAGNOSTIC: 1700, BACKUP_DR: 4500, NERC_RIDER: 2500, AFTER_HOURS: 1955 } },
+    );
+    const by = Object.fromEntries(lines.map((l) => [l.agreement, l]));
+    expect(by.DIAGNOSTIC).toMatchObject({ price: 1700, rule: "fixed", pct: 13.3 });
+    expect(by.BACKUP_DR!.price).toBe(4500);
+    expect(by.NERC_RIDER!.price).toBe(2500);
+    expect(by.AFTER_HOURS!.price).toBe(1955);
+    expect(by.WEB_TRAINING).toMatchObject({ price: 900, rule: "keep" }); // blank → last year's price
+    expect(by.ONSITE!.price).toBe(6000);
+  });
+
+  it("only proposes a standard price for agreements the customer had", () => {
+    const lines = proposePrices({ SCADA_SOFTWARE: 1000 }, "QSCADA_PLUS", { ...r, fixedPrices: { DIAGNOSTIC: 1700 } });
+    expect(lines.map((l) => l.agreement)).toEqual(["SCADA_SOFTWARE"]);
+  });
+
+  it("still waives After Hours over its standard price when SCADA Software ≥ $25,000", () => {
+    const lines = proposePrices({ SCADA_SOFTWARE: 30000, AFTER_HOURS: 1800 }, "QSCADA_PLUS", { ...r, fixedPrices: { AFTER_HOURS: 1955 } });
+    expect(lines.find((l) => l.agreement === "AFTER_HOURS")).toMatchObject({ price: 0, rule: "waived" });
+  });
+
   it("honours a custom escalating list", () => {
     const [l] = proposePrices({ DIAGNOSTIC: 1700 }, null, { ...r, escalating: ["DIAGNOSTIC"] });
     expect(l!.price).toBe(1785);

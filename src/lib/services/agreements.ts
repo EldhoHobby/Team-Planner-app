@@ -10,7 +10,7 @@ import {
   AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, PRICE_STATUS_LABELS, SA_AGREEMENTS, SA_EDITOR_GROUP, SOFTWARE_LABELS,
   type SaAgreement, type SaCustomerStatus, type SaPriceStatus, type SaSoftware, type SaTdmsMode,
 } from "@/lib/agreements/constants";
-import { addOneYear, proposePrices, type PricingRules } from "@/lib/agreements/pricing";
+import { addOneYear, proposePrices, FIXED_PRICE_AGREEMENTS, type PricingRules } from "@/lib/agreements/pricing";
 import { buildCustomerGrid, signedYears, sumPrices, type AgreementMap, type PriceLite } from "@/lib/agreements/view";
 
 // Service-agreement module. Tenancy: every query is constrained to
@@ -76,6 +76,16 @@ export interface SettingsRow extends PricingRules {
   version: number;
 }
 
+/** SaSettings column holding each agreement's standard new-proposal price. */
+const FIXED_PRICE_COLUMN = {
+  AFTER_HOURS: "priceAfterHours",
+  DIAGNOSTIC: "priceDiagnostic",
+  BACKUP_DR: "priceBackupDr",
+  WEB_TRAINING: "priceWebTraining",
+  NERC_RIDER: "priceNercRider",
+} as const satisfies Partial<Record<SaAgreement, string>>;
+type FixedAgreement = keyof typeof FIXED_PRICE_COLUMN;
+
 export async function getSettings(scope: TenantScope): Promise<SettingsRow> {
   const s = await prisma.saSettings.upsert({
     where: { orgId: scope.ctx.orgId },
@@ -93,6 +103,11 @@ export async function getSettings(scope: TenantScope): Promise<SettingsRow> {
     escalating: SA_AGREEMENTS.filter((a) => s.escalating.includes(a)),
     autoWaiveAfterHours: s.autoWaiveAfterHours,
     afterHoursWaiveAt: s.afterHoursWaiveAt,
+    fixedPrices: Object.fromEntries(
+      (Object.entries(FIXED_PRICE_COLUMN) as [FixedAgreement, (typeof FIXED_PRICE_COLUMN)[FixedAgreement]][])
+        .filter(([, col]) => s[col] !== null)
+        .map(([a, col]) => [a, s[col] as number]),
+    ),
     version: s.version,
   };
 }
@@ -105,6 +120,14 @@ export async function updateSettings(scope: TenantScope, input: PricingRules & {
   }
   for (const v of [input.pctLow, input.pctMid, input.pctHigh, input.tdmsMultiplier]) {
     if (!Number.isFinite(v) || v < 0 || v > 1000) throw new ForbiddenError("Percentages and the multiplier must be between 0 and 1000.");
+  }
+  const fixedCols: Partial<Record<(typeof FIXED_PRICE_COLUMN)[FixedAgreement], number | null>> = {};
+  for (const [a, col] of Object.entries(FIXED_PRICE_COLUMN) as [FixedAgreement, (typeof FIXED_PRICE_COLUMN)[FixedAgreement]][]) {
+    const v = input.fixedPrices[a];
+    if (v !== undefined && v !== null && (!Number.isFinite(v) || v < 0 || v > 10_000_000)) {
+      throw new ForbiddenError(`${AGREEMENT_LABELS[a]} price must be zero or more (or blank).`);
+    }
+    fixedCols[col] = v === undefined || v === null ? null : Math.round(v);
   }
   await prisma.$transaction(async (tx) => {
     const res = await tx.saSettings.updateMany({
@@ -120,6 +143,7 @@ export async function updateSettings(scope: TenantScope, input: PricingRules & {
         escalating: SA_AGREEMENTS.filter((a) => input.escalating.includes(a)),
         autoWaiveAfterHours: input.autoWaiveAfterHours,
         afterHoursWaiveAt: Math.round(input.afterHoursWaiveAt),
+        ...fixedCols,
         version: { increment: 1 },
       },
     });
@@ -131,6 +155,11 @@ export async function updateSettings(scope: TenantScope, input: PricingRules & {
     }
     const esc = (l: SaAgreement[]) => SA_AGREEMENTS.filter((a) => l.includes(a)).map((a) => AGREEMENT_LABELS[a]).join(", ");
     if (esc(before.escalating) !== esc(input.escalating)) changes.push({ field: "escalating", oldValue: esc(before.escalating), newValue: esc(input.escalating) });
+    for (const a of FIXED_PRICE_AGREEMENTS) {
+      const o = before.fixedPrices[a] ?? null;
+      const n = fixedCols[FIXED_PRICE_COLUMN[a as FixedAgreement]] ?? null;
+      if (o !== n) changes.push({ field: `${AGREEMENT_LABELS[a]} new-proposal price`, oldValue: o === null ? null : String(o), newValue: n === null ? null : String(n) });
+    }
     await recordFieldChanges(tx, scope, "sa_settings", scope.ctx.orgId, changes);
   });
   await audit(scope, "settings", "updated", "Updated service-agreement pricing settings");
