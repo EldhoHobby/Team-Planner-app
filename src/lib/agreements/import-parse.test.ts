@@ -98,3 +98,13 @@ describe("cell helpers", () => {
     expect(num("N/A")).toBeNull();
   });
 });
+
+describe("NERC Rider split", () => {
+  it("maps the prototype's single NERC Rider by the policy rates", async () => {
+    const { parseAgreementCell } = await import("./import-parse");
+    expect(parseAgreementCell("NERC Rider", 5000)).toBe("NERC_RIDER_SCADA");
+    expect(parseAgreementCell("NERC Rider", 2500)).toBe("NERC_RIDER_RTU");
+    expect(parseAgreementCell("NERC Rider – RTU", 9999)).toBe("NERC_RIDER_RTU");
+    expect(parseAgreementCell("Backup & DR", 1)).toBe("BACKUP_DR");
+  });
+});

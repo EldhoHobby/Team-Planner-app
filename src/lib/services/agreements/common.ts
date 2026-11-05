@@ -88,7 +88,8 @@ const FIXED_PRICE_COLUMN = {
   DIAGNOSTIC: "priceDiagnostic",
   BACKUP_DR: "priceBackupDr",
   WEB_TRAINING: "priceWebTraining",
-  NERC_RIDER: "priceNercRider",
+  NERC_RIDER_SCADA: "priceNercScada",
+  NERC_RIDER_RTU: "priceNercRtu",
 } as const;
 type FixedAgreement = keyof typeof FIXED_PRICE_COLUMN;
 type FixedColumn = (typeof FIXED_PRICE_COLUMN)[FixedAgreement];
@@ -105,8 +106,7 @@ export async function getSettings(scope: TenantScope): Promise<SettingsRow> {
     pctLow: Number(s.pctLow),
     pctMid: Number(s.pctMid),
     pctHigh: Number(s.pctHigh),
-    tdmsMultiplier: Number(s.tdmsMultiplier),
-    tdmsMode: s.tdmsMode,
+    tdmsPct: s.tdmsPct === null ? null : Number(s.tdmsPct),
     escalating: SA_AGREEMENTS.filter((a) => s.escalating.includes(a)),
     autoWaiveAfterHours: s.autoWaiveAfterHours,
     afterHoursWaiveAt: s.afterHoursWaiveAt,
@@ -122,8 +122,8 @@ export async function updateSettings(scope: TenantScope, input: Omit<SettingsRow
   if (!(input.tierLowMax > 0 && input.tierMidMax > input.tierLowMax)) {
     throw new ForbiddenError("Tier limits must be positive and the second must be larger than the first.");
   }
-  for (const v of [input.pctLow, input.pctMid, input.pctHigh, input.tdmsMultiplier]) {
-    if (!Number.isFinite(v) || v < 0 || v > 1000) throw new ForbiddenError("Percentages and the multiplier must be between 0 and 1000.");
+  for (const v of [input.pctLow, input.pctMid, input.pctHigh, ...(input.tdmsPct === null ? [] : [input.tdmsPct])]) {
+    if (!Number.isFinite(v) || v < 0 || v > 1000) throw new ForbiddenError("Percentages must be between 0 and 1000.");
   }
   if (!Number.isInteger(input.dueWindowDays) || input.dueWindowDays < 1 || input.dueWindowDays > 365) {
     throw new ForbiddenError("The due window must be 1–365 days.");
@@ -143,8 +143,7 @@ export async function updateSettings(scope: TenantScope, input: Omit<SettingsRow
         pctLow: input.pctLow,
         pctMid: input.pctMid,
         pctHigh: input.pctHigh,
-        tdmsMultiplier: input.tdmsMultiplier,
-        tdmsMode: input.tdmsMode,
+        tdmsPct: input.tdmsPct,
         escalating: SA_AGREEMENTS.filter((a) => input.escalating.includes(a)),
         autoWaiveAfterHours: input.autoWaiveAfterHours,
         afterHoursWaiveAt: Math.round(input.afterHoursWaiveAt),
@@ -155,7 +154,7 @@ export async function updateSettings(scope: TenantScope, input: Omit<SettingsRow
     });
     assertFreshWrite(res.count, "settings");
     const changes: FieldChange[] = [];
-    const simple = ["tierLowMax", "tierMidMax", "pctLow", "pctMid", "pctHigh", "tdmsMultiplier", "tdmsMode", "autoWaiveAfterHours", "afterHoursWaiveAt", "dueWindowDays"] as const;
+    const simple = ["tierLowMax", "tierMidMax", "pctLow", "pctMid", "pctHigh", "tdmsPct", "autoWaiveAfterHours", "afterHoursWaiveAt", "dueWindowDays"] as const;
     for (const f of simple) {
       if (String(before[f]) !== String(input[f])) changes.push({ field: f, oldValue: String(before[f]), newValue: String(input[f]) });
     }

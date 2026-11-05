@@ -85,15 +85,23 @@ export async function importPrototype(scope: TenantScope, data: Buffer, apply: b
           continue;
         }
         idBySo.set(c.soNumber, ex.id);
+        // A temporary TEMP-… SO # is replaced by the SO Number Review suggestion
+        // (still unconfirmed). Any other SO # set in the app is never overwritten.
+        const upgradeTemp = ex.soNumber.startsWith("TEMP-") && !c.soNumber.startsWith("TEMP-") && !bySo.has(c.soNumber);
+        if (ex.soNumber !== c.soNumber && !upgradeTemp) c.notes = ex.notes;
         const changes = fields
           .filter((f) => (ex[f] ?? null) !== (c[f] ?? null))
           .map((f) => ({ field: `${f} (import)`, oldValue: ex[f] === null ? null : String(ex[f]), newValue: c[f] === null ? null : String(c[f]) }));
+        if (upgradeTemp) changes.push({ field: "soNumber (import)", oldValue: ex.soNumber, newValue: `${c.soNumber} (unconfirmed)` });
         if (!changes.length) { summary.customers.unchanged++; continue; }
         summary.customers.updated++;
         if (apply) {
           const { soNumber, ...rest } = c;
-          void soNumber; // never overwrite an SO # on re-import
-          await tx.saCustomer.update({ where: { id: ex.id }, data: { ...rest, version: { increment: 1 } } });
+          await tx.saCustomer.update({
+            where: { id: ex.id },
+            data: { ...rest, ...(upgradeTemp ? { soNumber, soConfirmed: false } : {}), version: { increment: 1 } },
+          });
+          bySo.set(soNumber, ex);
           await history(tx, scope, ex.id, changes);
         }
       }

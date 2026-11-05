@@ -1,14 +1,14 @@
 // Service-agreement constants shared by server and browser (type-only Prisma import).
 import type {
-  SaAgreement, SaCustomerStatus, SaLineStatus, SaProposalStatus, SaSoftware, SaTdmsMode,
+  SaAgreement, SaCustomerStatus, SaLineStatus, SaProposalStatus, SaSoftware,
 } from "@prisma/client";
 
-export type { SaAgreement, SaCustomerStatus, SaLineStatus, SaProposalStatus, SaSoftware, SaTdmsMode };
+export type { SaAgreement, SaCustomerStatus, SaLineStatus, SaProposalStatus, SaSoftware };
 
-/** The 12 agreement types, in the fixed order used on every screen and report. */
+/** The 13 agreement types, in the fixed order used on every screen and report. */
 export const SA_AGREEMENTS: readonly SaAgreement[] = [
   "SCADA_SOFTWARE", "CONFIGWIZ", "RTU_HARDWARE", "SERVER_HARDWARE", "AFTER_HOURS", "ONSITE",
-  "DIAGNOSTIC", "BACKUP_DR", "WEB_TRAINING", "NERC_RIDER", "QWEB", "OTHER",
+  "DIAGNOSTIC", "BACKUP_DR", "WEB_TRAINING", "NERC_RIDER_SCADA", "NERC_RIDER_RTU", "QWEB", "OTHER",
 ];
 
 export const AGREEMENT_LABELS: Record<SaAgreement, string> = {
@@ -21,7 +21,8 @@ export const AGREEMENT_LABELS: Record<SaAgreement, string> = {
   DIAGNOSTIC: "Diagnostic",
   BACKUP_DR: "Backup & DR",
   WEB_TRAINING: "Web Training",
-  NERC_RIDER: "NERC Rider",
+  NERC_RIDER_SCADA: "NERC Rider – SCADA",
+  NERC_RIDER_RTU: "NERC Rider – RTU",
   QWEB: "QWEB",
   OTHER: "Other",
 };
@@ -51,14 +52,9 @@ export const PROPOSAL_STATUSES = Object.keys(PROPOSAL_STATUS_LABELS) as SaPropos
 /** Proposals that still hold their agreements for that year. */
 export const LIVE_PROPOSAL: readonly SaProposalStatus[] = ["DRAFT", "SENT", "SIGNED"];
 
-export const TDMS_MODE_LABELS: Record<SaTdmsMode, string> = {
-  EVERY_YEAR: "Multiply on every renewal (policy)",
-  TIERS: "Normal escalation tiers (doubling already applied)",
-};
-
 export const RULE_LABELS: Record<string, string> = {
   tier: "Escalation tier",
-  tdms: "TDMS multiplier",
+  tdms: "TDMS increase",
   fixed: "Standard price",
   keep: "Last year's price",
   waived: "Waived (SCADA ≥ threshold)",

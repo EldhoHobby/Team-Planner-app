@@ -171,7 +171,9 @@ export async function getProposal(scope: TenantScope, id: string) {
     },
     customer: {
       id: c.id, name: c.name, soNumber: c.soNumber, soConfirmed: c.soConfirmed, status: c.status, state: c.state,
-      software: c.software, softwareVersion: c.softwareVersion, server: c.server, qwebLicenses: c.qwebLicenses,
+      software: c.software, softwareVersion: c.softwareVersion, wvPeVersion: c.wvPeVersion, server: c.server,
+      lastServerSo: c.lastServerSo, qwebLicenses: c.qwebLicenses, notes: c.notes,
+      nextEndDate: customerRenewal(c.contracts.map(toLineLite), [], todayYmd(), 90).nextEndDate,
     },
     history: priceHistory(c.contracts.map(toLineLite)),
     calls: c.calls.map((r) => ({ year: r.year, calls: r.calls, repairs: r.repairs })),

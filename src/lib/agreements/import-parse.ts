@@ -263,8 +263,8 @@ export function parsePrototype(sheets: {
     const so = resolve(o.get("Customer"), o.get("SO #"), where);
     if (!so) continue;
     const year = num(o.get("Year"));
-    const agreement = parseAgreement(text(o.get("Agreement")));
     const price = num(o.get("Price"));
+    const agreement = parseAgreementCell(text(o.get("Agreement")), price);
     const status = parsePrototypeStatus(text(o.get("Status")));
     if (!year || !Number.isInteger(year)) { skipped.push(`${where}: bad year "${text(o.get("Year")) ?? ""}".`); continue; }
     if (!agreement) { skipped.push(`${where}: unknown agreement "${text(o.get("Agreement")) ?? ""}".`); continue; }
@@ -302,4 +302,16 @@ export function parsePrototype(sheets: {
   for (const [name, n] of callsNoSo) skipped.push(`Calls: ${n} rows for ${name} skipped (customer has no SO #).`);
 
   return { customers, prices, calls, skipped, warnings };
+}
+
+/**
+ * Agreement name → enum. The prototype has a single "NERC Rider"; the policy
+ * has two rates, so $5,000+ is the SCADA (Master Station) rider and anything
+ * less the RTU (ConfigWiz / Automation) rider.
+ */
+export function parseAgreementCell(name: string | null, price: number | null): SaAgreement | null {
+  if (name && name.toLowerCase().replace(/[^a-z]/g, "") === "nercrider") {
+    return price !== null && price >= 5000 ? "NERC_RIDER_SCADA" : "NERC_RIDER_RTU";
+  }
+  return parseAgreement(name);
 }

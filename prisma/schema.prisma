@@ -802,7 +802,8 @@ enum SaAgreement {
   DIAGNOSTIC
   BACKUP_DR
   WEB_TRAINING
-  NERC_RIDER
+  NERC_RIDER_SCADA // Master Station (policy $5,000)
+  NERC_RIDER_RTU // ConfigWiz / Automation (policy $2,500)
   QWEB
   OTHER
 }
@@ -818,11 +819,6 @@ enum SaProposalStatus {
   SIGNED
   DECLINED
   WITHDRAWN
-}
-
-enum SaTdmsMode {
-  EVERY_YEAR // multiply on every renewal (policy Rev 062426)
-  TIERS // the doubling is done; escalate by the normal tiers
 }
 
 model SaCustomer {
@@ -956,17 +952,18 @@ model SaSettings {
   pctLow              Decimal       @default(5) @db.Decimal(5, 2)
   pctMid              Decimal       @default(4) @db.Decimal(5, 2)
   pctHigh             Decimal       @default(3) @db.Decimal(5, 2)
-  tdmsMultiplier      Decimal       @default(2) @db.Decimal(6, 3)
-  tdmsMode            SaTdmsMode    @default(EVERY_YEAR)
-  escalating          SaAgreement[] @default([SCADA_SOFTWARE, CONFIGWIZ, RTU_HARDWARE, SERVER_HARDWARE, QWEB])
+  // TDMS SCADA Software increase each renewal (100 = doubles). Null = use the tiers.
+  tdmsPct             Decimal?      @default(100) @db.Decimal(6, 2)
+  escalating          SaAgreement[] @default([SCADA_SOFTWARE, CONFIGWIZ, RTU_HARDWARE, SERVER_HARDWARE])
   autoWaiveAfterHours Boolean       @default(true)
   afterHoursWaiveAt   Int           @default(25000)
-  // Standard prices for new proposals (blank = keep the customer's last price).
-  priceAfterHours     Int?
-  priceDiagnostic     Int?
-  priceBackupDr       Int?
-  priceWebTraining    Int?
-  priceNercRider      Int?
+  // Standard prices for new proposals = policy list prices (blank = keep the customer's last price).
+  priceAfterHours     Int?          @default(1955)
+  priceDiagnostic     Int?          @default(1700)
+  priceBackupDr       Int?          @default(4500)
+  priceWebTraining    Int?          @default(292)
+  priceNercScada      Int?          @default(5000)
+  priceNercRtu        Int?          @default(2500)
   dueWindowDays       Int           @default(90) // "due for renewal" = ends within this many days
   version             Int           @default(1)
   updatedAt           DateTime      @updatedAt
