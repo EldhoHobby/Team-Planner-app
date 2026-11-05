@@ -1,4 +1,7 @@
 import type { SaAgreement } from "@/lib/agreements/constants";
+import type { ImportSummary } from "@/lib/services/agreements/import";
+
+export type { ImportSummary };
 
 export interface ActionResult {
   ok?: boolean;
@@ -13,21 +16,15 @@ export interface BulkRow {
   name: string;
   soNumber: string;
   year: number;
-  created: SaAgreement[];
+  agreements: SaAgreement[];
   skipped: SaAgreement[];
+  proposalId?: string;
 }
 
 export interface BulkResult extends ActionResult {
   rows?: BulkRow[];
 }
 
-export interface ImportSummary {
-  applied: boolean;
-  customers: { created: number; updated: number; unchanged: number };
-  prices: { created: number; updated: number; unchanged: number };
-  calls: { created: number; updated: number; unchanged: number };
-  /** Rows that could not be imported, with the reason. */
-  skipped: string[];
-  /** Imported but worth checking (e.g. unrecognised software type kept in notes). */
-  warnings: string[];
+export interface ImportResult extends ActionResult {
+  summary?: ImportSummary;
 }

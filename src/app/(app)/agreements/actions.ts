@@ -3,15 +3,18 @@
 import { revalidatePath } from "next/cache";
 import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
 import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
+import { updateSettings, type SettingsRow } from "@/lib/services/agreements/common";
 import {
-  bulkProposals, createCalls, createCustomer, createPrice, deletePrice, markSigned, newProposal,
-  setProposalEndDate, setProposalPrice, updateCalls, updateCustomer, updatePrice, updateSettings,
-  type CustomerInput, type PriceInput,
-} from "@/lib/services/agreements";
-import { importPrototype } from "@/lib/services/agreements-import";
-import type { PricingRules } from "@/lib/agreements/pricing";
+  addContractLine, createCustomer, deleteContractLine, saveCalls, updateContractLine, updateCustomer,
+  type ContractInput, type CustomerInput,
+} from "@/lib/services/agreements/customers";
+import {
+  addLine, bulkCreateProposals, createProposal, removeLine, setLinePrice, transitionProposal, updateProposalHeader,
+  type ProposalAction,
+} from "@/lib/services/agreements/proposals";
+import { importPrototype } from "@/lib/services/agreements/import";
 import type { SaAgreement } from "@/lib/agreements/constants";
-import type { ActionResult, BulkResult, ImportSummary } from "./types";
+import type { ActionResult, BulkResult, ImportResult } from "./types";
 
 function fail(e: unknown, fallback: string): ActionResult {
   if (e instanceof StaleSaveError) return { error: e.message, stale: true };
@@ -19,139 +22,117 @@ function fail(e: unknown, fallback: string): ActionResult {
   console.error(fallback, e);
   return { error: fallback };
 }
-
 function refresh() {
   revalidatePath("/agreements", "layout");
 }
-
 function version(v: unknown): number {
   const n = parseExpectedVersion(v);
   if (n === undefined) throw new ForbiddenError("Missing record version — reload the page.");
   return n;
 }
-
-// ─── Customer View ───
-
-export async function newProposalAction(input: { customerId: string }): Promise<ActionResult> {
+async function run(fallback: string, fn: (scope: Awaited<ReturnType<typeof requireScope>>["scope"]) => Promise<string | void>): Promise<ActionResult> {
   const { scope } = await requireScope();
   try {
-    await newProposal(scope, input.customerId);
+    const id = await fn(scope);
     refresh();
-    return { ok: true };
+    return { ok: true, ...(id ? { id } : {}) };
   } catch (e) {
-    return fail(e, "Could not create the proposal.");
+    return fail(e, fallback);
   }
 }
 
-export async function setProposalPriceAction(input: { priceId: string; price: number; version: number }): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
-    await setProposalPrice(scope, input.priceId, Number(input.price), version(input.version));
-    refresh();
-    return { ok: true };
-  } catch (e) {
-    return fail(e, "Could not save the price.");
-  }
+// ─── customers ───
+
+export async function saveCustomerAction(input: { id?: string; version?: number; data: CustomerInput }) {
+  return run("Could not save the customer.", async (scope) => {
+    if (input.id) {
+      await updateCustomer(scope, input.id, input.data, version(input.version));
+      return input.id;
+    }
+    return (await createCustomer(scope, input.data)).id;
+  });
 }
 
-export async function setProposalEndDateAction(input: { customerId: string; year: number; endDate: string | null }): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
-    await setProposalEndDate(scope, input.customerId, Number(input.year), input.endDate || null);
-    refresh();
-    return { ok: true };
-  } catch (e) {
-    return fail(e, "Could not save the end date.");
-  }
-}
-
-export async function markSignedAction(input: { customerId: string; year: number }): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
-    await markSigned(scope, input.customerId, Number(input.year));
-    refresh();
-    return { ok: true };
-  } catch (e) {
-    return fail(e, "Could not mark the proposal signed.");
-  }
-}
-
-// ─── Customers ───
-
-export async function saveCustomerAction(input: { id?: string; version?: number; data: CustomerInput }): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
-    let id = input.id;
-    if (id) await updateCustomer(scope, id, input.data, version(input.version));
-    else id = (await createCustomer(scope, input.data)).id;
-    refresh();
-    return { ok: true, id };
-  } catch (e) {
-    return fail(e, "Could not save the customer.");
-  }
-}
-
-// ─── Pricing ───
-
-export async function savePriceAction(input: {
+export async function saveContractLineAction(input: {
   id?: string;
   version?: number;
-  create?: { customerId: string; year: number; agreement: SaAgreement };
-  data: PriceInput;
-}): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
+  customerId: string;
+  create?: { year: number; agreement: SaAgreement };
+  data: ContractInput;
+}) {
+  return run("Could not save the agreement line.", async (scope) => {
     const data = { ...input.data, price: Number(input.data.price) };
-    if (input.id) await updatePrice(scope, input.id, data, version(input.version));
-    else if (input.create) await createPrice(scope, { ...data, ...input.create, year: Number(input.create.year) });
-    else return { error: "Nothing to save." };
-    refresh();
-    return { ok: true };
+    if (input.id) await updateContractLine(scope, input.id, data, version(input.version));
+    else if (input.create) await addContractLine(scope, input.customerId, { ...data, year: Number(input.create.year), agreement: input.create.agreement });
+  });
+}
+
+export async function deleteContractLineAction(input: { id: string; version: number }) {
+  return run("Could not delete the agreement line.", (scope) => deleteContractLine(scope, input.id, version(input.version)));
+}
+
+export async function saveCallsAction(input: { customerId: string; id?: string; version?: number; year: number; calls: number; repairs: number }) {
+  return run("Could not save calls / repairs.", (scope) =>
+    saveCalls(scope, input.customerId, {
+      id: input.id, version: input.version, year: Number(input.year), calls: Number(input.calls), repairs: Number(input.repairs),
+    }),
+  );
+}
+
+// ─── proposals ───
+
+export async function createProposalAction(input: { customerId: string }) {
+  return run("Could not create the proposal.", (scope) => createProposal(scope, input.customerId));
+}
+
+export async function updateProposalHeaderAction(input: { id: string; version: number; endDate: string | null; notes: string | null }) {
+  return run("Could not save the proposal.", (scope) =>
+    updateProposalHeader(scope, input.id, { endDate: input.endDate || null, notes: input.notes }, version(input.version)),
+  );
+}
+
+export async function setLinePriceAction(input: { lineId: string; version: number; price: number }) {
+  return run("Could not save the price.", (scope) => setLinePrice(scope, input.lineId, Number(input.price), version(input.version)));
+}
+
+export async function addLineAction(input: { proposalId: string; agreement: SaAgreement; price: number }) {
+  return run("Could not add the agreement.", (scope) => addLine(scope, input.proposalId, input.agreement, Number(input.price)));
+}
+
+export async function removeLineAction(input: { lineId: string }) {
+  return run("Could not remove the agreement.", (scope) => removeLine(scope, input.lineId));
+}
+
+export async function proposalTransitionAction(input: {
+  id: string;
+  version: number;
+  action: ProposalAction;
+  reason?: string;
+  markNotRenewed?: boolean;
+}) {
+  return run("Could not update the proposal.", (scope) =>
+    transitionProposal(scope, input.id, input.action, {
+      expectedVersion: version(input.version), reason: input.reason, markNotRenewed: !!input.markNotRenewed,
+    }),
+  );
+}
+
+export async function bulkProposalsAction(input: { month: string; apply: boolean }): Promise<BulkResult> {
+  const { scope } = await requireScope();
+  try {
+    const rows = await bulkCreateProposals(scope, input.month, !!input.apply);
+    if (input.apply) refresh();
+    return { ok: true, rows };
   } catch (e) {
-    return fail(e, "Could not save the price row.");
+    return fail(e, "Could not create the proposals.");
   }
 }
 
-export async function deletePriceAction(input: { id: string; version: number }): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
-    await deletePrice(scope, input.id, version(input.version));
-    refresh();
-    return { ok: true };
-  } catch (e) {
-    return fail(e, "Could not delete the price row.");
-  }
-}
+// ─── settings / import ───
 
-// ─── Calls ───
-
-export async function saveCallsAction(input: {
-  id?: string;
-  version?: number;
-  create?: { customerId: string; year: number };
-  calls: number;
-  repairs: number;
-}): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
-    const calls = Number(input.calls);
-    const repairs = Number(input.repairs);
-    if (input.id) await updateCalls(scope, input.id, { calls, repairs }, version(input.version));
-    else if (input.create) await createCalls(scope, { ...input.create, year: Number(input.create.year), calls, repairs });
-    else return { error: "Nothing to save." };
-    refresh();
-    return { ok: true };
-  } catch (e) {
-    return fail(e, "Could not save calls / repairs.");
-  }
-}
-
-// ─── Settings ───
-
-export async function saveSettingsAction(input: PricingRules & { version: number }): Promise<ActionResult> {
-  const { scope } = await requireScope();
-  try {
-    await updateSettings(scope, {
+export async function saveSettingsAction(input: Omit<SettingsRow, "version"> & { version: number }) {
+  return run("Could not save the settings.", (scope) =>
+    updateSettings(scope, {
       tierLowMax: Number(input.tierLowMax),
       tierMidMax: Number(input.tierMidMax),
       pctLow: Number(input.pctLow),
@@ -162,40 +143,20 @@ export async function saveSettingsAction(input: PricingRules & { version: number
       escalating: input.escalating,
       autoWaiveAfterHours: !!input.autoWaiveAfterHours,
       afterHoursWaiveAt: Number(input.afterHoursWaiveAt),
+      dueWindowDays: Number(input.dueWindowDays),
       fixedPrices: Object.fromEntries(
-        Object.entries(input.fixedPrices ?? {})
-          .filter(([, v]) => v !== null && v !== undefined)
-          .map(([k, v]) => [k, Number(v)]),
+        Object.entries(input.fixedPrices ?? {}).filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => [k, Number(v)]),
       ),
       expectedVersion: version(input.version),
-    });
-    refresh();
-    return { ok: true };
-  } catch (e) {
-    return fail(e, "Could not save the settings.");
-  }
+    }),
+  );
 }
 
-// ─── Renewals bulk ───
-
-export async function bulkProposalsAction(input: { month: string; apply: boolean }): Promise<BulkResult> {
-  const { scope } = await requireScope();
-  try {
-    const rows = await bulkProposals(scope, input.month, !!input.apply);
-    if (input.apply) refresh();
-    return { ok: true, rows };
-  } catch (e) {
-    return fail(e, "Could not create the proposals.");
-  }
-}
-
-// ─── Import (admin) ───
-
-export async function importPrototypeAction(formData: FormData): Promise<ActionResult & { summary?: ImportSummary }> {
+export async function importPrototypeAction(formData: FormData): Promise<ImportResult> {
   const { scope } = await requireScope();
   try {
     const file = formData.get("file");
-    if (!(file instanceof File) || file.size === 0) return { error: "Choose the .xlsm / .xlsx file first." };
+    if (!(file instanceof File) || file.size === 0) return { error: "Choose the prototype workbook first." };
     if (file.size > 9 * 1024 * 1024) return { error: "That file is larger than 9 MB." };
     const review = formData.get("review");
     const reviewBuf = review instanceof File && review.size > 0 ? Buffer.from(await review.arrayBuffer()) : undefined;

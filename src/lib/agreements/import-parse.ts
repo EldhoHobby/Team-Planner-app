@@ -2,11 +2,18 @@
 // (sheets Customers, Pricing, Calls). Pure: takes raw cell values per sheet
 // (header row first) and returns clean records plus skip/warning messages.
 import {
-  parseAgreement, parseCustomerStatus, parsePriceStatus, parseSoftware,
-  type SaAgreement, type SaCustomerStatus, type SaPriceStatus, type SaSoftware,
+  parseAgreement, parseCustomerStatus, parseSoftware,
+  type SaAgreement, type SaCustomerStatus, type SaSoftware,
 } from "./constants";
 
 export type Cell = unknown;
+
+/** Row status in the prototype Pricing sheet. */
+export type PrototypeStatus = "SIGNED" | "PROPOSED" | "CANCELLED";
+export function parsePrototypeStatus(v: string | null): PrototypeStatus | null {
+  const s = (v ?? "").trim().toLowerCase();
+  return s === "signed" ? "SIGNED" : s === "proposed" ? "PROPOSED" : s === "cancelled" || s === "canceled" ? "CANCELLED" : null;
+}
 
 export interface ParsedCustomer {
   soNumber: string;
@@ -30,7 +37,7 @@ export interface ParsedPrice {
   year: number;
   agreement: SaAgreement;
   price: number;
-  status: SaPriceStatus;
+  status: PrototypeStatus;
   endDate: string | null;
   signedDate: string | null;
   createdDate: string | null;
@@ -258,7 +265,7 @@ export function parsePrototype(sheets: {
     const year = num(o.get("Year"));
     const agreement = parseAgreement(text(o.get("Agreement")));
     const price = num(o.get("Price"));
-    const status = parsePriceStatus(text(o.get("Status")));
+    const status = parsePrototypeStatus(text(o.get("Status")));
     if (!year || !Number.isInteger(year)) { skipped.push(`${where}: bad year "${text(o.get("Year")) ?? ""}".`); continue; }
     if (!agreement) { skipped.push(`${where}: unknown agreement "${text(o.get("Agreement")) ?? ""}".`); continue; }
     if (price === null || price < 0) { skipped.push(`${where}: bad price "${text(o.get("Price")) ?? ""}".`); continue; }

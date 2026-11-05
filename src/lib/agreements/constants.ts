@@ -1,7 +1,9 @@
 // Service-agreement constants shared by server and browser (type-only Prisma import).
-import type { SaAgreement, SaCustomerStatus, SaPriceStatus, SaSoftware, SaTdmsMode } from "@prisma/client";
+import type {
+  SaAgreement, SaCustomerStatus, SaLineStatus, SaProposalStatus, SaSoftware, SaTdmsMode,
+} from "@prisma/client";
 
-export type { SaAgreement, SaCustomerStatus, SaPriceStatus, SaSoftware, SaTdmsMode };
+export type { SaAgreement, SaCustomerStatus, SaLineStatus, SaProposalStatus, SaSoftware, SaTdmsMode };
 
 /** The 12 agreement types, in the fixed order used on every screen and report. */
 export const SA_AGREEMENTS: readonly SaAgreement[] = [
@@ -38,16 +40,29 @@ export const SOFTWARE_LABELS: Record<SaSoftware, string> = {
 };
 export const SOFTWARES = Object.keys(SOFTWARE_LABELS) as SaSoftware[];
 
-export const PRICE_STATUS_LABELS: Record<SaPriceStatus, string> = {
+export const PROPOSAL_STATUS_LABELS: Record<SaProposalStatus, string> = {
+  DRAFT: "Draft",
+  SENT: "Sent",
   SIGNED: "Signed",
-  PROPOSED: "Proposed",
-  CANCELLED: "Cancelled",
+  DECLINED: "Declined",
+  WITHDRAWN: "Withdrawn",
 };
-export const PRICE_STATUSES = Object.keys(PRICE_STATUS_LABELS) as SaPriceStatus[];
+export const PROPOSAL_STATUSES = Object.keys(PROPOSAL_STATUS_LABELS) as SaProposalStatus[];
+/** Proposals that still hold their agreements for that year. */
+export const LIVE_PROPOSAL: readonly SaProposalStatus[] = ["DRAFT", "SENT", "SIGNED"];
 
 export const TDMS_MODE_LABELS: Record<SaTdmsMode, string> = {
   EVERY_YEAR: "Multiply on every renewal (policy)",
   TIERS: "Normal escalation tiers (doubling already applied)",
+};
+
+export const RULE_LABELS: Record<string, string> = {
+  tier: "Escalation tier",
+  tdms: "TDMS multiplier",
+  fixed: "Standard price",
+  keep: "Last year's price",
+  waived: "Waived (SCADA ≥ threshold)",
+  manual: "Edited",
 };
 
 function norm(s: string): string {
@@ -65,9 +80,8 @@ function reverse<T extends string>(labels: Record<T, string>): (s: unknown) => T
 export const parseAgreement = reverse(AGREEMENT_LABELS);
 export const parseCustomerStatus = reverse(CUSTOMER_STATUS_LABELS);
 export const parseSoftware = reverse(SOFTWARE_LABELS);
-export const parsePriceStatus = reverse(PRICE_STATUS_LABELS);
 
-/** How many signed years the Customer View / SA report show. */
+/** How many signed years the history views show. */
 export const HISTORY_YEARS = 5;
 
 /** Members of this work group may edit agreements (org admins always can). */
@@ -76,12 +90,27 @@ export const SA_EDITOR_GROUP = "Customer Service";
 /** "$12,345" (whole dollars). */
 export function fmtMoney(n: number | null | undefined): string {
   if (n === null || n === undefined) return "";
-  return "$" + Math.round(n).toLocaleString("en-US");
+  return (n < 0 ? "-$" : "$") + Math.abs(Math.round(n)).toLocaleString("en-US");
 }
 
-/** "YYYY-MM-DD" → "M/D/YYYY" (date-only, no time-zone shift). */
+/** "YYYY-MM-DD" → "Jan 31, 2027" (date-only, no time-zone shift). */
+export function fmtDate(ymd: string | null | undefined): string {
+  if (!ymd) return "";
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y!, m! - 1, d!)).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+  });
+}
+
+/** "YYYY-MM-DD" → "M/D/YYYY". */
 export function fmtYmd(ymd: string | null | undefined): string {
   if (!ymd) return "";
   const [y, m, d] = ymd.split("-");
   return `${Number(m)}/${Number(d)}/${y}`;
+}
+
+/** "YYYY-MM" → "Jan 2027". */
+export function fmtMonth(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 }

@@ -354,17 +354,23 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   UTC and the browser in Eastern, so anything showing "today" or a time must go
   through `src/lib/tz.ts` (`todayYmd`, `todayUtcMs`, `daysFromToday`,
   `fmtEastern`) or React throws hydration error #418.
-- **Service agreements (`/agreements`, v0.0.12):** Phase 1 screens done — Customer View
-  (picker by name/SO #, last 5 signed years, calls/repairs, editable proposal, New Proposal /
-  Mark Signed, change history), Renewals (bulk proposals by end month + bulk print), Pricing,
-  Customers, Calls, Settings. Models `SaCustomer` (keyed by the SERVICE SO # — not
-  `Task.soNumber`), `SaPrice`, `SaCallsRepairs`, `SaSettings`; service
-  `src/lib/services/agreements.ts`; pure rules in `src/lib/agreements/` (pricing per policy
-  Rev 062426: per-line 5/4/3% tiers, TDMS ×2 every renewal, After Hours waived at SCADA ≥ $25k).
-  Edit rights: org admins + "Customer Service" work group. Admin importer for the Excel
-  prototype (+ optional SO Number Review v2 to fill missing SO #; else `TEMP-…`). NOT yet built:
-  Excel report generators (Maintenance package, Customer SA 5-year), report_runs,
-  Terminations, Warranties.
+- **Service agreements (`/agreements`, v0.0.14 redesign):** Dashboard (KPIs, needs-action
+  list, renewals-by-month chart, recent activity), Pipeline board (Due → Draft → Sent → Signed /
+  Declined, drag to move), Customers list + customer page (header card; tabs Agreements /
+  History / Proposals / Calls & repairs / Activity), Proposals list (bulk create by end month,
+  bulk print) + proposal page (editable lines, Draft → Sent → Signed / Declined / Withdrawn,
+  B&W landscape print). Models: `SaCustomer` (keyed by the SERVICE SO # — not `Task.soNumber`;
+  `soConfirmed` flags suggested/TEMP numbers), `SaContractLine` (signed, customer+year+agreement),
+  `SaProposal` + `SaProposalLine`, `SaCallsRepairs`, `SaSettings`. Services in
+  `src/lib/services/agreements/` (common, customers, proposals, dashboard, import); pure rules in
+  `src/lib/agreements/` (pricing per policy Rev 062426; `renewal.ts` = current agreements +
+  renewal state — an agreement stays "in force" while its newest line is in the newest year OR
+  its end date hasn't passed, so split-month renewals work; each agreement renews into ITS next
+  year). Signing copies proposal lines into contract lines; live proposals for a year never share
+  an agreement. Integration test `workflow.int.test.ts` runs only with SA_IT=1 against a
+  throwaway DB. Edit rights: org admins + "Customer Service" work group. NOT yet built: Excel
+  report generators (Maintenance package, Customer SA 5-year), report_runs, Terminations,
+  Warranties.
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog,
   daily agenda email, AI scheduling suggestions, reports page, customers
   directory.
