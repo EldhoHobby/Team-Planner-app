@@ -33,7 +33,8 @@ import {
   type SaAgreement, type SaCustomerStatus, type SaLineStatus, type SaProposalStatus, type SaSoftware,
 } from "@/lib/agreements/constants";
 import { dateCell, num, text, type Cell } from "@/lib/agreements/import-parse";
-import { assertCanEdit, audit, getSettings, history, ymd, HISTORY_ENTITY } from "./common";
+import { FIXED_PRICE_AGREEMENTS, POLICY_PRICE_HINTS } from "@/lib/agreements/pricing";
+import { assertCanEdit, audit, getSettings, history, updateSettings, ymd, HISTORY_ENTITY } from "./common";
 import { addContractLine, createCustomer, deleteContractLine, saveCalls, updateContractLine, updateCustomer, type CustomerInput } from "./customers";
 import { addLine, removeLine, setLinePrice, transitionProposal, updateProposalHeader, type ProposalAction } from "./proposals";
 
@@ -45,6 +46,7 @@ const S = {
   pipeline: "Pipeline",
   pstatus: "Proposal status",
   metrics: "Customer metrics",
+  summary: "5-year summary",
   view: "Customer View",
   customers: "Customers",
   pricing: "Pricing",
@@ -91,6 +93,13 @@ function put(ws: ExcelJS.Worksheet, r: number, c: number, v: unknown, s: Style =
   return cell;
 }
 const f = (formula: string) => ({ formula });
+const EDGE: Partial<ExcelJS.Border> = { style: "thin", color: { argb: "FF8C8C8C" } };
+/** Thin grid borders around every cell of a table, so printed / on-screen tables read easily. */
+function box(ws: ExcelJS.Worksheet, r1: number, c1: number, r2: number, c2: number) {
+  for (let r = r1; r <= r2; r++) {
+    for (let c = c1; c <= c2; c++) ws.getCell(r, c).border = { top: EDGE, left: EDGE, bottom: EDGE, right: EDGE };
+  }
+}
 /** Range-wide data validation (exceljs supports it at runtime; its typings don't expose it). */
 function validate(ws: ExcelJS.Worksheet, range: string, v: ExcelJS.DataValidation) {
   (ws as unknown as { dataValidations: { add(address: string, validation: ExcelJS.DataValidation): void } }).dataValidations.add(range, v);
@@ -111,6 +120,21 @@ const PC = { cust: "A", year: "B", agreement: "C", price: "D", status: "E", end:
 const XC = { cust: "A", so: "B", year: "C", status: "D", end: "E", sent: "F", signed: "G", closed: "H", reason: "I", notes: "J", total: "K", agreements: "L", waiting: "M", id: "N", version: "O", key: "P", seq: "Q" };
 const KC = { cust: "A", year: "B", calls: "C", repairs: "D", so: "E", id: "F", version: "G" };
 const MC = { name: "A", so: "B", status: "C", year: "D", count: "E", value: "F", end: "G", days: "H", open: "I", openValue: "J", renewal: "K", calls: "L", repairs: "M", key: "N", seq: "O", key2: "P", seq2: "Q" };
+
+// Settings sheet layout: one value per row in column B (agreement rows: B = escalates, C = standard
+// price); column H holds a hidden key per row so the import finds values even if rows move.
+const SET = {
+  tierLowMax: 5, pctLow: 6, tierMidMax: 7, pctMid: 8, pctHigh: 9,
+  tdmsPct: 12, waive: 15, waiveAt: 16, due: 19, recent: 20,
+  agFirst: 24, // one row per agreement (SA_AGREEMENTS order)
+  version: 50,
+} as const;
+const SETK = "H"; // key column
+const setB = (row: number) => `${sheetRef(S.settings)}!$B$${row}`;
+const setC = (row: number) => `${sheetRef(S.settings)}!$C$${row}`;
+const agRow = (a: SaAgreement) => SET.agFirst + SA_AGREEMENTS.indexOf(a);
+const WINDOW = setB(SET.due);
+const RECENT = setB(SET.recent);
 
 const Cu = (c: keyof typeof CU) => rng(S.customers, CU[c], CR);
 const Pr = (c: keyof typeof PC) => rng(S.pricing, PC[c], PR);
@@ -176,7 +200,7 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
   wb.calcProperties = { fullCalcOnLoad: true }; // Excel recalculates every formula when the file opens
   const sheets = Object.fromEntries(Object.values(S).map((n) => [n, wb.addWorksheet(n)])) as Record<string, ExcelJS.Worksheet>;
   const tab = (n: string, argb: string) => (sheets[n]!.properties.tabColor = { argb });
-  [S.dashboard, S.pending, S.pipeline, S.pstatus, S.metrics].forEach((n) => tab(n, "FF2E75B6"));
+  [S.dashboard, S.pending, S.pipeline, S.pstatus, S.metrics, S.summary].forEach((n) => tab(n, "FF2E75B6"));
   [S.customers, S.pricing, S.proposals, S.calls].forEach((n) => tab(n, NAVY));
   tab(S.view, "FFFFC000");
 
@@ -262,7 +286,7 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     xws.getCell(r, 11).value = f(`IF($${XC.id}${r}="","",SUMIFS(${Pr("price")},${Pr("pid")},$${XC.id}${r}))`);
     xws.getCell(r, 13).value = f(`IF(AND(${D}="Sent",N($${XC.sent}${r})>0),TODAY()-$${XC.sent}${r},"")`);
     xws.getCell(r, 16).value = f(
-      `IF(${D}="Draft","D",IF(${D}="Sent","S",IF(AND(${D}="Signed",N($${XC.signed}${r})>0,TODAY()-$${XC.signed}${r}<=60),"G",IF(AND(OR(${D}="Declined",${D}="Withdrawn"),N($${XC.closed}${r})>0,TODAY()-$${XC.closed}${r}<=60),"C",""))))`,
+      `IF(${D}="Draft","D",IF(${D}="Sent","S",IF(AND(${D}="Signed",N($${XC.signed}${r})>0,TODAY()-$${XC.signed}${r}<=${RECENT}),"G",IF(AND(OR(${D}="Declined",${D}="Withdrawn"),N($${XC.closed}${r})>0,TODAY()-$${XC.closed}${r}<=${RECENT}),"C",""))))`,
     );
     xws.getCell(r, 17).value = f(`IF($${XC.key}${r}="","",$${XC.key}${r}&COUNTIF($${XC.key}$2:$${XC.key}${r},$${XC.key}${r}))`);
     if (!p) continue;
@@ -289,17 +313,7 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     [[2, x.year], [3, x.calls], [4, x.repairs], [5, x.so], [6, x.id], [7, x.version]].forEach(([ci, v]) => (kws.getCell(r, ci as number).value = v as ExcelJS.CellValue));
   }
 
-  // ── Settings (used by the formulas) ──
-  const sws = sheets[S.settings]!;
-  sws.getColumn(1).width = 46;
-  sws.getColumn(2).width = 14;
-  put(sws, 1, 1, "SETTINGS (used by the report formulas)", { bold: true, size: 14, color: NAVY });
-  put(sws, 3, 1, "Due window (days before the end date)", { bold: true, fill: LABEL });
-  put(sws, 3, 2, settings.dueWindowDays, { fill: INPUT });
-  put(sws, 4, 1, "Recently signed / closed (days shown in Pipeline)", { bold: true, fill: LABEL });
-  put(sws, 4, 2, 60);
-  put(sws, 6, 1, "These cells drive the Customer metrics and report sheets. Changing them here is not imported.", { italic: true, color: "FF595959" });
-  const WINDOW = `${sheetRef(S.settings)}!$B$3`;
+  buildSettingsSheet(sheets[S.settings]!, settings);
 
   // ── DERIVED: Customer metrics (row i mirrors Customers row i) ──
   const mws = sheets[S.metrics]!;
@@ -462,6 +476,42 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
   let pr = listBlock(psw, 3, 5, "Sent — waiting on the customer", "S", Xp("seq"), sentCols, `COUNTIF(${Xp("key")},"S")&" proposals"`, `SUMIFS(${Xp("total")},${Xp("key")},"S")`);
   pr = listBlock(psw, pr, 5, "Drafts", "D", Xp("seq"), [xList("Customer", "cust"), xList("Year", "year", "0"), xList("Total", "total", MONEY), xList("Ends", "end", DATE), xList("Agreements", "agreements")], `COUNTIF(${Xp("key")},"D")&" proposals"`, `SUMIFS(${Xp("total")},${Xp("key")},"D")`);
 
+  // ── DERIVED: 5-year summary (replaces the old "Customer SA last 5 years" pivot): one row per
+  // Customers row, signed totals for the last five calendar years + next year, calls / repairs ──
+  const yws = sheets[S.summary]!;
+  const yHead: [string | { formula: string }, number, string?][] = [
+    ["Customer", 30], ["SO #", 10], ["Status", 20],
+    ...[-4, -3, -2, -1, 0, 1].map((d) => [f(`YEAR(TODAY())${d < 0 ? d : `+${d}`}`), 11, "0"] as [{ formula: string }, number, string]),
+    ["5-year increase", 10, PCT], ["Calls (5 yrs)", 9, COUNT], ["Repairs (5 yrs)", 9, COUNT],
+  ];
+  yws.views = [{ state: "frozen", ySplit: 1, xSplit: 1 }];
+  yHead.forEach(([h, w], i) => {
+    yws.getColumn(i + 1).width = w;
+    yws.getColumn(i + 1).font = FONT;
+    put(yws, 1, i + 1, h, { bold: true, color: WHITE, fill: NAVY, wrap: true, align: i >= 3 ? "center" : undefined, fmt: i >= 3 && i <= 8 ? "0" : undefined });
+  });
+  yws.getRow(1).height = 28;
+  yws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: yHead.length } };
+  for (let r = 2; r <= MR; r++) {
+    const B = `$B${r}`;
+    yws.getCell(r, 1).value = f(`IF(${sheetRef(S.customers)}!$B${r}="","",${sheetRef(S.customers)}!$A${r})`);
+    yws.getCell(r, 2).value = f(`IF(${sheetRef(S.customers)}!$B${r}="","",${sheetRef(S.customers)}!$B${r})`);
+    yws.getCell(r, 3).value = f(`IF(${B}="","",${sheetRef(S.customers)}!$C${r})`);
+    for (let c = 4; c <= 9; c++) {
+      const cell = yws.getCell(r, c);
+      cell.value = f(`IF(${B}="","",SUMIFS(${Pr("price")},${Pr("so")},${B},${Pr("year")},${colL(c)}$1,${Pr("status")},"Signed"))`);
+      cell.numFmt = MONEY;
+    }
+    yws.getCell(r, 10).value = f(`IF(OR(N($D${r})=0,N($H${r})=0),"",$H${r}/$D${r}-1)`);
+    yws.getCell(r, 10).numFmt = PCT;
+    yws.getCell(r, 11).value = f(`IF(${B}="","",SUMIFS(${Kc("calls")},${Kc("so")},${B},${Kc("year")},">="&$D$1,${Kc("year")},"<="&$H$1))`);
+    yws.getCell(r, 12).value = f(`IF(${B}="","",SUMIFS(${Kc("repairs")},${Kc("so")},${B},${Kc("year")},">="&$D$1,${Kc("year")},"<="&$H$1))`);
+    yws.getCell(r, 11).numFmt = COUNT;
+    yws.getCell(r, 12).numFmt = COUNT;
+  }
+  box(yws, 1, 1, customers.length + 1, yHead.length);
+
+
   // ── DERIVED: Customer View (picker) + one sheet per open customer ──
   const firstOpen = customers.find((c) => OPEN_CUSTOMER_STATUSES.includes(c.status)) ?? customers[0];
   buildCustomerSheet(sheets[S.view]!, { picker: true, name: firstOpen?.name ?? "", so: firstOpen?.soNumber ?? "" });
@@ -491,12 +541,14 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     ["Exported by", me?.name ?? me?.username ?? ""],
     ["", ""],
     ["How it works", "The four MASTER sheets (navy tabs) — Customers, Pricing, Proposals, Calls — are the single source of truth. Every other sheet is formulas that read from them and recalculates as soon as you change a master cell."],
-    ["Report sheets", "Dashboard, Pending & waiting, Pipeline, Proposal status and Customer metrics (blue tabs) aggregate the master live: counts, totals, renewals by month and lists that grow and shrink as statuses change."],
+    ["Report sheets", "Dashboard, Pending & waiting, Pipeline, Proposal status, Customer metrics and the 5-year summary (blue tabs) aggregate the master live: counts, totals, renewals by month and lists that grow and shrink as statuses change."],
     ["Customer sheets", "Customer View (yellow tab): pick any customer in the yellow box. Each open customer (Active, Pending, Expired – still waiting) also has its own sheet. All of them are formulas — change the master, not these."],
     ["Editing", "On the master sheets, NAVY column headers can be edited; GREY headers are formulas or reference and are ignored on import. Rows link by SO #, so renaming a customer in Customers updates every sheet."],
     ["Adding rows", "Leave ID blank to add: a customer (Customers), a signed agreement (Pricing: SO #, Year, Agreement, Price, Status Signed), a proposal line (Pricing: Status Proposed + the Proposal ID), or a calls year (Calls: SO #, Year). New proposals are started in the app."],
     ["Deleting", "Pricing: type DELETE in the Delete column (signed lines, or lines on Draft / Sent proposals). Nothing else is ever deleted."],
     ["Proposals", "Change Status on the Proposals sheet to Sent / Signed / Declined / Withdrawn / Draft. Signing creates the signed agreements from the proposal's Pricing rows, exactly as in the app. Dates you enter are kept."],
+    ["Settings", "The Settings sheet holds the renewal pricing policy (tier limits and %, TDMS increase, standard prices for Diagnostic, Backup & DR, After Hours etc., the After Hours waiver) and the due window. Each customer sheet's green \"Policy price\" row is worked out from it; edits there are imported back into the app's settings."],
+    ["If the app is down", "Keep working in this file: change statuses and details on Customers, record signed agreements on Pricing (Status Signed), move proposals on Proposals, and use a customer sheet's Policy price row to price a renewal. When the app is back, import the file — everything above comes in. (A brand-new proposal still has to be started in the app.)"],
     ["Don't change", "The ID and Version columns, or the sheet names — they're how rows find their way back."],
     ["Bringing it back", "App → Agreements → Settings → Monthly workbook → choose this file → Preview → Apply. Rows changed in the app after this export are skipped and listed."],
     ["Excel version", "Works in Excel 2016 and later. Formulas recalculate when the file opens; previews that don't calculate (some email / phone viewers) may show blanks until it's opened in Excel."],
@@ -510,6 +562,108 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
   const buf = Buffer.from(await wb.xlsx.writeBuffer());
   await audit(scope, "workbook", "workbook_exported", `Exported the service-agreements workbook (${customers.length} customers)`);
   return buf;
+}
+
+/**
+ * Settings: the renewal pricing policy the app uses (Agreements → Settings), laid out so the
+ * workbook can price renewals on its own. Yellow cells are inputs; the customer sheets'
+ * "Policy price" rows and the reports read them. Imported back (version-checked).
+ */
+function buildSettingsSheet(ws: ExcelJS.Worksheet, s: Awaited<ReturnType<typeof getSettings>>) {
+  ws.properties.tabColor = { argb: NAVY };
+  ws.views = [{ state: "normal", showGridLines: false }];
+  [52, 16, 18, 22, 62].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  ws.getColumn(SETK).hidden = true;
+  const key = (r: number, k: string) => (ws.getCell(`${SETK}${r}`).value = k);
+  const band = (r: number, t: string) => {
+    for (let c = 1; c <= 5; c++) put(ws, r, c, c === 1 ? t : null, { bold: true, color: WHITE, fill: NAVY });
+  };
+  const note = (r: number, c: number, t: string) => put(ws, r, c, t, { italic: true, color: "FF595959", wrap: true });
+  const row = (r: number, k: string, label: string, v: unknown, fmt: string, hint: string, input = true) => {
+    put(ws, r, 1, label, { bold: true, fill: LABEL });
+    put(ws, r, 2, v, { fill: input ? INPUT : undefined, fmt, bold: true, align: "right" });
+    ws.mergeCells(`C${r}:E${r}`);
+    note(r, 3, hint);
+    key(r, k);
+  };
+  const pct = (n: number | null) => (n === null ? null : n / 100);
+
+  put(ws, 1, 1, "SETTINGS — renewal pricing policy (Rev 062426)", { bold: true, size: 14, color: NAVY });
+  ws.mergeCells("A2:E2");
+  note(2, 1, "Yellow cells are the inputs. The customer sheets work out next year's \"Policy price\" from this page, and the reports use the due window. "
+    + "Change a value here and every sheet recalculates. Changes are brought back into the app by the normal workbook import (Agreements → Settings → Monthly workbook).");
+  ws.getRow(2).height = 42;
+
+  band(4, "ESCALATION TIERS — chosen per agreement line by LAST YEAR'S price of that line");
+  row(SET.tierLowMax, "tierLowMax", "Tier 1 — last year's price up to", s.tierLowMax, MONEY, "Lines priced at or below this get the tier 1 increase.");
+  row(SET.pctLow, "pctLow", "Tier 1 increase", pct(s.pctLow), PCT, "Policy: up to $5,000 → 5%");
+  row(SET.tierMidMax, "tierMidMax", "Tier 2 — last year's price up to", s.tierMidMax, MONEY, "Above tier 1 and at or below this get the tier 2 increase. Must be larger than tier 1.");
+  row(SET.pctMid, "pctMid", "Tier 2 increase", pct(s.pctMid), PCT, "Policy: $5,001 – $10,000 → 4%");
+  row(SET.pctHigh, "pctHigh", "Tier 3 increase (above tier 2)", pct(s.pctHigh), PCT, "Policy: over $10,000 → 3%");
+  validate(ws, `B${SET.pctLow}:B${SET.pctHigh}`, { type: "decimal", operator: "between", allowBlank: false, formulae: [0, 10] });
+
+  band(11, "TDMS SCADA SOFTWARE");
+  row(SET.tdmsPct, "tdmsPct", "TDMS SCADA Software increase each renewal", pct(s.tdmsPct), PCT,
+    "Applies only to the SCADA Software line of customers whose Software is TDMS. 100% = the price doubles. Leave blank to use the tiers instead.");
+
+  band(14, "AFTER HOURS WAIVER");
+  row(SET.waive, "autoWaiveAfterHours", "Waive After Hours automatically", s.autoWaiveAfterHours ? "Yes" : "No", "@",
+    "Yes = After Hours is proposed at $0 when the customer's proposed SCADA Software price reaches the amount below.");
+  validate(ws, `B${SET.waive}`, { type: "list", allowBlank: false, formulae: ['"Yes,No"'] });
+  row(SET.waiveAt, "afterHoursWaiveAt", "…when proposed SCADA Software is at least", s.afterHoursWaiveAt, MONEY, "Policy: $25,000");
+
+  band(18, "REPORTS");
+  row(SET.due, "dueWindowDays", "Due window (days before the end date)", s.dueWindowDays, "0",
+    "An Active customer whose term ends within this many days (and has no proposal) shows as Due.");
+  row(SET.recent, "recentDays", "Recently signed / closed shown in Pipeline (days)", 60, "0", "Workbook only — not stored in the app.", true);
+
+  band(22, "AGREEMENTS — how next year's price is set for each one");
+  ["Agreement", "Escalates by tier", "Standard price", "Policy list price", "Next year's price is…"].forEach((h, i) =>
+    put(ws, 23, 1 + i, h, { bold: true, fill: LABEL, wrap: true, align: i ? "center" : undefined }));
+  SA_AGREEMENTS.forEach((a) => {
+    const r = agRow(a);
+    const fixed = FIXED_PRICE_AGREEMENTS.includes(a);
+    put(ws, r, 1, AGREEMENT_LABELS[a], { bold: true });
+    put(ws, r, 2, s.escalating.includes(a) ? "Yes" : "No", { fill: INPUT, align: "center" });
+    if (fixed) put(ws, r, 3, s.fixedPrices[a] ?? null, { fill: INPUT, fmt: MONEY });
+    else put(ws, r, 3, "n/a", { fill: HELPER, align: "center", color: "FF7F7F7F" });
+    put(ws, r, 4, POLICY_PRICE_HINTS[a] ?? "", { color: "FF595959" });
+    let how = `IF(${fixed ? `C${r}<>""` : "FALSE"},"Standard price "&TEXT(N(C${r}),"$#,##0")&" (replaces last year's price)",`
+      + `IF(B${r}="Yes","Last year's price + the tier %","Last year's price (no increase)"))`;
+    if (a === "SCADA_SOFTWARE") how = `${how}&IF($B$${SET.tdmsPct}<>""," — TDMS customers: + "&TEXT($B$${SET.tdmsPct},"0%"),"")`;
+    if (a === "AFTER_HOURS") how = `${how}&IF($B$${SET.waive}="Yes"," — $0 when proposed SCADA Software ≥ "&TEXT($B$${SET.waiveAt},"$#,##0"),"")`;
+    put(ws, r, 5, f(how), { wrap: true });
+    key(r, `agreement:${a}`);
+  });
+  const lastAg = agRow(SA_AGREEMENTS[SA_AGREEMENTS.length - 1]!);
+  box(ws, SET.tierLowMax, 1, SET.pctHigh, 2);
+  box(ws, SET.tdmsPct, 1, SET.tdmsPct, 2);
+  box(ws, SET.waive, 1, SET.waiveAt, 2);
+  box(ws, SET.due, 1, SET.recent, 2);
+  box(ws, 23, 1, lastAg, 5);
+  validate(ws, `B${SET.agFirst}:B${lastAg}`, { type: "list", allowBlank: false, formulae: ['"Yes,No"'] });
+  note(lastAg + 1, 1, "Standard price: blank = keep the customer's last price. Only the agreements with a yellow Standard price cell can have one (same as the app).");
+  ws.mergeCells(`A${lastAg + 1}:E${lastAg + 1}`);
+
+  const steps = [
+    "HOW A RENEWAL PRICE IS WORKED OUT (same order as the app, for each agreement the customer had in its latest signed year)",
+    "1. A Standard price set above replaces last year's price.",
+    "2. Otherwise SCADA Software on TDMS goes up by the TDMS increase (when it isn't blank).",
+    "3. Otherwise an agreement marked \"Escalates by tier\" goes up by its tier % — the tier is chosen by that line's own last-year price.",
+    "4. Otherwise the price stays the same. Prices are rounded to whole dollars.",
+    "5. Last: After Hours becomes $0 when the waiver is on and the proposed SCADA Software price reaches the waiver amount.",
+    "Each customer sheet shows this as the \"Policy price\" row next to the proposal actually sent, so overrides stand out.",
+  ];
+  const s0 = lastAg + 3;
+  steps.forEach((t, i) => {
+    if (i === 0) band(s0, t);
+    else { ws.mergeCells(`A${s0 + i}:E${s0 + i}`); put(ws, s0 + i, 1, t, { wrap: true }); }
+  });
+
+  put(ws, SET.version, 1, "Settings version (don't change — guards against overwriting newer app settings)", { color: "FF7F7F7F", italic: true });
+  put(ws, SET.version, 2, s.version, { color: "FF7F7F7F" });
+  key(SET.version, "version");
+  ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 }
 
 /** The prototype's "Customer View" layout, every value a formula keyed by the SO # in B4. */
@@ -553,10 +707,15 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
   label(7, 1, "Next end date"); field(7, 2, "B7:D7", f(metric("end")), DATE);
   label(7, 5, "Annual value"); field(7, 6, "F7:H7", f(metric("value")), MONEY);
   label(7, 9, "Renewal"); field(7, 10, "J7:M7", f(metric("renewal")));
-  label(8, 1, "Notes");
-  ws.mergeCells("B8:M8");
-  put(ws, 8, 2, f(look("notes")), { wrap: true });
-  ws.getRow(8).height = 30;
+  label(8, 1, "Server install"); field(8, 2, "B8:D8", f(look("serverInstall")));
+  label(8, 5, "Customer since");
+  field(8, 6, "F8:H8", f(`IFERROR(_xlfn.AGGREGATE(15,6,${Pr("year")}/((${Pr("so")}=${SO})*(${Pr("status")}="Signed")),1),"")`), "0");
+  label(8, 9, "SO # confirmed"); field(8, 10, "J8:M8", f(look("soConfirmed")));
+  label(9, 1, "Notes");
+  ws.mergeCells("B9:M9");
+  put(ws, 9, 2, f(look("notes")), { wrap: true });
+  ws.getRow(9).height = 30;
+  box(ws, 4, 1, 9, 13);
 
   // Price history: the customer's latest signed year and the four before it.
   put(ws, 10, 1, "PRICE HISTORY (last 5 signed years)", { bold: true, size: 11, color: NAVY });
@@ -581,6 +740,7 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
     const col = colL(2 + j);
     put(ws, 17, 2 + j, f(`IFERROR(IF(OR(N(${col}12)=0,N(${col}16)=0),"",${col}12/${col}16-1),"")`), { fill: LABEL, fmt: PCT });
   }
+  box(ws, 11, 1, 17, 2 + ag.length);
 
   put(ws, 19, 1, "CALLS AND REPAIRS", { bold: true, size: 11, color: NAVY });
   ["YEAR", "CALLS", "REPAIRS"].forEach((h, i) => put(ws, 20, 1 + i, h, { bold: true, color: WHITE, fill: NAVY, align: "center" }));
@@ -590,31 +750,79 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
     put(ws, r, 2, f(`IF($A${r}="","",SUMIFS(${Kc("calls")},${Kc("so")},${SO},${Kc("year")},$A${r}))`), { fmt: COUNT });
     put(ws, r, 3, f(`IF($A${r}="","",SUMIFS(${Kc("repairs")},${Kc("so")},${SO},${Kc("year")},$A${r}))`), { fmt: COUNT });
   }
+  box(ws, 20, 1, 25, 3);
 
-  // Proposal for the year after the latest signed year.
-  const pm = `MATCH(1,INDEX((${Xp("so")}=${SO})*(${Xp("year")}=$A$33),0),0)`;
+  // Next year: last signed year (+ each agreement's term end), the policy price worked out from
+  // the Settings sheet, the proposal actually entered (Pricing rows with Status "Proposed") and
+  // how they compare.
+  const R = { head: 30, signed: 31, ends: 32, nextEnds: 33, policy: 34, ppct: 35, prop: 36, propPct: 37, diff: 38 } as const;
+  const pm = `MATCH(1,INDEX((${Xp("so")}=${SO})*(${Xp("year")}=$A$${R.prop}),0),0)`;
   put(ws, 27, 1, "PROPOSAL", { bold: true, size: 11, color: NAVY });
   put(ws, 27, 4, "Status", { bold: true });
   ws.mergeCells("E27:I27");
-  put(ws, 27, 5, f(`IF($A$33="","",IFERROR(INDEX(${Xp("status")},${pm})&IF(INDEX(${Xp("status")},${pm})="Sent"," "&TEXT(INDEX(${Xp("sent")},${pm}),"m/d/yyyy")&" - not signed yet",""),"No proposal yet"))`), { bold: true });
-  put(ws, 29, 1, "End date", { bold: true, fill: LABEL });
-  ws.mergeCells("B29:C29");
-  put(ws, 29, 2, f(`IF($A$33="","",IFERROR(INDEX(${Xp("end")},${pm}),""))`), { fmt: DATE, bold: true });
-  put(ws, 30, 1, "Increase %", { bold: true, fill: LABEL });
+  put(ws, 27, 5, f(`IF($A$${R.prop}="","",IFERROR(INDEX(${Xp("status")},${pm})&IF(INDEX(${Xp("status")},${pm})="Sent"," "&TEXT(INDEX(${Xp("sent")},${pm}),"m/d/yyyy")&" - not signed yet",""),"No proposal yet"))`), { bold: true });
+  put(ws, 28, 1, "Proposal end date", { bold: true, fill: LABEL });
+  ws.mergeCells("B28:C28");
+  put(ws, 28, 2, f(`IF($A$${R.prop}="","",IFERROR(INDEX(${Xp("end")},${pm}),""))`), { fmt: DATE, bold: true });
+  box(ws, 28, 1, 28, 3);
+  ws.mergeCells("E28:O28");
+  put(ws, 28, 5, "Green row = policy price from the Settings sheet (tiers, TDMS, standard prices, After Hours waiver). To propose it, add Pricing rows with Status \"Proposed\".", { italic: true, color: "FF595959", wrap: true });
+  ws.getRow(28).height = 26;
+
+  put(ws, R.head, 1, "", { fill: NAVY });
+  ag.forEach((a, i) => put(ws, R.head, 2 + i, AGREEMENT_LABELS[a], { bold: true, color: WHITE, fill: NAVY, wrap: true, align: "center" }));
+  put(ws, R.head, 2 + ag.length, "TOTAL", { bold: true, color: WHITE, fill: NAVY, align: "center" });
+  ws.getRow(R.head).height = 30;
+  const scadaC = colL(2 + ag.indexOf("SCADA_SOFTWARE"));
+  const had = (col: string) => `COUNTIFS(${Pr("so")},${SO},${Pr("year")},$A$12,${Pr("agreement")},${col}$${R.head},${Pr("status")},"Signed")`;
+
+  // last signed year (the base the policy prices from)
+  put(ws, R.signed, 1, f(`IF(N(A12)=0,"",A12)`), { bold: true, fmt: '"Signed "0', fill: LABEL });
   for (let j = 0; j <= ag.length; j++) {
     const col = colL(2 + j);
-    put(ws, 30, 2 + j, f(`IFERROR(IF(OR(N(${col}$33)=0,N(${col}$12)=0),"",${col}$33/${col}$12-1),"")`), { fmt: PCT, fill: LABEL });
+    put(ws, R.signed, 2 + j, f(`IF($A$${R.signed}="","",${col}12)`), { fmt: MONEY, bold: j === ag.length });
   }
-  put(ws, 31, 1, "", { fill: NAVY });
-  ag.forEach((a, i) => put(ws, 31, 2 + i, AGREEMENT_LABELS[a], { bold: true, color: WHITE, fill: NAVY, wrap: true, align: "center" }));
-  put(ws, 31, 2 + ag.length, "TOTAL", { bold: true, color: WHITE, fill: NAVY, align: "center" });
-  ws.getRow(31).height = 30;
-  put(ws, 33, 1, f(`IF(N(A12)=0,"",A12+1)`), { bold: true, fmt: "0", align: "center" });
+  // each agreement's current term end, and the next term's (one year later)
+  put(ws, R.ends, 1, "Term ends", { bold: true, fill: LABEL });
+  put(ws, R.nextEnds, 1, "Next term ends", { bold: true, fill: LABEL });
   ag.forEach((_, j) => {
     const col = colL(2 + j);
-    put(ws, 33, 2 + j, f(`IF($A$33="","",SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},$A$33,${Pr("agreement")},${col}$31,${Pr("status")},"Proposed"))`), { fmt: MONEY });
+    put(ws, R.ends, 2 + j, f(`IF($A$${R.signed}="","",IFERROR(_xlfn.AGGREGATE(14,6,${Pr("end")}/((${Pr("so")}=${SO})*(${Pr("year")}=$A$12)*(${Pr("agreement")}=${col}$${R.head})*(${Pr("status")}="Signed")*(${Pr("end")}>0)),1),""))`), { fmt: DATE, align: "center" });
+    put(ws, R.nextEnds, 2 + j, f(`IF(N(${col}${R.ends})=0,"",EDATE(${col}${R.ends},12))`), { fmt: DATE, align: "center", color: "FF595959" });
   });
-  put(ws, 33, 2 + ag.length, f(`IF($A$33="","",SUM(B33:${lastC}33))`), { fmt: MONEY, bold: true });
+  // policy price per agreement the customer had in that year
+  put(ws, R.policy, 1, f(`IF(N(A12)=0,"",A12+1)`), { bold: true, fmt: '"Policy "0', fill: "FFC6E0B4" });
+  ag.forEach((a, j) => {
+    const col = colL(2 + j);
+    const L = `${col}$12`;
+    const r = agRow(a);
+    const tier = `IF(${L}<=${setB(SET.tierLowMax)},${setB(SET.pctLow)},IF(${L}<=${setB(SET.tierMidMax)},${setB(SET.pctMid)},${setB(SET.pctHigh)}))`;
+    let core = `IF(${setB(r)}="Yes",${L}*(1+${tier}),${L})`;
+    if (a === "SCADA_SOFTWARE") core = `IF(AND($B$5=${q(SOFTWARE_LABELS.TDMS)},${setB(SET.tdmsPct)}<>""),${L}*(1+${setB(SET.tdmsPct)}),${core})`;
+    if (FIXED_PRICE_AGREEMENTS.includes(a)) core = `IF(${setC(r)}<>"",${setC(r)},${core})`;
+    let value = `ROUND(${core},0)`;
+    if (a === "AFTER_HOURS") value = `IF(AND(${setB(SET.waive)}="Yes",N($${scadaC}$${R.policy})>=${setB(SET.waiveAt)}),0,${value})`;
+    put(ws, R.policy, 2 + j, f(`IF($A$${R.policy}="","",IF(${had(col)}=0,"",${value}))`), { fmt: MONEY, fill: "FFE2EFDA" });
+  });
+  put(ws, R.policy, 2 + ag.length, f(`IF($A$${R.policy}="","",SUM(B${R.policy}:${lastC}${R.policy}))`), { fmt: MONEY, bold: true, fill: "FFE2EFDA" });
+  put(ws, R.ppct, 1, "Policy increase", { bold: true, fill: LABEL });
+  // the proposal entered (Pricing, Status Proposed)
+  put(ws, R.prop, 1, f(`IF(N(A12)=0,"",A12+1)`), { bold: true, fmt: '"Proposal "0', fill: LABEL });
+  ag.forEach((_, j) => {
+    const col = colL(2 + j);
+    put(ws, R.prop, 2 + j, f(`IF($A$${R.prop}="","",SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},$A$${R.prop},${Pr("agreement")},${col}$${R.head},${Pr("status")},"Proposed"))`), { fmt: MONEY, bold: true });
+  });
+  put(ws, R.prop, 2 + ag.length, f(`IF($A$${R.prop}="","",SUM(B${R.prop}:${lastC}${R.prop}))`), { fmt: MONEY, bold: true });
+  put(ws, R.propPct, 1, "Proposal increase", { bold: true, fill: LABEL });
+  put(ws, R.diff, 1, "Proposal − policy", { bold: true, fill: LABEL });
+  for (let j = 0; j <= ag.length; j++) {
+    const col = colL(2 + j);
+    const S_ = `${col}$${R.signed}`, P = `${col}$${R.policy}`, X = `${col}$${R.prop}`;
+    put(ws, R.ppct, 2 + j, f(`IFERROR(IF(OR(N(${S_})=0,${P}=""),"",${P}/${S_}-1),"")`), { fmt: PCT, color: "FF595959" });
+    put(ws, R.propPct, 2 + j, f(`IFERROR(IF(OR(N(${S_})=0,N(${X})=0),"",${X}/${S_}-1),"")`), { fmt: PCT, color: "FF595959" });
+    put(ws, R.diff, 2 + j, f(`IF(OR(${P}="",N(${X})=0),"",${X}-${P})`), { fmt: MONEY, color: "FF595959" });
+  }
+  box(ws, R.head, 1, R.diff, 2 + ag.length);
   ws.views = [{ state: "normal", showGridLines: false }];
 }
 
@@ -757,6 +965,9 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     return c.id;
   };
   const soKnown = (so: string | null) => !!so && (custBySo.has(so) || newSos.has(so));
+
+  // ── Settings (pricing policy + due window) ──
+  await planSettings(scope, wb, { plan, skip, counts, conflict });
 
   // ── Customers ──
   const cRows = readSheet(wb, S.customers);
@@ -1001,6 +1212,87 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     );
   }
   return summary;
+}
+
+/** Settings sheet → one version-checked updateSettings() when anything differs from the app. */
+async function planSettings(
+  scope: TenantScope,
+  wb: ExcelJS.Workbook,
+  h: {
+    plan: (sheet: string, kind: "created" | "updated" | "deleted", label: string, run: () => Promise<void>) => void;
+    skip: (sheet: string, row: Row, why: string) => void;
+    counts: (sheet: string) => SheetCounts;
+    conflict: string;
+  },
+) {
+  const ws = wb.worksheets.find((w) => w.name.trim().toLowerCase() === S.settings.toLowerCase());
+  if (!ws) return;
+  const rowOf = new Map<string, number>();
+  ws.getColumn(SETK).eachCell((cell, r) => {
+    const k = text(cell.value as Cell);
+    if (k) rowOf.set(k, r);
+  });
+  const vr = rowOf.get("version");
+  if (!vr) return; // older workbook without the policy layout
+  const cell = (k: string, col: "B" | "C" = "B"): Cell => {
+    const r = rowOf.get(k);
+    if (!r) return null;
+    const v = ws.getCell(`${col}${r}`).value as Cell;
+    return v && typeof v === "object" && !(v instanceof Date) && ("formula" in (v as object) || "sharedFormula" in (v as object)) ? null : v;
+  };
+  const pctOf = (v: Cell) => {
+    const n = num(v);
+    return n === null ? null : Math.round(n * 10000) / 100; // 0.05 → 5
+  };
+  const cur = await getSettings(scope);
+  const bad: string[] = [];
+  const need = <T,>(v: T | null, label: string, fallback: T): T => {
+    if (v === null) bad.push(label);
+    return v ?? fallback;
+  };
+  const next = {
+    tierLowMax: need(intCell(cell("tierLowMax")), "Tier 1 limit", cur.tierLowMax),
+    tierMidMax: need(intCell(cell("tierMidMax")), "Tier 2 limit", cur.tierMidMax),
+    pctLow: need(pctOf(cell("pctLow")), "Tier 1 increase", cur.pctLow),
+    pctMid: need(pctOf(cell("pctMid")), "Tier 2 increase", cur.pctMid),
+    pctHigh: need(pctOf(cell("pctHigh")), "Tier 3 increase", cur.pctHigh),
+    tdmsPct: pctOf(cell("tdmsPct")),
+    autoWaiveAfterHours: need(boolCell(cell("autoWaiveAfterHours")), "Waive After Hours (Yes / No)", cur.autoWaiveAfterHours),
+    afterHoursWaiveAt: need(intCell(cell("afterHoursWaiveAt")), "After Hours waiver amount", cur.afterHoursWaiveAt),
+    dueWindowDays: need(intCell(cell("dueWindowDays")), "Due window", cur.dueWindowDays),
+    escalating: SA_AGREEMENTS.filter((a) => (rowOf.has(`agreement:${a}`) ? boolCell(cell(`agreement:${a}`)) === true : cur.escalating.includes(a))),
+    fixedPrices: Object.fromEntries(
+      FIXED_PRICE_AGREEMENTS.map((a) => [a, rowOf.has(`agreement:${a}`) ? intCell(cell(`agreement:${a}`, "C")) : cur.fixedPrices[a] ?? null]),
+    ) as Partial<Record<SaAgreement, number>>,
+  };
+  const fakeRow: Row = { line: vr, get: () => null };
+  if (bad.length) { h.skip(S.settings, fakeRow, `missing or not a number: ${bad.join(", ")} — settings left unchanged`); return; }
+
+  const money = (n: number | null | undefined) => (n === null || n === undefined ? "blank" : `$${n.toLocaleString("en-US")}`);
+  const pc = (n: number | null) => (n === null ? "blank" : `${n}%`);
+  const diffs: string[] = [];
+  const cmp = (label: string, a: string, b: string) => a !== b && diffs.push(`${label} ${a} → ${b}`);
+  cmp("tier 1 limit", money(cur.tierLowMax), money(next.tierLowMax));
+  cmp("tier 1 increase", pc(cur.pctLow), pc(next.pctLow));
+  cmp("tier 2 limit", money(cur.tierMidMax), money(next.tierMidMax));
+  cmp("tier 2 increase", pc(cur.pctMid), pc(next.pctMid));
+  cmp("tier 3 increase", pc(cur.pctHigh), pc(next.pctHigh));
+  cmp("TDMS increase", pc(cur.tdmsPct), pc(next.tdmsPct));
+  cmp("waive After Hours", cur.autoWaiveAfterHours ? "Yes" : "No", next.autoWaiveAfterHours ? "Yes" : "No");
+  cmp("After Hours waiver at", money(cur.afterHoursWaiveAt), money(next.afterHoursWaiveAt));
+  cmp("due window", `${cur.dueWindowDays} days`, `${next.dueWindowDays} days`);
+  for (const a of SA_AGREEMENTS) {
+    cmp(`${AGREEMENT_LABELS[a]} escalates`, cur.escalating.includes(a) ? "Yes" : "No", next.escalating.includes(a) ? "Yes" : "No");
+  }
+  for (const a of FIXED_PRICE_AGREEMENTS) cmp(`${AGREEMENT_LABELS[a]} standard price`, money(cur.fixedPrices[a]), money(next.fixedPrices[a]));
+
+  if (!diffs.length) { h.counts(S.settings).unchanged++; return; }
+  const version = intCell(ws.getCell(`B${vr}`).value as Cell);
+  if (version !== cur.version) { h.skip(S.settings, fakeRow, `pricing settings were ${h.conflict}`); return; }
+  h.plan(S.settings, "updated", diffs.join("; "), async () => {
+    const fresh = await getSettings(scope);
+    await updateSettings(scope, { ...next, expectedVersion: version ?? fresh.version });
+  });
 }
 
 /** File name for a download made today (Eastern). */
