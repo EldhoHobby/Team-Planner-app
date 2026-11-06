@@ -9,7 +9,7 @@ import {
   type ContractInput, type CustomerInput,
 } from "@/lib/services/agreements/customers";
 import {
-  addLine, bulkCreateProposals, createProposal, removeLine, setLinePrice, transitionProposal, updateProposalHeader,
+  addLine, bulkCreateProposals, createProposal, deleteDraftProposal, removeLine, setLinePrice, transitionProposal, updateProposalHeader,
   type ProposalAction,
 } from "@/lib/services/agreements/proposals";
 import { importPrototype, resetAgreements } from "@/lib/services/agreements/import";
@@ -115,6 +115,10 @@ export async function proposalTransitionAction(input: {
       expectedVersion: version(input.version), reason: input.reason, markNotRenewed: !!input.markNotRenewed,
     }),
   );
+}
+
+export async function deleteProposalAction(input: { id: string; version: number }) {
+  return run("Could not delete the proposal.", (scope) => deleteDraftProposal(scope, input.id, version(input.version)));
 }
 
 export async function bulkProposalsAction(input: { month: string; apply: boolean }): Promise<BulkResult> {

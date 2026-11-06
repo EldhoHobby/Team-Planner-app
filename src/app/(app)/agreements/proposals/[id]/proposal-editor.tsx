@@ -1,9 +1,10 @@
 "use client";
 
+import { ymdEastern } from "@/lib/tz";
 import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Check, Printer, RotateCcw, Send, Undo2, X } from "lucide-react";
+import { ArrowLeft, Check, Printer, RotateCcw, Send, Trash2, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -13,7 +14,7 @@ import { ProposalBadge, UnconfirmedSo } from "../../badges";
 import { CloseProposalDialog } from "../../close-proposal-dialog";
 import { ProposalSheet } from "../proposal-sheet";
 import {
-  addLineAction, proposalTransitionAction, removeLineAction, setLinePriceAction, updateProposalHeaderAction,
+  addLineAction, deleteProposalAction, proposalTransitionAction, removeLineAction, setLinePriceAction, updateProposalHeaderAction,
 } from "../../actions";
 
 type Run = (fn: () => Promise<{ error?: string }>, ok?: string) => void;
@@ -78,6 +79,24 @@ export function ProposalEditor({ data, canEdit, today }: { data: ProposalDetail;
                 <Button size="sm" variant="outline" disabled={pending} onClick={() => setClosing(true)}><X className="h-4 w-4" /> Decline / withdraw</Button>
               </>
             )}
+            {canEdit && p.status === "DRAFT" && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-destructive hover:text-destructive"
+                disabled={pending}
+                onClick={() => {
+                  if (!confirm(`Delete ${c.name}'s ${p.year} draft proposal (${fmtMoney(total)})? This can't be undone.`)) return;
+                  start(async () => {
+                    const r = await deleteProposalAction({ id: p.id, version: p.version });
+                    if (r.error) setMsg({ text: r.error, error: true });
+                    else router.push(`/agreements/customers/${c.id}?tab=proposals`);
+                  });
+                }}
+              >
+                <Trash2 className="h-4 w-4" /> Delete draft
+              </Button>
+            )}
             {canEdit && (p.status === "DECLINED" || p.status === "WITHDRAWN") && (
               <Button size="sm" variant="outline" disabled={pending} onClick={() => transition("reopen", "Reopened as a draft.")}><RotateCcw className="h-4 w-4" /> Reopen</Button>
             )}
@@ -125,7 +144,7 @@ export function ProposalEditor({ data, canEdit, today }: { data: ProposalDetail;
 
 function Timeline({ p }: { p: ProposalDetail["proposal"] }) {
   const steps: { label: string; date: string | null; done: boolean; bad?: boolean }[] = [
-    { label: `Created${p.createdBy ? ` by ${p.createdBy}` : ""}`, date: p.createdAt.slice(0, 10), done: true },
+    { label: `Created${p.createdBy ? ` by ${p.createdBy}` : ""}`, date: ymdEastern(p.createdAt), done: true },
     { label: "Sent", date: p.sentDate, done: !!p.sentDate },
     p.status === "DECLINED" || p.status === "WITHDRAWN"
       ? { label: p.status === "DECLINED" ? "Declined" : "Withdrawn", date: p.closedDate, done: true, bad: true }

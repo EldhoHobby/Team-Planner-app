@@ -4,7 +4,7 @@ import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { StaleSaveError, assertFreshWrite, versionGuard } from "@/lib/db/optimistic";
 import { todayYmd } from "@/lib/tz";
-import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, OPEN_CUSTOMER_STATUSES, PROPOSAL_STATUS_LABELS, SA_AGREEMENTS, fmtMoney, type SaAgreement } from "@/lib/agreements/constants";
+import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, HISTORY_YEARS, OPEN_CUSTOMER_STATUSES, PROPOSAL_STATUS_LABELS, SA_AGREEMENTS, fmtMoney, type SaAgreement, type SaCustomerStatus } from "@/lib/agreements/constants";
 import { addOneYear, proposePrices } from "@/lib/agreements/pricing";
 import { claimedAgreements, customerRenewal, priceHistory, sortByAgreement, type ProposalLite } from "@/lib/agreements/renewal";
 import type { FieldChange } from "@/lib/services/change-history";
@@ -95,12 +95,13 @@ export async function bulkCreateProposals(scope: TenantScope, month: string, app
   if (apply) await assertCanEdit(scope);
   const settings = await getSettings(scope);
   const customers = await prisma.saCustomer.findMany({
-    where: { orgId: scope.ctx.orgId, status: { in: [...OPEN_CUSTOMER_STATUSES] } },
+    // Pending customers are parked: no new drafts for them (their proposals are hidden from the list too).
+    where: { orgId: scope.ctx.orgId, status: { in: OPEN_CUSTOMER_STATUSES.filter((s) => s !== "PENDING") } },
     include: { contracts: true, proposals: { include: { lines: true } } },
     orderBy: { name: "asc" },
   });
   const today = todayYmd();
-  const out: { customerId: string; name: string; soNumber: string; year: number; agreements: SaAgreement[]; skipped: SaAgreement[]; proposalId?: string }[] = [];
+  const out: { customerId: string; name: string; soNumber: string; status: SaCustomerStatus; year: number; agreements: SaAgreement[]; skipped: SaAgreement[]; proposalId?: string }[] = [];
   for (const c of customers) {
     const proposals = c.proposals.map(toProposalLite);
     const r = customerRenewal(c.contracts.map(toLineLite), proposals, today, settings.dueWindowDays);
@@ -109,7 +110,7 @@ export async function bulkCreateProposals(scope: TenantScope, month: string, app
     const free = new Set(freeLines(ending, proposals).map((l) => l.agreement));
     const todo = ending.filter((l) => free.has(l.agreement)).map((l) => l.agreement);
     const skipped = ending.filter((l) => !free.has(l.agreement)).map((l) => l.agreement);
-    const row = { customerId: c.id, name: c.name, soNumber: c.soNumber, year: Math.min(...ending.map((l) => l.year)) + 1, agreements: todo, skipped };
+    const row = { customerId: c.id, name: c.name, soNumber: c.soNumber, status: c.status, year: Math.min(...ending.map((l) => l.year)) + 1, agreements: todo, skipped };
     if (apply && todo.length) {
       const set = new Set(todo);
       const res = await prisma.$transaction((tx) => createFromCurrent(tx, scope, c.id, { only: (a) => set.has(a) }));
@@ -152,11 +153,17 @@ export async function getProposal(scope: TenantScope, id: string) {
     where: { id, orgId: scope.ctx.orgId },
     include: {
       lines: true,
-      customer: { include: { contracts: true, calls: { orderBy: { year: "desc" }, take: 5 } } },
+      customer: { include: { contracts: true, calls: true } },
     },
   });
   if (!p) return null;
   const c = p.customer;
+  // The sheet always shows the HISTORY_YEARS years before the proposal year (e.g. 2022–2026 for a
+  // 2027 proposal), with $0 / 0 for years that have no signed lines or no call counts.
+  const years = Array.from({ length: HISTORY_YEARS }, (_, i) => p.year - 1 - i);
+  const inWindow = c.contracts.map(toLineLite).filter((l) => l.year >= years[years.length - 1]! && l.year <= years[0]!);
+  const signed = priceHistory(inWindow);
+  const callsByYear = new Map(c.calls.map((r) => [r.year, r]));
   const creator = p.createdById
     ? await prisma.user.findUnique({ where: { id: p.createdById }, select: { name: true, username: true } })
     : null;
@@ -176,8 +183,13 @@ export async function getProposal(scope: TenantScope, id: string) {
       lastServerSo: c.lastServerSo, qwebLicenses: c.qwebLicenses, notes: c.notes,
       nextEndDate: customerRenewal(c.contracts.map(toLineLite), [], todayYmd(), 90).nextEndDate,
     },
-    history: priceHistory(c.contracts.map(toLineLite)),
-    calls: c.calls.map((r) => ({ year: r.year, calls: r.calls, repairs: r.repairs })),
+    history: {
+      ...signed,
+      /** Signed years actually present in the window (the % increase runs oldest → newest of these). */
+      signedYears: signed.rows.map((r) => r.year),
+      rows: years.map((y) => signed.rows.find((r) => r.year === y) ?? { year: y, prices: {}, total: 0 }),
+    },
+    calls: years.map((y) => ({ year: y, calls: callsByYear.get(y)?.calls ?? 0, repairs: callsByYear.get(y)?.repairs ?? 0 })),
   };
 }
 export type ProposalDetail = NonNullable<Awaited<ReturnType<typeof getProposal>>>;
@@ -274,6 +286,23 @@ const FROM: Record<ProposalAction, SaProposalStatus[]> = {
   withdraw: ["DRAFT", "SENT"],
   reopen: ["DECLINED", "WITHDRAWN"],
 };
+
+/** Delete a DRAFT proposal outright (sent / closed ones are kept: use Decline / withdraw). */
+export async function deleteDraftProposal(scope: TenantScope, id: string, expectedVersion: number) {
+  await assertCanEdit(scope);
+  const p = await prisma.saProposal.findFirst({ where: { id, orgId: scope.ctx.orgId }, include: { lines: true, customer: { select: { name: true } } } });
+  if (!p) throw new ForbiddenError("Proposal not found.");
+  if (p.status !== "DRAFT") throw new ForbiddenError("Only a draft proposal can be deleted. Use Decline / withdraw instead.");
+  const total = p.lines.reduce((a, l) => a + Number(l.price), 0);
+  await prisma.$transaction(async (tx) => {
+    // Lines cascade with the proposal.
+    const res = await tx.saProposal.deleteMany({ where: { id, orgId: scope.ctx.orgId, status: "DRAFT", ...versionGuard(expectedVersion) } });
+    assertFreshWrite(res.count, "proposal");
+    await history(tx, scope, p.customerId, [{ field: `${p.year} proposal`, oldValue: `Draft (${fmtMoney(total)})`, newValue: "deleted" }]);
+  });
+  await audit(scope, p.customerId, "proposal_deleted", `Deleted the ${p.year} draft proposal for ${p.customer.name}`);
+  return p.customerId;
+}
 
 export async function transitionProposal(
   scope: TenantScope,

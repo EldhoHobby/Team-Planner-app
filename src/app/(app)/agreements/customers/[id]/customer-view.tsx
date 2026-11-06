@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { fmtEastern, todayYmd, ymdEastern } from "@/lib/tz";
+import { useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Pencil, Plus } from "lucide-react";
@@ -14,7 +15,7 @@ import {
 import type { ContractRow, CustomerDetail } from "@/lib/services/agreements/customers";
 import { CustomerStatusBadge, ProposalBadge, RenewalBadge, UnconfirmedSo } from "../../badges";
 import { CustomerEditor } from "../../customer-editor";
-import { BarChart } from "../../renewals-chart";
+import { MAX_SERIES, StackedBarChart } from "../../renewals-chart";
 import { StartProposalButton } from "../../start-proposal-button";
 import { deleteContractLineAction, saveCallsAction, saveContractLineAction } from "../../actions";
 
@@ -26,6 +27,16 @@ const TAB_LABELS: Record<CustomerTab, string> = {
   calls: "Calls & repairs",
   activity: "Activity",
 };
+
+function Figure({ label, value, sub, tone }: { label: string; value: string; sub?: ReactNode; tone?: "bad" }) {
+  return (
+    <div className="rounded-md border bg-muted/20 px-3 py-2.5">
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 text-xl font-semibold tabular-nums">{value}</dd>
+      {sub && <dd className={cn("mt-0.5 text-xs", tone === "bad" ? "font-medium text-red-700 dark:text-red-400" : "text-muted-foreground")}>{sub}</dd>}
+    </div>
+  );
+}
 
 function pct(n: number | null | undefined) {
   if (n === null || n === undefined) return "—";
@@ -47,7 +58,6 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
     ["Server install", c.serverInstall || "—"],
     ["Last server SO #", c.lastServerSo || "—"],
     ["QWEB licenses", c.qwebLicenses?.toString() ?? "—"],
-    ["State", c.state || "—"],
   ];
 
   return (
@@ -68,6 +78,7 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <span>SO # <span className="font-mono text-foreground">{c.soNumber}</span></span>
               {!c.soConfirmed && <UnconfirmedSo />}
+              {c.state && <span>· {c.state}</span>}
             </div>
           </div>
           <div className="flex flex-wrap gap-2 print:hidden">
@@ -86,40 +97,34 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
           </div>
         </div>
 
-        <dl className="mt-5 grid grid-cols-2 gap-4 border-t pt-4 sm:grid-cols-4">
-          <div>
-            <dt className="text-xs text-muted-foreground">Annual value</dt>
-            <dd className="text-xl font-semibold tabular-nums">{fmtMoney(r.annualValue) || "—"}</dd>
-            <dd className="text-xs text-muted-foreground">{r.currentYear ? `${r.currentYear} · ${r.currentLines.length} agreements` : "no signed year"}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Next renewal</dt>
-            <dd className="text-xl font-semibold">{fmtDate(r.nextEndDate) || "—"}</dd>
-            <dd className={cn("text-xs", r.daysToEnd !== null && r.daysToEnd < 0 ? "text-red-700 dark:text-red-400" : "text-muted-foreground")}>
-              {r.daysToEnd === null ? "" : r.daysToEnd < 0 ? `${-r.daysToEnd} days ago` : `in ${r.daysToEnd} days`}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{data.history.rows.length}-year change</dt>
-            <dd className="text-xl font-semibold tabular-nums">{pct(data.history.increaseTotal)}</dd>
-            <dd className="text-xs text-muted-foreground">total contract value</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Open proposal</dt>
-            <dd className="text-xl font-semibold tabular-nums">{open ? fmtMoney(open.total) : "—"}</dd>
-            <dd className="text-xs">{open ? <ProposalBadge status={open.status} /> : <span className="text-muted-foreground">none</span>}</dd>
-          </div>
+        <dl className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Figure label="Annual value" value={r.annualValue ? fmtMoney(r.annualValue) : "—"}
+            sub={r.currentYear ? `${r.currentYear} · ${r.currentLines.length} agreement${r.currentLines.length === 1 ? "" : "s"}` : "no signed year"} />
+          <Figure label="Next renewal" value={fmtDate(r.nextEndDate) || "—"}
+            sub={r.daysToEnd === null ? "no end date" : r.daysToEnd < 0 ? `ended ${-r.daysToEnd} days ago` : r.daysToEnd === 0 ? "ends today" : `in ${r.daysToEnd} days`}
+            tone={r.daysToEnd !== null && r.daysToEnd < 0 ? "bad" : undefined} />
+          <Figure label={`${data.history.rows.length}-year change`} value={pct(data.history.increaseTotal)} sub="total contract value" />
+          <Figure label="Open proposal" value={open ? fmtMoney(open.total) : "—"}
+            sub={open ? <ProposalBadge status={open.status} /> : "none"} />
         </dl>
 
-        <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          {facts.map(([k, v]) => (
-            <div key={k} className="flex gap-2">
-              <dt className="w-28 flex-shrink-0 text-muted-foreground">{k}</dt>
-              <dd className="min-w-0 break-words">{v}</dd>
-            </div>
-          ))}
-        </dl>
-        {c.notes && <p className="mt-3 whitespace-pre-wrap rounded-md bg-muted/50 p-3 text-sm">{c.notes}</p>}
+        <div className="mt-5 border-t pt-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Customer details</h3>
+          <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
+            {facts.map(([k, v]) => (
+              <div key={k} className="min-w-0">
+                <dt className="text-xs text-muted-foreground">{k}</dt>
+                <dd className={cn("mt-0.5 break-words text-sm", v === "—" && "text-muted-foreground")}>{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        {c.notes && (
+          <div className="mt-4 rounded-md border bg-muted/40 p-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</h3>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{c.notes}</p>
+          </div>
+        )}
       </section>
 
       {/* Tabs */}
@@ -190,37 +195,49 @@ function AgreementsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boole
                 <th className="px-3 py-2 font-medium">Ends</th>
                 <th className="px-3 py-2 font-medium">Signed</th>
                 <th className="px-3 py-2 font-medium">Invoiced</th>
-                <th className="px-3 py-2 font-medium">Notes</th>
                 {canEdit && <th className="px-3 py-2" />}
               </tr>
             </thead>
             {years.map((y) => {
               const ls = rows.filter((l) => l.year === y).sort((a, b) => SA_AGREEMENTS.indexOf(a.agreement) - SA_AGREEMENTS.indexOf(b.agreement));
               const total = ls.filter((l) => l.status === "ACTIVE").reduce((a, l) => a + l.price, 0);
+              const active = ls.filter((l) => l.status === "ACTIVE").length;
               return (
-                <tbody key={y} className="divide-y border-b last:border-b-0">
-                  {ls.map((l) => (
-                    <tr key={l.id} className={cn(l.status === "CANCELLED" && "text-muted-foreground line-through")}>
-                      {allYears && <td className="px-3 py-2 tabular-nums">{l.year}</td>}
-                      <td className="px-3 py-2">{AGREEMENT_LABELS[l.agreement]}{l.checked && <span className="ml-2 text-xs text-muted-foreground no-underline">✓ checked</span>}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmtMoney(l.price)}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{fmtDate(l.endDate) || "—"}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{fmtDate(l.signedDate) || "—"}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{fmtDate(l.invoicedDate) || "—"}</td>
-                      <td className="max-w-[18rem] truncate px-3 py-2 text-muted-foreground" title={l.notes ?? ""}>{l.notes}</td>
-                      {canEdit && (
-                        <td className="px-3 py-2 text-right">
-                          <button type="button" className="text-sm text-primary hover:underline" onClick={() => setEditing(l)}>Edit</button>
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                  <tr className="bg-muted/30 text-sm font-medium">
-                    {allYears && <td className="px-3 py-1.5" />}
-                    <td className="px-3 py-1.5">{y} total</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums">{fmtMoney(total)}</td>
-                    <td colSpan={canEdit ? 5 : 4} />
+                <tbody key={y} className="border-b last:border-b-0">
+                  <tr className="bg-muted/50">
+                    <th colSpan={(allYears ? 1 : 0) + 5 + (canEdit ? 1 : 0)} scope="rowgroup" className="px-3 py-2 text-left">
+                      <span className="font-semibold">{y}</span>
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">
+                        {active} agreement{active === 1 ? "" : "s"} · {fmtMoney(total)} total
+                      </span>
+                    </th>
                   </tr>
+                  {ls.map((l) => {
+                    const cancelled = l.status === "CANCELLED";
+                    const dash = <span className="text-muted-foreground">—</span>;
+                    return (
+                      <tr key={l.id} className={cn("border-t align-top", cancelled && "text-muted-foreground")}>
+                        {allYears && <td className="px-3 py-2.5 tabular-nums">{l.year}</td>}
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={cn("font-medium", cancelled && "line-through")}>{AGREEMENT_LABELS[l.agreement]}</span>
+                            {cancelled && <span className="rounded-full border px-1.5 text-[11px]">Cancelled</span>}
+                            {l.checked && <span className="text-xs text-muted-foreground">✓ checked</span>}
+                          </div>
+                          {l.notes && <p className="mt-0.5 max-w-md whitespace-pre-wrap text-xs text-muted-foreground">{l.notes}</p>}
+                        </td>
+                        <td className={cn("px-3 py-2.5 text-right tabular-nums", cancelled && "line-through")}>{fmtMoney(l.price)}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">{fmtDate(l.endDate) || dash}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">{fmtDate(l.signedDate) || dash}</td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">{fmtDate(l.invoicedDate) || dash}</td>
+                        {canEdit && (
+                          <td className="px-3 py-2.5 text-right">
+                            <button type="button" className="text-sm text-primary hover:underline" onClick={() => setEditing(l)}>Edit</button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               );
             })}
@@ -231,7 +248,7 @@ function AgreementsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boole
         <ContractEditor
           customerId={data.customer.id}
           line={editing === "new" ? null : editing}
-          defaultYear={r.currentYear ?? new Date().getFullYear()}
+          defaultYear={r.currentYear ?? Number(todayYmd().slice(0, 4))}
           onClose={() => setEditing(null)}
         />
       )}
@@ -333,23 +350,45 @@ function HistoryTab({ data }: { data: CustomerDetail }) {
   const h = data.history;
   if (!h.rows.length) return <p className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">No signed history yet.</p>;
   const chrono = [...h.rows].reverse();
+  // One colour per agreement (fixed order); past the palette, the rest fold into "Other".
+  const keep = h.agreements.slice(0, h.agreements.length > MAX_SERIES ? MAX_SERIES - 1 : MAX_SERIES);
+  const folded = h.agreements.filter((a) => !keep.includes(a));
+  const series = [
+    ...keep.map((a) => ({ key: a, label: AGREEMENT_LABELS[a] })),
+    ...(folded.length ? [{ key: "_other", label: "Other" }] : []),
+  ];
+  const change = (i: number) => {
+    const prev = chrono[i - 1]?.total;
+    return i > 0 && prev ? Math.round(((chrono[i]!.total - prev) / prev) * 1000) / 10 : null;
+  };
   return (
-    <section className="grid gap-4 lg:grid-cols-3">
+    <section className="space-y-4">
       <div className="rounded-lg border bg-card p-4">
-        <h3 className="font-semibold">Total contract value</h3>
-        <p className="text-xs text-muted-foreground">Last {h.rows.length} signed years</p>
-        <BarChart
-          ariaLabel="Total contract value by year"
-          points={chrono.map((r, i) => ({
-            key: String(r.year),
-            label: String(r.year),
-            title: String(r.year),
-            value: r.total,
-            detail: i > 0 ? pct(chrono[i - 1]!.total ? Math.round(((r.total - chrono[i - 1]!.total) / chrono[i - 1]!.total) * 1000) / 10 : null) + " vs prior" : undefined,
-          }))}
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="font-semibold">Total contract value</h3>
+          <p className="text-xs text-muted-foreground">
+            Last {h.rows.length} signed years · {pct(h.increaseTotal)} overall · by agreement
+          </p>
+        </div>
+        <StackedBarChart
+          ariaLabel="Total contract value by year, split by agreement"
+          series={series}
+          points={chrono.map((r, i) => {
+            const values: Record<string, number> = {};
+            for (const a of keep) values[a] = r.prices[a] ?? 0;
+            if (folded.length) values._other = folded.reduce((s, a) => s + (r.prices[a] ?? 0), 0);
+            const c = change(i);
+            return {
+              key: String(r.year),
+              label: String(r.year),
+              sub: c === null ? undefined : `${pct(c)} vs ${chrono[i - 1]!.year}`,
+              title: String(r.year),
+              values,
+            };
+          })}
         />
       </div>
-      <div className="overflow-x-auto rounded-lg border bg-card lg:col-span-2">
+      <div className="overflow-x-auto rounded-lg border bg-card">
         <table className="w-full text-sm">
           <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
             <tr>
@@ -361,9 +400,9 @@ function HistoryTab({ data }: { data: CustomerDetail }) {
           <tbody className="divide-y">
             {h.agreements.map((a) => (
               <tr key={a}>
-                <td className="px-3 py-1.5">{AGREEMENT_LABELS[a]}</td>
-                {h.rows.map((r) => <td key={r.year} className="px-3 py-1.5 text-right tabular-nums">{r.prices[a] !== undefined ? fmtMoney(r.prices[a]) : <span className="text-muted-foreground">—</span>}</td>)}
-                <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">{pct(h.increase[a])}</td>
+                <td className="px-3 py-2 font-medium">{AGREEMENT_LABELS[a]}</td>
+                {h.rows.map((r, i) => <td key={r.year} className={cn("px-3 py-2 text-right tabular-nums", i === 0 && "bg-muted/30 font-medium")}>{r.prices[a] !== undefined ? fmtMoney(r.prices[a]) : <span className="text-muted-foreground">—</span>}</td>)}
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{pct(h.increase[a])}</td>
               </tr>
             ))}
           </tbody>
@@ -393,7 +432,7 @@ function ProposalsTab({ data }: { data: CustomerDetail }) {
           <span className="text-sm tabular-nums">{fmtMoney(p.total)}</span>
           <span className="text-sm text-muted-foreground">{p.agreements.map((a) => AGREEMENT_LABELS[a]).join(", ")}</span>
           <span className="ml-auto text-xs text-muted-foreground">
-            {p.signedDate ? `Signed ${fmtDate(p.signedDate)}` : p.sentDate ? `Sent ${fmtDate(p.sentDate)}` : p.closedDate ? `Closed ${fmtDate(p.closedDate)}` : `Created ${fmtDate(p.createdAt.slice(0, 10))}`}
+            {p.signedDate ? `Signed ${fmtDate(p.signedDate)}` : p.sentDate ? `Sent ${fmtDate(p.sentDate)}` : p.closedDate ? `Closed ${fmtDate(p.closedDate)}` : `Created ${fmtDate(ymdEastern(p.createdAt))}`}
           </span>
         </li>
       ))}
@@ -407,7 +446,7 @@ function CallsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boolean })
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [year, setYear] = useState(todayYmd().slice(0, 4));
   const [calls, setCalls] = useState("0");
   const [repairs, setRepairs] = useState("0");
   const save = (input: Parameters<typeof saveCallsAction>[0]) =>
@@ -476,18 +515,41 @@ function CallsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boolean })
 
 function ActivityTab({ data }: { data: CustomerDetail }) {
   if (!data.changes.length) return <p className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">No changes recorded yet.</p>;
+  const days: { day: string; items: CustomerDetail["changes"] }[] = [];
+  for (const h of data.changes) {
+    const day = ymdEastern(h.at);
+    const last = days[days.length - 1];
+    if (last?.day === day) last.items.push(h);
+    else days.push({ day, items: [h] });
+  }
   return (
-    <ol className="space-y-0 rounded-lg border bg-card">
-      {data.changes.map((h) => (
-        <li key={h.id} className="border-b px-4 py-2.5 text-sm last:border-b-0">
-          <span className="font-medium">{h.field}</span>
-          {h.oldValue !== null && <span className="text-muted-foreground"> {h.oldValue} →</span>}
-          <span> {h.newValue ?? "—"}</span>
-          <p className="text-xs text-muted-foreground">
-            {h.actor} · {new Date(h.at).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" })}
-          </p>
-        </li>
+    <div className="space-y-4">
+      {days.map(({ day, items }) => (
+        <section key={day} className="rounded-lg border bg-card">
+          <h3 className="border-b bg-muted/40 px-4 py-2 text-xs font-semibold text-muted-foreground">
+            {fmtEastern(`${day}T12:00:00Z`, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+          </h3>
+          <ol className="divide-y">
+            {items.map((h) => (
+              <li key={h.id} className="grid gap-x-4 gap-y-0.5 px-4 py-2.5 text-sm sm:grid-cols-[minmax(10rem,14rem)_1fr_auto]">
+                <span className="font-medium">{h.field}</span>
+                <span className="min-w-0 break-words">
+                  {h.oldValue !== null && (
+                    <>
+                      <span className="text-muted-foreground line-through">{h.oldValue}</span>
+                      <span className="mx-1.5 text-muted-foreground" aria-label="changed to">→</span>
+                    </>
+                  )}
+                  <span>{h.newValue ?? "—"}</span>
+                </span>
+                <span className="whitespace-nowrap text-xs text-muted-foreground sm:text-right">
+                  {h.actor} · {fmtEastern(h.at, { hour: "numeric", minute: "2-digit" })}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </section>
       ))}
-    </ol>
+    </div>
   );
 }

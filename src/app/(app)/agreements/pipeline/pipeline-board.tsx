@@ -9,6 +9,7 @@ import { fmtDate, fmtMoney } from "@/lib/agreements/constants";
 import type { PipelineCard, PipelineColumn } from "@/lib/services/agreements/dashboard";
 import { createProposalAction, proposalTransitionAction } from "../actions";
 import { CloseProposalDialog } from "../close-proposal-dialog";
+import { CustomerStatusBadge } from "../badges";
 
 const COLUMNS: { id: PipelineColumn; title: string; hint: string }[] = [
   { id: "DUE", title: "Due", hint: "Ending soon or expired, no proposal" },
@@ -138,6 +139,7 @@ export function PipelineBoard({ cards, canEdit }: { cards: PipelineCard[]; canEd
                       {c.name}
                     </Link>
                     <p className="text-xs text-muted-foreground">{c.soNumber}{c.year ? ` · ${c.year}` : ""}</p>
+                    {c.customerStatus !== "ACTIVE" && <div className="mt-1"><CustomerStatusBadge status={c.customerStatus} /></div>}
                     <div className="mt-1 flex items-baseline justify-between gap-2">
                       <span className="font-semibold tabular-nums">{fmtMoney(c.value)}</span>
                       <span className={cn("text-[11px]", c.dateLabel === "Expired" ? "font-medium text-red-700 dark:text-red-400" : "text-muted-foreground")}>

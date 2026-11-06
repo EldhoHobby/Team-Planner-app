@@ -1,3 +1,4 @@
+import { ymdEastern } from "@/lib/tz";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
@@ -265,7 +266,7 @@ export async function restoreFullBackup(
     entity: "data",
     entityId: "full-backup",
     action: "restored",
-    summary: `RESTORED a full app backup from ${backup.exportedAt?.slice(0, 10) ?? "unknown date"} — all data replaced (${users.length} people).`,
+    summary: `RESTORED a full app backup from ${backup.exportedAt ? ymdEastern(backup.exportedAt) : "unknown date"} — all data replaced (${users.length} people).`,
   });
 
   return {

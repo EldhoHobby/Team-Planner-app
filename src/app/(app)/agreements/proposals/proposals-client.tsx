@@ -1,5 +1,6 @@
 "use client";
 
+import { ymdEastern } from "@/lib/tz";
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -8,14 +9,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import {
-  AGREEMENT_LABELS, isOpenCustomer, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement,
+  AGREEMENT_LABELS, isOpenCustomer, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement, type SaCustomerStatus,
 } from "@/lib/agreements/constants";
 import type { ProposalListRow } from "@/lib/services/agreements/proposals";
-import { ProposalBadge } from "../badges";
+import { CustomerStatusBadge, ProposalBadge } from "../badges";
 import { bulkProposalsAction } from "../actions";
 import type { BulkRow } from "../types";
 
 const SELECT = "h-9 rounded-md border bg-background px-2 text-sm";
+/** Proposals of Pending (parked) and Not renewed / Inactive customers stay out of the list unless asked for. */
+const hiddenByDefault = (s: SaCustomerStatus) => s === "PENDING" || !isOpenCustomer(s);
 const labels = (l: SaAgreement[]) => l.map((a) => AGREEMENT_LABELS[a]).join(", ");
 
 export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: ProposalListRow[]; canEdit: boolean; initialStatus: string }) {
@@ -37,7 +40,7 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
       (r) =>
         (status === "" || (status === "OPEN" ? r.status === "DRAFT" || r.status === "SENT" : r.status === status)) &&
         (!month || r.renewsMonth === month) &&
-        (showInactive || isOpenCustomer(r.customerStatus)) &&
+        (showInactive || !hiddenByDefault(r.customerStatus)) &&
         (!n || r.customerName.toLowerCase().includes(n) || r.soNumber.toLowerCase().includes(n)),
     );
   }, [rows, q, status, month, showInactive]);
@@ -75,7 +78,7 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
           <div className="min-w-[16rem] flex-1">
             <h2 className="font-semibold">Create proposals in bulk</h2>
             <p className="text-xs text-muted-foreground">
-              For every Active, Pending or Expired – still waiting customer with agreements ending in the month you pick. Agreements already in a proposal are skipped.
+              For every Active or Expired – still waiting customer with agreements ending in the month you pick. Agreements already in a proposal are skipped.
             </p>
           </div>
           <label className="space-y-1 text-xs">
@@ -107,7 +110,7 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
         </label>
         <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-          Include inactive / not renewed customers
+          Include pending / not renewed / inactive customers
         </label>
         <Button variant="outline" className="ml-auto" disabled={!printIds.length} asChild={printIds.length > 0}>
           {printIds.length ? (
@@ -140,14 +143,17 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
                 <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${r.customerName}`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
                 <td className="px-3 py-2">
                   <Link href={`/agreements/proposals/${r.id}`} className="font-medium hover:underline">{r.customerName}</Link>
-                  <div className="font-mono text-xs text-muted-foreground">{r.soNumber}</div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono text-xs text-muted-foreground">{r.soNumber}</span>
+                    {r.customerStatus !== "ACTIVE" && <CustomerStatusBadge status={r.customerStatus} />}
+                  </div>
                 </td>
                 <td className="px-3 py-2 tabular-nums">{r.year}</td>
                 <td className="px-3 py-2"><ProposalBadge status={r.status} /></td>
                 <td className="px-3 py-2 text-right font-medium tabular-nums">{fmtMoney(r.total)}</td>
                 <td className="max-w-[20rem] px-3 py-2 text-muted-foreground">{labels(r.agreements)}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{fmtDate(r.endDate) || "—"}</td>
-                <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{fmtDate(r.updatedAt.slice(0, 10))}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{fmtDate(ymdEastern(r.updatedAt))}</td>
               </tr>
             ))}
             {!shown.length && <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">No proposals match.</td></tr>}
@@ -165,12 +171,13 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
         {preview && (
           <div className="space-y-3 text-sm">
             {!preview.length ? (
-              <p>No Active, Pending or Expired – still waiting customer has agreements ending in that month.</p>
+              <p>No Active or Expired – still waiting customer has agreements ending in that month.</p>
             ) : (
               <ul className="max-h-80 divide-y overflow-y-auto rounded-md border">
                 {preview.map((r) => (
                   <li key={r.customerId} className="px-3 py-2">
                     <span className="font-medium">{r.name}</span> <span className="text-xs text-muted-foreground">{r.soNumber} · {r.year}</span>
+                    {r.status !== "ACTIVE" && <span className="ml-2"><CustomerStatusBadge status={r.status} /></span>}
                     {r.agreements.length > 0 && <p className="text-xs">Will propose: {labels(r.agreements)}</p>}
                     {r.skipped.length > 0 && <p className="text-xs text-muted-foreground">Already in a proposal: {labels(r.skipped)}</p>}
                   </li>

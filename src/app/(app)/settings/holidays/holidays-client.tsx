@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtEastern } from "@/lib/tz";
 import { useActionState, useEffect, useTransition, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -150,7 +151,7 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
                   {history.map((h, i) => (
                     <li key={i} className="flex flex-col gap-0.5 pt-3 first:pt-0">
                       <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                        <span>{new Date(h.createdAt).toLocaleString()}</span>
+                        <span>{fmtEastern(h.createdAt, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                         {h.actorEmail && <span className="font-medium text-foreground">{h.actorEmail}</span>}
                       </div>
                       <p className="text-xs">{h.summary}</p>

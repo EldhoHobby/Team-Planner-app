@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtEastern } from "@/lib/tz";
 import { useEffect, useRef, useState, useTransition, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Pencil, Trash2, MessageSquare, GitCommitHorizontal } from "lucide-react";
@@ -35,12 +36,10 @@ function relTime(iso: string): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.round(h / 24);
   if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return fmtEastern(iso, { month: "short", day: "numeric", year: "numeric" });
 }
 function absTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
-  });
+  return fmtEastern(iso, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 }
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/);

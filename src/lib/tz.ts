@@ -19,6 +19,12 @@ export function todayYmd(now: Date = new Date()): string {
   return YMD.format(now);
 }
 
+/** Calendar day (Eastern) of a stored timestamp, as "YYYY-MM-DD". Use instead of iso.slice(0, 10),
+ *  which gives the UTC day — the next day for anything saved after 7–8 pm Eastern. */
+export function ymdEastern(at: string | Date): string {
+  return YMD.format(typeof at === "string" ? new Date(at) : at);
+}
+
 /** Today (Eastern) as a UTC-midnight timestamp — the shape stored dates use. */
 export function todayUtcMs(now: Date = new Date()): number {
   return Date.parse(`${todayYmd(now)}T00:00:00.000Z`);

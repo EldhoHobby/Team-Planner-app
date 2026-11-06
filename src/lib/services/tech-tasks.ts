@@ -1,3 +1,4 @@
+import { ymdEastern } from "@/lib/tz";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
@@ -269,7 +270,8 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
     const byWeek = new Map<string, TechTaskRow[]>();
     for (const t of done) {
       const when = t.completedAt ?? t.createdAt;
-      const ws = weekStartOf(new Date(when));
+      // Eastern calendar day of completion (the UTC day is tomorrow after 7–8 pm ET).
+      const ws = weekStartOf(new Date(`${ymdEastern(when)}T00:00:00Z`));
       const key = ws.toISOString().slice(0, 10);
       const arr = byWeek.get(key) ?? [];
       arr.push(t);

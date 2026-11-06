@@ -1,5 +1,6 @@
 "use client";
 
+import { ymdEastern } from "@/lib/tz";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -22,7 +23,7 @@ const LBL = "font-semibold";
 export function proposalStatusLine(p: ProposalDetail["proposal"]): string {
   switch (p.status) {
     case "DRAFT":
-      return `PROPOSAL CREATED ${fmtYmd(p.createdAt.slice(0, 10))} - not signed yet`;
+      return `PROPOSAL CREATED ${fmtYmd(ymdEastern(p.createdAt))} - not signed yet`;
     case "SENT":
       return `SENT ${fmtYmd(p.sentDate)} - not signed yet`;
     case "SIGNED":
@@ -60,10 +61,11 @@ export function ProposalSheet({
   const byAgreement = new Map(p.lines.map((l) => [l.agreement, l]));
   const held = new Set<SaAgreement>([...h.agreements, ...p.lines.map((l) => l.agreement)]);
   const dim = (a: SaAgreement) => !held.has(a) && "bg-muted/60 text-muted-foreground/60 print:bg-transparent";
-  const newest = h.rows[0]?.prices ?? {};
+  // Newest year that has signed prices (the year right before may be empty).
+  const newest = h.rows.find((r) => r.total > 0)?.prices ?? {};
   const total = p.lines.reduce((a, l) => a + l.price, 0);
-  const histYears = new Set(h.rows.map((r) => r.year));
-  const calls = d.calls.filter((r) => histYears.size === 0 || histYears.has(r.year));
+  const calls = d.calls;
+  const span = h.signedYears.length >= 2 ? `${h.signedYears[h.signedYears.length - 1]}–${h.signedYears[0]}` : null;
 
   const details: [string, string | null][][] = [
     [["SO #", c.soNumber], ["Status", CUSTOMER_STATUS_LABELS[c.status]], ["State", c.state]],
@@ -108,7 +110,7 @@ export function ProposalSheet({
 
       {/* Price history */}
       <section>
-        <h3 className="mb-1 font-bold">PRICE HISTORY (last {Math.max(h.rows.length, 1)} signed years)</h3>
+        <h3 className="mb-1 font-bold">PRICE HISTORY (last {h.rows.length} years)</h3>
         <table className="w-full table-fixed border-collapse">
           <thead>
             <tr className="bg-muted/50">
@@ -125,12 +127,9 @@ export function ProposalSheet({
                 <td className={cn(TD, "font-semibold")}>{fmtMoney(r.total)}</td>
               </tr>
             ))}
-            {!h.rows.length && (
-              <tr><td colSpan={SA_AGREEMENTS.length + 2} className={cn(TD, "text-center text-muted-foreground")}>No signed years yet.</td></tr>
-            )}
-            {h.rows.length >= 2 && (
+            {span && (
               <tr className="italic">
-                <td className={cn(TD, "text-left text-[10px] print:text-[7pt]")}>{h.rows.length}-year increase</td>
+                <td className={cn(TD, "text-left text-[10px] print:text-[7pt]")}>Increase {span}</td>
                 {SA_AGREEMENTS.map((a) => <td key={a} className={cn(TD, dim(a))}>{pct(h.increase[a])}</td>)}
                 <td className={cn(TD, "font-semibold")}>{pct(h.increaseTotal)}</td>
               </tr>
@@ -158,7 +157,6 @@ export function ProposalSheet({
                 <td className={TD}>{r.repairs}</td>
               </tr>
             ))}
-            {!calls.length && <tr><td colSpan={3} className={cn(TD, "text-center text-muted-foreground")}>None recorded</td></tr>}
           </tbody>
         </table>
       </section>
