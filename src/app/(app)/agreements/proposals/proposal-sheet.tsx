@@ -143,6 +143,7 @@ export function ProposalSheet({
   const byAgreement = new Map(p.lines.map((l) => [l.agreement, l]));
   const held = new Set<SaAgreement>([...h.agreements, ...p.lines.map((l) => l.agreement)]);
   const dim = (a: SaAgreement) => !held.has(a);
+  const escalates = new Set<SaAgreement>(d.escalating);
   const rows = h.rows; // the 5 years before the proposal year, newest first
   const first = rows[0];
   const last = rows[rows.length - 1];
@@ -188,7 +189,7 @@ export function ProposalSheet({
               label("QWEB licenses"), value(c.qwebLicenses?.toString() ?? "", 4),
             ]} />
             <Row cells={[label("Next end date"), value(mmddyy(c.nextEndDate), 3, { align: "left" })]} />
-            <Row cells={[label("Notes"), value(<span className="whitespace-pre-wrap">{c.notes}</span>, 13, { wrap: true, align: "left" }), { edge: true }]} />
+            <Row cells={[label("Notes"), value(<span className="whitespace-pre-wrap">{c.notes}</span>, 14, { wrap: true, align: "left" })]} />
             <Row cells={[]} />
 
             {/* PRICE HISTORY */}
@@ -239,14 +240,17 @@ export function ProposalSheet({
               { v: "Increase %", b: true, align: "center", edge: true },
               ...SA_AGREEMENTS.map((a): Cell => {
                 const l = byAgreement.get(a);
-                const base = l ? (l.lastPrice ?? first?.prices[a]) : undefined;
-                const change = l && base ? pctBetween(base, l.price) : null; // percent, one decimal
-                const canEdit = editable && !!l && !!base && !!onPrice;
+                // Only agreements on the proposal that go up by a % (Settings policy) get a % cell;
+                // the rest are plain blank cells, like the cells to the right of the table.
+                if (!l || !escalates.has(a)) return {};
+                const base = l.lastPrice ?? first?.prices[a];
+                const change = base ? pctBetween(base, l.price) : null; // percent, one decimal
+                const canEdit = editable && !!base && !!onPrice;
                 return {
                   v: canEdit
-                    ? <EditCell value={change} suffix="%" ariaLabel={`${AGREEMENT_LABELS[a]} increase %`} disabled={pending} onCommit={(v) => onPrice!(l!, applyPct(base!, v))} />
+                    ? <EditCell value={change} suffix="%" ariaLabel={`${AGREEMENT_LABELS[a]} increase %`} disabled={pending} onCommit={(v) => onPrice!(l, applyPct(base!, v))} />
                     : change === null ? "" : `${change.toFixed(1)}%`,
-                  fill: INPUT, align: "center", edge: true, dim: dim(a), pad0: canEdit,
+                  fill: INPUT, align: "center", edge: true, pad0: canEdit,
                 };
               }),
             ]} />

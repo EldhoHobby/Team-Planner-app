@@ -22,7 +22,8 @@ a schedulable "technician." There is NO separate `Technician` model: jobs are
 assigned to users (`Task.technicianId` → `User.id`; the relation + column names
 were kept so the schedule board is unchanged), and `User` carries `color`,
 `schedulable`, and `archived`. **Login is by `username`** (unique, lowercase;
-email also accepted at sign-in) — `User.email` is now OPTIONAL contact info.
+the sign-in screen asks for username only, but the server still silently
+accepts an email as a fallback) — `User.email` is now OPTIONAL contact info.
 Usernames are auto-derived (email local part → name) via `uniqueUsername()` in
 `src/lib/auth/username.ts`; render identity with `displayHandle()` in
 `src/lib/users.ts` ("Name (email-or-username)"). A person's **identity colour is

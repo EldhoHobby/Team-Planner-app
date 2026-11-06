@@ -1,7 +1,7 @@
 "use client";
 
 import { todayYmd, ymdEastern } from "@/lib/tz";
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Printer } from "lucide-react";
@@ -28,18 +28,47 @@ function matchesCustomer(filter: string, s: SaCustomerStatus) {
   return filter === "" || filter === s;
 }
 
+export type ProposalSort = { key: "customer" | "total" | "end" | "changed"; dir: 1 | -1 };
+
 export function ProposalsClient({
-  rows, canEdit, initialStatus, initialCustomer,
-}: { rows: ProposalListRow[]; canEdit: boolean; initialStatus: string; initialCustomer: string }) {
+  rows, canEdit, initialStatus, initialCustomer, initialQ, initialMonth, initialSort,
+}: {
+  rows: ProposalListRow[];
+  canEdit: boolean;
+  initialStatus: string;
+  initialCustomer: string;
+  initialQ: string;
+  initialMonth: string;
+  initialSort: ProposalSort;
+}) {
   const router = useRouter();
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQ);
   const [status, setStatus] = useState(initialStatus);
-  const [month, setMonth] = useState("");
+  const [month, setMonth] = useState(initialMonth);
   const [customer, setCustomer] = useState(initialCustomer);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMonth, setBulkMonth] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [sort, setSort] = useState<{ key: "customer" | "total" | "end" | "changed"; dir: 1 | -1 }>({ key: "changed", dir: -1 });
+  const [sort, setSort] = useState<ProposalSort>(initialSort);
+
+  // Keep the filters in the URL (defaults left out) so a reload / browser Back restores the list, and pass
+  // them to each proposal as ?back=… so its "← Proposals" link returns to this exact view.
+  const listQs = useMemo(() => {
+    const p = new URLSearchParams();
+    if (q) p.set("q", q);
+    if (status !== "OPEN") p.set("status", status);
+    if (month) p.set("month", month);
+    if (customer !== "DEFAULT") p.set("customer", customer);
+    const s = `${sort.dir === -1 ? "-" : ""}${sort.key}`;
+    if (s !== "-changed") p.set("sort", s);
+    return p.toString();
+  }, [q, status, month, customer, sort]);
+  useEffect(() => {
+    // Native replaceState (synced with the Next router) — no server round-trip on every keystroke.
+    const url = `${window.location.pathname}${listQs ? `?${listQs}` : ""}`;
+    if (`${window.location.pathname}${window.location.search}` !== url) window.history.replaceState(null, "", url);
+  }, [listQs]);
+  const proposalHref = (id: string) => `/agreements/proposals/${id}${listQs ? `?back=${encodeURIComponent(listQs)}` : ""}`;
   const [preview, setPreview] = useState<BulkRow[] | null>(null);
   const [result, setResult] = useState<BulkRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -178,12 +207,12 @@ export function ProposalsClient({
                 className="cursor-pointer hover:bg-muted/30"
                 onClick={(e) => {
                   if ((e.target as HTMLElement).closest("a, button, input, label")) return;
-                  router.push(`/agreements/proposals/${r.id}`);
+                  router.push(proposalHref(r.id));
                 }}
               >
                 <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${r.customerName}`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
                 <td className="px-3 py-2">
-                  <Link href={`/agreements/proposals/${r.id}`} className="font-medium hover:underline">{r.customerName}</Link>
+                  <Link href={proposalHref(r.id)} className="font-medium hover:underline">{r.customerName}</Link>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="font-mono text-xs text-muted-foreground">{r.soNumber}</span>
                     {r.customerStatus !== "ACTIVE" && <CustomerStatusBadge status={r.customerStatus} />}

@@ -522,7 +522,10 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
   const used = new Set<string>(RESERVED);
   for (const c of customers.filter((x) => OPEN_CUSTOMER_STATUSES.includes(x.status))) {
     const ws = wb.addWorksheet(safeSheetName(c.name, used));
-    buildCustomerSheet(ws, { picker: false, name: c.name, so: c.soNumber }, links);
+    // Increase % cells look like inputs only for agreements that go up by a % (policy at export time).
+    const escalates = (a: SaAgreement) => settings.fixedPrices[a] == null
+      && ((a === "SCADA_SOFTWARE" && c.software === "TDMS" && settings.tdmsPct != null) || settings.escalating.includes(a));
+    buildCustomerSheet(ws, { picker: false, name: c.name, so: c.soNumber, escalates }, links);
   }
 
   // ── Activity (last 31 days, snapshot) ──
@@ -731,7 +734,7 @@ const CV_DATE = "mm-dd-yy";
 const CV_COUNT = '0;\\-0;"-"';
 
 /** One customer, keyed by the SO # in B4 (Customer View: picked by name in B2). */
-function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: string; so: string }, links: SheetLink[]) {
+function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: string; so: string; escalates?: (a: SaAgreement) => boolean }, links: SheetLink[]) {
   const ag = SA_AGREEMENTS; // columns B.., TOTAL after them
   const TOT = 2 + ag.length;
   const lastAg = colL(1 + ag.length);
@@ -819,7 +822,7 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
   label(7, 1, "Next end date");
   field("B7:D7", 7, 2, f(`IF(N($A$${R.year1})=0,"",IFERROR(_xlfn.AGGREGATE(15,6,${Pr("end")}/((${Pr("so")}=${SO})*(${Pr("status")}="Signed")*(${Pr("year")}=$A$${R.year1})*(${Pr("end")}>0)),1),""))`), { fmt: CV_DATE, h: "left" });
   label(8, 1, "Notes");
-  field(`B8:${lastAg}8`, 8, 2, f(look("notes")), { h: "left", wrap: true });
+  field(`B8:${totC}8`, 8, 2, f(look("notes")), { h: "left", wrap: true }); // one value cell B..O
   grid(4, 1, 6, 13);
   grid(7, 1, 7, 4);
   grid(8, 1, 8, TOT);
@@ -888,14 +891,24 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
   grid(R.end, 1, R.end, 3);
   hint(R.end, 4, "< one end date for the whole proposal");
 
+  // Increase % only for agreements that go up by a % under the Settings policy (same order as the
+  // policy price below / proposePrices): a Standard price wins (no %); else SCADA Software on TDMS
+  // with a TDMS % set; else "Escalates by tier" = Yes. Every other agreement shows "".
   set(R.pct, 1, "Increase %", { b: true, fmt: PCT, h: "center" });
-  for (let c = 2; c < TOT; c++) {
+  ag.forEach((a, j) => {
+    const c = 2 + j;
     const col = colL(c);
-    const pct = `IFERROR(IF(OR(N(${col}$${R.price})=0,N(${col}$${R.year1})=0),"",${col}$${R.price}/${col}$${R.year1}-1),"")`;
-    set(R.pct, c, f(pct), { fill: INPUT, fmt: PCT, h: "center" });
+    const r = agRow(a);
+    let esc = `${setB(r)}="Yes"`;
+    if (a === "SCADA_SOFTWARE") esc = `OR(AND($B$5=${q(SOFTWARE_LABELS.TDMS)},${setB(SET.tdmsPct)}<>""),${esc})`;
+    if (FIXED_PRICE_AGREEMENTS.includes(a)) esc = `AND(${setC(r)}="",${esc})`;
+    const pct = `IFERROR(IF(OR(NOT(${esc}),N(${col}$${R.price})=0,N(${col}$${R.year1})=0),"",${col}$${R.price}/${col}$${R.year1}-1),"")`;
+    const input = !o.escalates || o.escalates(a);
+    set(R.pct, c, f(pct), { fill: input ? INPUT : undefined, fmt: PCT, h: "center" });
+    if (input) grid(R.pct, c, R.pct, c);
     ws.getCell(R.fPct, c).value = storeFormula(pct);
-  }
-  grid(R.pct, 1, R.pct, TOT - 1);
+  });
+  grid(R.pct, 1, R.pct, 1);
 
   head(R.head, 1, null);
   ag.forEach((a, i) => head(R.head, 2 + i, AGREEMENT_LABELS[a]));

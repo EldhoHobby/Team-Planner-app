@@ -221,7 +221,18 @@ export async function getProposal(scope: TenantScope, id: string) {
   const creator = p.createdById
     ? await prisma.user.findUnique({ where: { id: p.createdById }, select: { name: true, username: true } })
     : null;
+  // Agreements that go up by a % under the pricing policy (proposePrices' order): a Standard price
+  // wins (no %); else SCADA Software on TDMS with a TDMS % set; else the Settings "escalates" list.
+  // Only these show an Increase % on the proposal sheet.
+  const rules = await getSettings(scope);
+  const escalating: SaAgreement[] = SA_AGREEMENTS.filter((a) => {
+    const fixed = rules.fixedPrices[a];
+    if (fixed !== undefined && fixed !== null) return false;
+    if (a === "SCADA_SOFTWARE" && c.software === "TDMS" && rules.tdmsPct !== null) return true;
+    return rules.escalating.includes(a);
+  });
   return {
+    escalating,
     proposal: {
       id: p.id, version: p.version, year: p.year, status: p.status, endDate: ymd(p.endDate), sentDate: ymd(p.sentDate),
       signedDate: ymd(p.signedDate), closedDate: ymd(p.closedDate), declineReason: p.declineReason, notes: p.notes,

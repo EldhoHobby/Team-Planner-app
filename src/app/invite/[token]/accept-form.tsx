@@ -42,6 +42,10 @@ export function AcceptForm({ token, email }: { token: string; email: string }) {
         <Label htmlFor="confirmPassword">Confirm password</Label>
         <Input id="confirmPassword" name="confirmPassword" type="password" required minLength={8} autoComplete="new-password" />
       </div>
+      <p className="text-xs text-muted-foreground">
+        You&apos;ll sign in with a username, which is created for you. You can
+        see it any time under Settings → Account.
+      </p>
 
       {state.error ? (
         <p role="alert" className="text-sm text-destructive">

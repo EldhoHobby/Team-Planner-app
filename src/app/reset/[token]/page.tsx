@@ -26,8 +26,8 @@ export default async function ResetPasswordPage({
             <CardHeader>
               <CardTitle className="text-xl">Set a new password</CardTitle>
               <CardDescription>
-                Choose a new password for your account. You&apos;ll sign in with
-                it afterward.
+                Choose a new password for your account. Afterward, sign in with
+                your username and this password.
               </CardDescription>
             </CardHeader>
             <CardContent>

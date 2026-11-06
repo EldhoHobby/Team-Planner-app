@@ -74,11 +74,24 @@
    their identity colors on paper. Paper is ALWAYS the light theme — even when
    the app is in dark mode — so printouts get a white background and dark text
    instead of a black page (the `.dark` override below wins in print). */
+
+/* Paper: US Letter, LANDSCAPE, for every print and "Save as PDF" (Chrome / Edge
+   then hide the Layout + paper choice and use this). Kept at the top level, not
+   nested in @media print, and with an explicit paper size: a bare
+   `size: landscape` takes the browser's default paper, and on A4 (194 mm usable
+   height) the 196 mm .sa-page proposal sheet spills onto a second page.
+   Service-agreement sheets also use the named page below, so they stay Letter
+   landscape even if this default ever changes. */
+@page {
+  size: letter landscape;
+  margin: 8mm;
+}
+@page sa-sheet {
+  size: letter landscape;
+  margin: 8mm;
+}
+
 @media print {
-  @page {
-    size: landscape;
-    margin: 8mm;
-  }
   /* Let content flow across pages — no viewport-height clipping to one page. */
   html,
   body {
@@ -133,6 +146,7 @@
     appearance: none;
   }
   .sa-page {
+    page: sa-sheet;
     break-after: page;
     /* one landscape page (Letter 215.9 mm − 2 × 8 mm margins), footer pinned to the bottom like Excel's */
     height: 196mm;

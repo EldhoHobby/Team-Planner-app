@@ -18,13 +18,13 @@ import { writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 import type { LoginState } from "./types";
 
 const LoginSchema = z.object({
-  identifier: z.string().min(1), // username or email
+  identifier: z.string().min(1), // username (the UI only asks for this)
   password: z.string().min(1),
 });
 
-// Precomputed once and reused: when the email doesn't exist we still run a real
+// Precomputed once and reused: when the account doesn't exist we still run a real
 // verify against this hash, so a missing user and a wrong password take about
-// the same time. That denies attackers a timing oracle for email enumeration.
+// the same time. That denies attackers a timing oracle for account enumeration.
 let dummyHash: Promise<string> | null = null;
 function getDummyHash(): Promise<string> {
   return (dummyHash ??= hashPassword("timing-equalizer-not-a-real-password"));
@@ -59,7 +59,8 @@ export async function signIn(
     return { error: "Too many attempts for this account. Try again later." };
   }
 
-  // Username is the primary login key; an email address also works.
+  // The sign-in screen asks for a username only. An email address is still
+  // accepted here as a silent fallback so nobody who types theirs is locked out.
   const user = await prisma.user.findFirst({
     where: identifier.includes("@")
       ? { OR: [{ email: identifier }, { username: identifier }] }

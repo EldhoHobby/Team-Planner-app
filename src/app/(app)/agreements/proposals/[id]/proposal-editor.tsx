@@ -28,7 +28,15 @@ function signedPct(n: number | null) {
   return `${r > 0 ? "+" : ""}${r}%`;
 }
 
-export function ProposalEditor({ data, canEdit, today }: { data: ProposalDetail; canEdit: boolean; today: string }) {
+export function ProposalEditor({
+  data, canEdit, today, backHref = "/agreements/proposals",
+}: {
+  data: ProposalDetail;
+  canEdit: boolean;
+  today: string;
+  /** The Proposals list as the user left it (filters kept) — always a path under /agreements/proposals. */
+  backHref?: string;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
@@ -57,16 +65,16 @@ export function ProposalEditor({ data, canEdit, today }: { data: ProposalDetail;
     run(() => proposalTransitionAction({ id: p.id, version: p.version, action }), ok);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 print:space-y-0">
       <nav className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground print:hidden">
-        <Link href="/agreements/proposals" className="inline-flex items-center gap-1 hover:text-foreground">
+        <Link href={backHref} className="inline-flex items-center gap-1 hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> Proposals
         </Link>
         <Link href={`/agreements/customers/${c.id}?tab=proposals`} className="hover:text-foreground">{c.name}</Link>
       </nav>
 
-      {/* Workflow bar */}
-      <section className="rounded-lg border bg-card p-4">
+      {/* Workflow bar (screen only: Ctrl+P prints just the sheet, like Print / PDF) */}
+      <section className="rounded-lg border bg-card p-4 print:hidden">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -161,7 +169,7 @@ export function ProposalEditor({ data, canEdit, today }: { data: ProposalDetail;
         <Timeline p={p} />
       </section>
 
-      <div aria-live="polite" className="min-h-0">
+      <div aria-live="polite" className="min-h-0 print:hidden">
         {msg && (
           <p role={msg.error ? "alert" : "status"} className={cn("rounded-md border px-3 py-2 text-sm", msg.error ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-emerald-500/40 bg-emerald-500/10")}>
             {msg.text}
@@ -170,18 +178,20 @@ export function ProposalEditor({ data, canEdit, today }: { data: ProposalDetail;
       </div>
 
       {/* The proposal in the agreed Excel layout — edited in place (yellow cells) and printed as is */}
-      <ProposalSheet
-        d={data}
-        printDate={today}
-        editable={editable}
-        pending={pending}
-        onPrice={(line, price) =>
-          run(() => setLinePriceAction({ lineId: line.id, version: line.version, price: Math.round(price) }), `${AGREEMENT_LABELS[line.agreement]} saved at ${fmtMoney(Math.round(price))}.`)}
-        onEndDate={(endDate) => run(() => updateProposalHeaderAction({ id: p.id, version: p.version, endDate, notes: p.notes }), "End date saved.")}
-        onAdd={(agreement, price) => run(() => addLineAction({ proposalId: p.id, agreement, price }), `${AGREEMENT_LABELS[agreement]} added.`)}
-        onRemove={(line) => run(() => removeLineAction({ lineId: line.id }), `${AGREEMENT_LABELS[line.agreement]} removed.`)}
-        onNotes={(notes) => run(() => updateProposalHeaderAction({ id: p.id, version: p.version, endDate: p.endDate, notes }), "Notes saved.")}
-      />
+      <div className="sa-page">
+        <ProposalSheet
+          d={data}
+          printDate={today}
+          editable={editable}
+          pending={pending}
+          onPrice={(line, price) =>
+            run(() => setLinePriceAction({ lineId: line.id, version: line.version, price: Math.round(price) }), `${AGREEMENT_LABELS[line.agreement]} saved at ${fmtMoney(Math.round(price))}.`)}
+          onEndDate={(endDate) => run(() => updateProposalHeaderAction({ id: p.id, version: p.version, endDate, notes: p.notes }), "End date saved.")}
+          onAdd={(agreement, price) => run(() => addLineAction({ proposalId: p.id, agreement, price }), `${AGREEMENT_LABELS[agreement]} added.`)}
+          onRemove={(line) => run(() => removeLineAction({ lineId: line.id }), `${AGREEMENT_LABELS[line.agreement]} removed.`)}
+          onNotes={(notes) => run(() => updateProposalHeaderAction({ id: p.id, version: p.version, endDate: p.endDate, notes }), "Notes saved.")}
+        />
+      </div>
 
       {closing && (
         <CloseProposalDialog

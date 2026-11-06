@@ -38,6 +38,10 @@ export function SetupForm() {
         <div className="space-y-2">
           <Label htmlFor="email">Email</Label>
           <Input id="email" name="email" type="email" placeholder="you@example.com" required />
+          <p className="text-xs text-muted-foreground">
+            Your sign-in username is created from this. You can see it any time
+            under Settings → Account.
+          </p>
         </div>
         <div className="space-y-2">
           <Label htmlFor="password">Password</Label>
