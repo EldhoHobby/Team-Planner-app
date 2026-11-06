@@ -7,11 +7,11 @@ import { ProposalsClient } from "./proposals-client";
 
 export const dynamic = "force-dynamic";
 
-export default async function ProposalsPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
+export default async function ProposalsPage({ searchParams }: { searchParams: Promise<{ status?: string; customer?: string }> }) {
   await requireAuth();
   const { scope } = await requireScope();
   await recordPageView(scope, "Service agreement proposals");
   const sp = await searchParams;
   const [rows, canEdit] = await Promise.all([listProposals(scope), canEditAgreements(scope)]);
-  return <ProposalsClient rows={rows} canEdit={canEdit} initialStatus={sp.status ?? "OPEN"} />;
+  return <ProposalsClient rows={rows} canEdit={canEdit} initialStatus={sp.status ?? "OPEN"} initialCustomer={sp.customer ?? "DEFAULT"} />;
 }

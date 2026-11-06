@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import {
-  AGREEMENT_LABELS, isOpenCustomer, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement, type SaCustomerStatus,
+  AGREEMENT_LABELS, CUSTOMER_STATUSES, CUSTOMER_STATUS_LABELS, isOpenCustomer, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement, type SaCustomerStatus,
 } from "@/lib/agreements/constants";
 import type { ProposalListRow } from "@/lib/services/agreements/proposals";
 import { CustomerStatusBadge, ProposalBadge } from "../badges";
@@ -21,12 +21,20 @@ const SELECT = "h-9 rounded-md border bg-background px-2 text-sm";
 const hiddenByDefault = (s: SaCustomerStatus) => s === "PENDING" || !isOpenCustomer(s);
 const labels = (l: SaAgreement[]) => l.map((a) => AGREEMENT_LABELS[a]).join(", ");
 
-export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: ProposalListRow[]; canEdit: boolean; initialStatus: string }) {
+/** Customer-status filter: "DEFAULT" = Active + Expired – still waiting (Pending is parked), "" = all, or one status. */
+function matchesCustomer(filter: string, s: SaCustomerStatus) {
+  if (filter === "DEFAULT") return !hiddenByDefault(s);
+  return filter === "" || filter === s;
+}
+
+export function ProposalsClient({
+  rows, canEdit, initialStatus, initialCustomer,
+}: { rows: ProposalListRow[]; canEdit: boolean; initialStatus: string; initialCustomer: string }) {
   const router = useRouter();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState(initialStatus);
   const [month, setMonth] = useState("");
-  const [showInactive, setShowInactive] = useState(false);
+  const [customer, setCustomer] = useState(initialCustomer);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMonth, setBulkMonth] = useState("");
   const [preview, setPreview] = useState<BulkRow[] | null>(null);
@@ -40,10 +48,10 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
       (r) =>
         (status === "" || (status === "OPEN" ? r.status === "DRAFT" || r.status === "SENT" : r.status === status)) &&
         (!month || r.renewsMonth === month) &&
-        (showInactive || !hiddenByDefault(r.customerStatus)) &&
+        matchesCustomer(customer, r.customerStatus) &&
         (!n || r.customerName.toLowerCase().includes(n) || r.soNumber.toLowerCase().includes(n)),
     );
-  }, [rows, q, status, month, showInactive]);
+  }, [rows, q, status, month, customer]);
 
   const allSelected = shown.length > 0 && shown.every((r) => selected.has(r.id));
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(shown.map((r) => r.id)));
@@ -108,10 +116,15 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
           Renews agreements ending
           <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className={SELECT} />
         </label>
-        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-          Include pending / not renewed / inactive customers
-        </label>
+        <select value={customer} onChange={(e) => setCustomer(e.target.value)} className={SELECT} aria-label="Customer status">
+          <option value="DEFAULT">Active + Expired – still waiting</option>
+          {CUSTOMER_STATUSES.map((st) => (
+            <option key={st} value={st}>
+              {CUSTOMER_STATUS_LABELS[st]} ({rows.filter((r) => r.customerStatus === st).length})
+            </option>
+          ))}
+          <option value="">All customer statuses</option>
+        </select>
         <Button variant="outline" className="ml-auto" disabled={!printIds.length} asChild={printIds.length > 0}>
           {printIds.length ? (
             <Link href={`/agreements/proposals/print?ids=${printIds.join(",")}${month ? `&title=${month}` : ""}`} target="_blank">
