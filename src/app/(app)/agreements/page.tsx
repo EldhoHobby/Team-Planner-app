@@ -108,11 +108,11 @@ export default async function AgreementsDashboard() {
       <div className="rounded-lg border bg-card p-8 text-center">
         <h2 className="text-lg font-semibold">No service agreements yet</h2>
         <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-          An admin can import the Excel prototype from Settings, or add customers one at a time on the Customers page.
+          Add customers on the Customers page, or bring them in with the monthly workbook in Settings.
         </p>
         <div className="mt-4 flex justify-center gap-2">
-          <Link href="/agreements/settings#import" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Import data</Link>
-          <Link href="/agreements/customers" className="rounded-md border px-4 py-2 text-sm font-medium">Customers</Link>
+          <Link href="/agreements/customers" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Customers</Link>
+          <Link href="/agreements/settings#workbook" className="rounded-md border px-4 py-2 text-sm font-medium">Monthly workbook</Link>
         </div>
       </div>
     );

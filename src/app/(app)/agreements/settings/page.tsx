@@ -4,7 +4,6 @@ import { recordPageView } from "@/lib/services/audit";
 import { canEditAgreements, getSettings } from "@/lib/services/agreements/common";
 import { SA_EDITOR_GROUP } from "@/lib/agreements/constants";
 import { SettingsForm } from "./settings-form";
-import { ImportCard } from "./import-card";
 import { ResetCard } from "./reset-card";
 import { WorkbookCard } from "./workbook-card";
 
@@ -31,7 +30,6 @@ export default async function AgreementSettingsPage() {
           {!canEdit && <p className="mt-2 font-medium text-amber-700 dark:text-amber-400">You have view-only access.</p>}
         </section>
         {canEdit && <WorkbookCard />}
-        {scope.ctx.isOrgAdmin && <ImportCard />}
         {scope.ctx.isOrgAdmin && <ResetCard />}
       </div>
     </div>
