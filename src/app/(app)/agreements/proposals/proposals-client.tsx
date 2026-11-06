@@ -1,6 +1,6 @@
 "use client";
 
-import { ymdEastern } from "@/lib/tz";
+import { todayYmd, ymdEastern } from "@/lib/tz";
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -8,6 +8,7 @@ import { Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { cn } from "@/lib/utils";
 import {
   AGREEMENT_LABELS, CUSTOMER_STATUSES, CUSTOMER_STATUS_LABELS, isOpenCustomer, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement, type SaCustomerStatus,
 } from "@/lib/agreements/constants";
@@ -41,6 +42,7 @@ export function ProposalsClient({
   const [result, setResult] = useState<BulkRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const today = todayYmd();
 
   const shown = useMemo(() => {
     const n = q.trim().toLowerCase();
@@ -162,15 +164,40 @@ export function ProposalsClient({
                   </div>
                 </td>
                 <td className="px-3 py-2 tabular-nums">{r.year}</td>
-                <td className="px-3 py-2"><ProposalBadge status={r.status} /></td>
+                <td className="px-3 py-2">
+                  <ProposalBadge status={r.status} />
+                  {r.status === "SENT" && r.sentDate && (() => {
+                    const d = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${r.sentDate}T00:00:00Z`)) / 86_400_000);
+                    return <div className={cn("mt-0.5 text-xs", d > 14 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>waiting {d} day{d === 1 ? "" : "s"}</div>;
+                  })()}
+                </td>
                 <td className="px-3 py-2 text-right font-medium tabular-nums">{fmtMoney(r.total)}</td>
                 <td className="max-w-[20rem] px-3 py-2 text-muted-foreground">{labels(r.agreements)}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{fmtDate(r.endDate) || "—"}</td>
                 <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{fmtDate(ymdEastern(r.updatedAt))}</td>
               </tr>
             ))}
-            {!shown.length && <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">No proposals match.</td></tr>}
+            {!shown.length && (
+              <tr>
+                <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
+                  No proposals match these filters.{" "}
+                  <button type="button" className="text-primary hover:underline" onClick={() => { setQ(""); setStatus(""); setMonth(""); setCustomer(""); }}>
+                    Clear filters
+                  </button>
+                </td>
+              </tr>
+            )}
           </tbody>
+          {shown.length > 0 && (
+            <tfoot className="border-t bg-muted/40 text-sm">
+              <tr>
+                <td />
+                <td className="px-3 py-2 text-muted-foreground" colSpan={3}>{shown.length} of {rows.length} proposals</td>
+                <td className="px-3 py-2 text-right font-semibold tabular-nums">{fmtMoney(shown.reduce((a, r) => a + r.total, 0))}</td>
+                <td colSpan={3} />
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 

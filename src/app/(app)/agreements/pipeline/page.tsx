@@ -11,6 +11,6 @@ export default async function PipelinePage() {
   await requireAuth();
   const { scope } = await requireScope();
   await recordPageView(scope, "Service agreement pipeline");
-  const [{ cards }, canEdit] = await Promise.all([getPipeline(scope), canEditAgreements(scope)]);
-  return <PipelineBoard cards={cards} canEdit={canEdit} />;
+  const [{ cards, today }, canEdit] = await Promise.all([getPipeline(scope), canEditAgreements(scope)]);
+  return <PipelineBoard cards={cards} canEdit={canEdit} today={today} />;
 }

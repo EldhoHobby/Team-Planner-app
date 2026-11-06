@@ -27,7 +27,20 @@ const MOVES: Partial<Record<PipelineColumn, PipelineColumn[]>> = {
   CLOSED: ["DRAFT"],
 };
 
-export function PipelineBoard({ cards, canEdit }: { cards: PipelineCard[]; canEdit: boolean }) {
+/** The next step for a card, offered as a button so nothing needs dragging. */
+const NEXT: Partial<Record<PipelineColumn, { to: PipelineColumn; label: string }>> = {
+  DUE: { to: "DRAFT", label: "Start proposal" },
+  DRAFT: { to: "SENT", label: "Mark sent" },
+  SENT: { to: "SIGNED", label: "Mark signed" },
+  CLOSED: { to: "DRAFT", label: "Reopen" },
+};
+
+function daysSince(from: string | null, today: string): number | null {
+  if (!from) return null;
+  return Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}
+
+export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]; canEdit: boolean; today: string }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [q, setQ] = useState("");
@@ -77,7 +90,7 @@ export function PipelineBoard({ cards, canEdit }: { cards: PipelineCard[]; canEd
       <div className="flex flex-wrap items-center gap-3">
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name or SO #" className="w-64" />
         <p className="text-xs text-muted-foreground">
-          {canEdit ? "Drag a card to move it: Due → Draft creates a proposal; Draft → Sent marks it sent; → Signed signs it." : "View only."}
+          {canEdit ? "Use the button on a card for its next step, or drag it to another column (drag to Declined to close it)." : "View only."}
         </p>
         {pending && <span className="text-xs text-muted-foreground">Saving…</span>}
       </div>
@@ -142,6 +155,14 @@ export function PipelineBoard({ cards, canEdit }: { cards: PipelineCard[]; canEd
                     {c.customerStatus !== "ACTIVE" && <div className="mt-1"><CustomerStatusBadge status={c.customerStatus} /></div>}
                     <div className="mt-1 flex items-baseline justify-between gap-2">
                       <span className="font-semibold tabular-nums">{fmtMoney(c.value)}</span>
+                      {c.column === "SENT" && (() => {
+                        const d = daysSince(c.dateLabel?.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? null, today);
+                        return d !== null ? (
+                          <span className={cn("text-[11px]", d > 14 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
+                            waiting {d} day{d === 1 ? "" : "s"}
+                          </span>
+                        ) : null;
+                      })()}
                       <span className={cn("text-[11px]", c.dateLabel === "Expired" ? "font-medium text-red-700 dark:text-red-400" : "text-muted-foreground")}>
                         {c.column === "DUE"
                           ? c.dateLabel === "Expired"
@@ -154,6 +175,16 @@ export function PipelineBoard({ cards, canEdit }: { cards: PipelineCard[]; canEd
                               : ""}
                       </span>
                     </div>
+                    {canEdit && NEXT[c.column] && (
+                      <button
+                        type="button"
+                        disabled={pending}
+                        onClick={() => move(c, NEXT[c.column]!.to)}
+                        className="mt-2 w-full rounded border px-2 py-1 text-xs font-medium text-primary hover:bg-primary/5 disabled:opacity-50"
+                      >
+                        {NEXT[c.column]!.label}
+                      </button>
+                    )}
                   </li>
                 ))}
                 {!list.length && <li className="px-1 py-4 text-center text-xs text-muted-foreground">Nothing here</li>}

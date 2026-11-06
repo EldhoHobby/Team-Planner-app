@@ -188,7 +188,7 @@ export function ProposalSheet({
                 return (
                   <td key={a} className={cn(TD, dim(a), editable && l && base && "p-0")}>
                     {editable && l && base ? (
-                      <Cell value={change} suffix="%" ariaLabel={`${AGREEMENT_LABELS[a]} increase %`} disabled={pending} onCommit={(v) => onPrice?.(l, applyPct(base, v))} />
+                      <EditCell value={change} suffix="%" ariaLabel={`${AGREEMENT_LABELS[a]} increase %`} disabled={pending} onCommit={(v) => onPrice?.(l, applyPct(base, v))} />
                     ) : (
                       pct(change)
                     )}
@@ -209,7 +209,7 @@ export function ProposalSheet({
                 return (
                   <td key={a} className={cn(TD, dim(a), editable && l && "p-0")}>
                     {editable && l ? (
-                      <Cell value={l.price} prefix="$" ariaLabel={`${AGREEMENT_LABELS[a]} proposed price`} disabled={pending} onCommit={(v) => onPrice?.(l, v)} />
+                      <EditCell value={l.price} prefix="$" ariaLabel={`${AGREEMENT_LABELS[a]} proposed price`} disabled={pending} onCommit={(v) => onPrice?.(l, v)} />
                     ) : (
                       fmtMoney(l?.price ?? 0)
                     )}
@@ -231,8 +231,8 @@ export function ProposalSheet({
   );
 }
 
-/** Yellow editable cell (like the prototype); commits on blur / Enter, Escape reverts. */
-function Cell({
+/** Yellow editable cell (like the prototype); commits on blur / Enter, Escape reverts. Also used by the Pricing table. */
+export function EditCell({
   value,
   prefix,
   suffix,
