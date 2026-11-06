@@ -38,6 +38,13 @@ model Organization {
   workGroups   WorkGroup[]
   techTaskNotes TechTaskNote[]
   jobNotes      JobNote[]
+  changeHistory ChangeHistory[]
+  saCustomers      SaCustomer[]
+  saContractLines  SaContractLine[]
+  saProposals      SaProposal[]
+  saProposalLines  SaProposalLine[]
+  saCalls          SaCallsRepairs[]
+  saSettings       SaSettings?
 }
 
 model User {
@@ -609,6 +616,10 @@ model TechTask {
   externalUrl    String?
   lastSyncedAt   DateTime?
   syncDirty      Boolean     @default(false)
+  // Optimistic-locking counter (template for new modules — see
+  // src/lib/db/optimistic.ts). Every update bumps it; a save that names a
+  // stale version is rejected with StaleSaveError instead of overwriting.
+  version      Int           @default(1)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -714,6 +725,30 @@ model AuditLog {
   @@index([orgId, createdAt]) // audit page: newest-first browsing + retention prune
 }
 
+// PERMANENT field-level change history (who / when / entity / field / old → new).
+// Unlike AuditLog this is NEVER pruned — it is the record of truth for things
+// like agreement-price changes. Written via recordFieldChanges() in
+// src/lib/services/change-history.ts, ideally in the SAME transaction as the
+// update. actorId is a plain string (no FK) so history survives user deletion;
+// actorName is a display-name snapshot. Values are stored as text (null = empty).
+model ChangeHistory {
+  id        String   @id @default(cuid())
+  orgId     String
+  actorId   String? // REAL user (an OWNER using "View as" is recorded as themselves)
+  actorName String
+  entity    String // "techtask" | "agreement" | ...
+  entityId  String
+  field     String
+  oldValue  String?
+  newValue  String?
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, entity, entityId, createdAt])
+  @@index([orgId, createdAt])
+}
+
 // Metadata in Postgres; bytes on the local uploads volume. Downloads are
 // served through the app so RBAC/tenancy is enforced.
 model Attachment {
@@ -733,4 +768,207 @@ model Attachment {
 
   @@index([taskId])
   @@index([orgId])
+}
+
+// ─── Service agreements (/agreements) ────────────────────────────────────────
+// Customers keyed by their SERVICE SO # (first system's sales order — NOT
+// Task.soNumber, which is a project SYS#). Signed agreements are contract
+// lines (customer + year + agreement). Next year's prices live in PROPOSALS,
+// records with their own workflow: DRAFT → SENT → SIGNED (lines become the new
+// year's contract lines) or DECLINED / WITHDRAWN. Edits are version-guarded
+// (src/lib/db/optimistic.ts); changes go to the permanent ChangeHistory
+// (entity "sa_customer", entityId = customer id).
+
+enum SaCustomerStatus {
+  ACTIVE
+  PENDING
+  EXPIRED_WAITING
+  NOT_RENEWED
+  INACTIVE
+}
+
+enum SaSoftware {
+  QSCADA_PLUS
+  TDMS
+  RTU_ONLY
+}
+
+// The 12 agreement types, fixed display order (SA_AGREEMENTS in src/lib/agreements).
+enum SaAgreement {
+  SCADA_SOFTWARE
+  CONFIGWIZ
+  RTU_HARDWARE
+  SERVER_HARDWARE
+  AFTER_HOURS
+  ONSITE
+  DIAGNOSTIC
+  BACKUP_DR
+  WEB_TRAINING
+  NERC_RIDER_SCADA // Master Station (policy $5,000)
+  NERC_RIDER_RTU // ConfigWiz / Automation (policy $2,500)
+  QWEB
+  OTHER
+}
+
+enum SaLineStatus {
+  ACTIVE
+  CANCELLED // dropped during the term
+}
+
+enum SaProposalStatus {
+  DRAFT
+  SENT
+  SIGNED
+  DECLINED
+  WITHDRAWN
+}
+
+model SaCustomer {
+  id              String           @id @default(cuid())
+  orgId           String
+  soNumber        String // first system's sales order — unique per org
+  soConfirmed     Boolean          @default(true) // false = suggested / temporary SO #
+  name            String
+  status          SaCustomerStatus @default(ACTIVE)
+  state           String?
+  software        SaSoftware?
+  softwareVersion String?
+  wvPeVersion     String?
+  server          String?
+  serverInstall   String? // free text in the source data
+  lastServerSo    String?
+  qwebLicenses    Int?
+  notes           String?
+  version         Int              @default(1)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  org       Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  contracts SaContractLine[]
+  proposals SaProposal[]
+  calls     SaCallsRepairs[]
+
+  @@unique([orgId, soNumber])
+  @@index([orgId, name])
+}
+
+/// One signed agreement for one customer and contract year.
+model SaContractLine {
+  id           String       @id @default(cuid())
+  orgId        String
+  customerId   String
+  year         Int
+  agreement    SaAgreement
+  price        Decimal      @db.Decimal(12, 2)
+  status       SaLineStatus @default(ACTIVE)
+  endDate      DateTime?    @db.Date
+  signedDate   DateTime?    @db.Date
+  checked      Boolean      @default(false) // Maintenance report "Checked"
+  invoicedDate DateTime?    @db.Date // Maintenance report "DATE INV'D"
+  notes        String?
+  proposalId   String? // the proposal it was signed from (null for imported history)
+  version      Int          @default(1)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  customer SaCustomer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  proposal SaProposal?  @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+
+  @@unique([customerId, year, agreement])
+  @@index([orgId, year])
+  @@index([orgId, endDate])
+}
+
+/// A renewal offer for one contract year. A customer's open/signed proposals
+/// for the same year never share an agreement (bulk-by-month can make several).
+model SaProposal {
+  id            String           @id @default(cuid())
+  orgId         String
+  customerId    String
+  year          Int
+  status        SaProposalStatus @default(DRAFT)
+  endDate       DateTime?        @db.Date // one end date for the whole proposal
+  sentDate      DateTime?        @db.Date
+  signedDate    DateTime?        @db.Date
+  closedDate    DateTime?        @db.Date // declined / withdrawn
+  declineReason String?
+  notes         String?
+  createdById   String?
+  version       Int              @default(1)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  org       Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  customer  SaCustomer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  lines     SaProposalLine[]
+  contracts SaContractLine[]
+
+  @@index([orgId, status])
+  @@index([customerId, year])
+}
+
+model SaProposalLine {
+  id         String      @id @default(cuid())
+  orgId      String
+  proposalId String
+  agreement  SaAgreement
+  lastPrice  Decimal?    @db.Decimal(12, 2) // the signed price it renews (null = new agreement)
+  price      Decimal     @db.Decimal(12, 2)
+  rule       String // how the price was set: tier | tdms | fixed | keep | waived | manual
+  version    Int         @default(1)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  proposal SaProposal   @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@unique([proposalId, agreement])
+  @@index([orgId])
+}
+
+model SaCallsRepairs {
+  id         String   @id @default(cuid())
+  orgId      String
+  customerId String
+  year       Int
+  calls      Int      @default(0)
+  repairs    Int      @default(0)
+  version    Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  customer SaCustomer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, year])
+  @@index([orgId])
+}
+
+/// Pricing rules for new proposals (one row per org). Defaults = 2026
+/// Technical Services Policy Pricing (Rev 062426).
+model SaSettings {
+  orgId               String        @id
+  tierLowMax          Int           @default(5000)
+  tierMidMax          Int           @default(10000)
+  pctLow              Decimal       @default(5) @db.Decimal(5, 2)
+  pctMid              Decimal       @default(4) @db.Decimal(5, 2)
+  pctHigh             Decimal       @default(3) @db.Decimal(5, 2)
+  // TDMS SCADA Software increase each renewal (100 = doubles). Null = use the tiers.
+  tdmsPct             Decimal?      @default(100) @db.Decimal(6, 2)
+  escalating          SaAgreement[] @default([SCADA_SOFTWARE, CONFIGWIZ, RTU_HARDWARE, SERVER_HARDWARE])
+  autoWaiveAfterHours Boolean       @default(true)
+  afterHoursWaiveAt   Int           @default(25000)
+  // Standard prices for new proposals = policy list prices (blank = keep the customer's last price).
+  priceAfterHours     Int?          @default(1955)
+  priceDiagnostic     Int?          @default(1700)
+  priceBackupDr       Int?          @default(4500)
+  priceWebTraining    Int?          @default(292)
+  priceNercScada      Int?          @default(5000)
+  priceNercRtu        Int?          @default(2500)
+  dueWindowDays       Int           @default(90) // "due for renewal" = ends within this many days
+  version             Int           @default(1)
+  updatedAt           DateTime      @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 }

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
-import { todayUtcMs } from "@/lib/tz";
+import { fmtEastern, todayUtcMs } from "@/lib/tz";
 import {
   createTechTaskAction,
   updateTechTaskAction,
@@ -600,7 +600,7 @@ function CompletedWeeks({ weeks, refresh }: { weeks: OwnerGroup["completedWeeks"
                     <span className="tabular-nums text-xs text-muted-foreground">#{t.priority}</span>
                     <span className="flex-1 text-muted-foreground line-through">{t.title}</span>
                     {t.completedAt ? (
-                      <span className="text-xs text-muted-foreground">{fmtDate(t.completedAt)}</span>
+                      <span className="text-xs text-muted-foreground">{t.completedAt ? fmtEastern(t.completedAt, { month: "short", day: "numeric", year: "numeric" }) : "—"}</span>
                     ) : null}
                   </li>
                 ))}

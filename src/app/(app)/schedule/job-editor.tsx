@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtEastern } from "@/lib/tz";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, Inbox, History, Copy, AlertTriangle, MessageSquarePlus, ChevronDown, ChevronRight } from "lucide-react";
@@ -602,7 +603,7 @@ Changed: ${changed.join("; ")}`;
                   <li key={e.key} className="text-xs">
                     {e.kind === "change" ? (
                       <div className="flex gap-2 text-muted-foreground">
-                        <span className="shrink-0">{new Date(e.when).toLocaleString()}</span>
+                        <span className="shrink-0">{fmtEastern(e.when, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                         <span className="italic">
                           {e.body}
                           {e.who && e.who !== "system" ? ` — ${e.who}` : ""}
@@ -626,7 +627,7 @@ Changed: ${changed.join("; ")}`;
                       <div className="rounded-md border p-2">
                         <div className="mb-0.5 flex items-center gap-2 text-muted-foreground">
                           <span className="font-medium text-foreground">{e.who}</span>
-                          <span>{new Date(e.when).toLocaleString()}</span>
+                          <span>{fmtEastern(e.when, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {e.editedAt ? <span className="italic">(edited)</span> : null}
                           {e.mine || isAdmin ? (
                             <span className="ml-auto flex gap-2">

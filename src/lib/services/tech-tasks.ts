@@ -1,7 +1,10 @@
+import { ymdEastern } from "@/lib/tz";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "@/lib/services/audit";
+import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
+import { assertFreshWrite, versionGuard, StaleSaveError } from "@/lib/db/optimistic";
 import type { TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
 
 export type { TechTaskState, TaskOrigin, NoteKind };
@@ -24,6 +27,8 @@ export interface TechTaskRow {
   completedAt: string | null;
   createdAt: string;
   commentCount: number;
+  /** Optimistic-lock version — send back as expectedVersion when saving. */
+  version: number;
 }
 
 /** One entry in a task's ticket thread: a user COMMENT or a system CHANGE note. */
@@ -72,7 +77,7 @@ export interface DashboardData {
 function serialize(t: {
   id: string; ownerId: string; title: string; notes: string | null; priority: number;
   targetDate: Date | null; state: TechTaskState; origin: TaskOrigin; location: string | null;
-  completedAt: Date | null; createdAt: Date;
+  completedAt: Date | null; createdAt: Date; version: number;
 }, commentCount = 0): TechTaskRow {
   return {
     id: t.id, ownerId: t.ownerId, title: t.title, notes: t.notes, priority: t.priority,
@@ -81,6 +86,7 @@ function serialize(t: {
     completedAt: t.completedAt ? t.completedAt.toISOString() : null,
     createdAt: t.createdAt.toISOString(),
     commentCount,
+    version: t.version,
   };
 }
 
@@ -264,7 +270,8 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
     const byWeek = new Map<string, TechTaskRow[]>();
     for (const t of done) {
       const when = t.completedAt ?? t.createdAt;
-      const ws = weekStartOf(new Date(when));
+      // Eastern calendar day of completion (the UTC day is tomorrow after 7–8 pm ET).
+      const ws = weekStartOf(new Date(`${ymdEastern(when)}T00:00:00Z`));
       const key = ws.toISOString().slice(0, 10);
       const arr = byWeek.get(key) ?? [];
       arr.push(t);
@@ -356,7 +363,19 @@ export interface UpdateTechTaskInput {
   location?: string;
   /** Reassign to another person (any active org member, any department). */
   ownerId?: string;
+  /**
+   * Optimistic lock: the `version` the caller loaded. When given and the row
+   * has moved on, the save is rejected with StaleSaveError (nothing written).
+   * Omit only for single-field quick actions (e.g. a Kanban drag) where
+   * last-write-wins is acceptable; those still bump the version.
+   */
+  expectedVersion?: number;
 }
+
+/** Fields tracked in the permanent ChangeHistory table. */
+export const TECH_TASK_HISTORY_FIELDS = [
+  "title", "notes", "priority", "targetDate", "state", "location", "ownerId",
+] as const;
 
 // ─── Ticket thread (comments + change history) ───
 
@@ -506,6 +525,10 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
   const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
   if (!existing) throw new ForbiddenError("Task not found");
   await assertCanManageOwner(scope, existing.ownerId);
+  // Cheap early reject; the guarded updateMany below is the real (race-safe) check.
+  if (input.expectedVersion !== undefined && input.expectedVersion !== existing.version) {
+    throw new StaleSaveError("task");
+  }
 
   // Reassignment: allowed by whoever can edit the task (owner / their managers /
   // admins); the TARGET may be anyone active in the org — any department.
@@ -538,28 +561,40 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
     else if (existing.state === "DONE") completedAt = null;
   }
 
-  const task = await prisma.techTask.update({
-    where: { id },
-    data: {
-      ...(input.title !== undefined ? { title: input.title.trim() } : {}),
-      ...(input.notes !== undefined ? { notes: input.notes?.trim() || null } : {}),
-      ...(input.priority !== undefined ? { priority: input.priority > 0 ? Math.floor(input.priority) : 3 } : {}),
-      ...(input.targetDate !== undefined ? { targetDate: input.targetDate } : {}),
-      ...(input.state !== undefined ? { state: input.state } : {}),
-      ...(completedAt !== undefined ? { completedAt } : {}),
-      ...(input.location !== undefined ? { location: input.location?.trim() || null } : {}),
-      // Reassign: hand the task to the new person; the reassigner becomes the
-      // "assigned by" and the origin flips to MANAGER (it was handed over).
-      ...(reassigning
-        ? {
-            ownerId: newOwner!.id,
-            assignedById: scope.ctx.userId,
-            ...(newOwner!.id !== scope.ctx.userId ? { origin: "MANAGER" as TaskOrigin } : {}),
-          }
-        : {}),
-      // Flag synced tasks whose state changed so a future Outlook sync pushes it back.
-      ...(stateChanged && existing.externalId ? { syncDirty: true } : {}),
-    },
+  // Guarded write + permanent field history in ONE transaction: if the
+  // version moved on, nothing is written and StaleSaveError reaches the caller.
+  const task = await prisma.$transaction(async (tx) => {
+    const res = await tx.techTask.updateMany({
+      where: { id, orgId: scope.ctx.orgId, ...versionGuard(input.expectedVersion) },
+      data: {
+        version: { increment: 1 },
+        ...(input.title !== undefined ? { title: input.title.trim() } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes?.trim() || null } : {}),
+        ...(input.priority !== undefined ? { priority: input.priority > 0 ? Math.floor(input.priority) : 3 } : {}),
+        ...(input.targetDate !== undefined ? { targetDate: input.targetDate } : {}),
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...(completedAt !== undefined ? { completedAt } : {}),
+        ...(input.location !== undefined ? { location: input.location?.trim() || null } : {}),
+        // Reassign: hand the task to the new person; the reassigner becomes the
+        // "assigned by" and the origin flips to MANAGER (it was handed over).
+        ...(reassigning
+          ? {
+              ownerId: newOwner!.id,
+              assignedById: scope.ctx.userId,
+              ...(newOwner!.id !== scope.ctx.userId ? { origin: "MANAGER" as TaskOrigin } : {}),
+            }
+          : {}),
+        // Flag synced tasks whose state changed so a future Outlook sync pushes it back.
+        ...(stateChanged && existing.externalId ? { syncDirty: true } : {}),
+      },
+    });
+    assertFreshWrite(res.count, "task");
+    const updated = await tx.techTask.findUniqueOrThrow({ where: { id } });
+    await recordFieldChanges(
+      tx, scope, "techtask", id,
+      diffFields(existing, updated, TECH_TASK_HISTORY_FIELDS),
+    );
+    return updated;
   });
   // Inline cells auto-save on blur — coalesce rapid edits into one entry, but
   // call out state changes explicitly (they matter for the trail).

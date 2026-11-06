@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useTransition, type KeyboardEvent } from "react";
+import { fmtEastern } from "@/lib/tz";
+import { useEffect, useRef, useState, useTransition, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Pencil, Trash2, MessageSquare, GitCommitHorizontal } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
@@ -35,12 +36,10 @@ function relTime(iso: string): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.round(h / 24);
   if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return fmtEastern(iso, { month: "short", day: "numeric", year: "numeric" });
 }
 function absTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
-  });
+  return fmtEastern(iso, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 }
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -98,9 +97,41 @@ export function TaskTicket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id]);
 
+  // Optimistic lock: every save sends the version this ticket last saw. A
+  // save that lost a race comes back `stale` — nothing was written; show why
+  // and reload the latest values instead of overwriting the other person.
+  const versionRef = useRef(task.version);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const reloadDrafts = useRef(false);
+  useEffect(() => {
+    // New task, or a refresh brought a newer version from the server.
+    if (task.version > versionRef.current) versionRef.current = task.version;
+    if (reloadDrafts.current) {
+      reloadDrafts.current = false;
+      setTitle(task.title);
+      setNotes(task.notes ?? "");
+      setContact(task.location ?? "");
+      setPriority(String(task.priority));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.version]);
+  useEffect(() => {
+    versionRef.current = task.version;
+    setSaveError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.id]);
+
   const save = (patch: Parameters<typeof updateTechTaskAction>[0]) =>
     startTransition(async () => {
-      await updateTechTaskAction(patch);
+      const r = await updateTechTaskAction({ ...patch, expectedVersion: versionRef.current });
+      if (r.version) versionRef.current = r.version;
+      if (r.error) {
+        setSaveError(r.error);
+        // Drop the local drafts once the refresh brings the latest values.
+        if (r.stale) reloadDrafts.current = true;
+      } else {
+        setSaveError(null);
+      }
       router.refresh();
       void loadThread(); // pull in the new CHANGE note
     });
@@ -169,6 +200,11 @@ export function TaskTicket({
       }
     >
       <div className="space-y-4">
+        {saveError && (
+          <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {saveError}
+          </p>
+        )}
         {/* Title */}
         <Input
           value={title}

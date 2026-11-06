@@ -1,3 +1,4 @@
+import { todayYmd } from "@/lib/tz";
 import { requireScope } from "@/lib/auth/current-user";
 import { buildWorkbook } from "@/lib/services/data-io";
 import { writeAudit } from "@/lib/services/audit";
@@ -21,7 +22,7 @@ export async function GET() {
     action: "exported",
     summary: "Downloaded the full admin Excel export.",
   });
-  const date = new Date().toISOString().slice(0, 10);
+  const date = todayYmd();
   return new Response(Buffer.from(data as ArrayBuffer), {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

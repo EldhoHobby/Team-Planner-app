@@ -7,7 +7,7 @@ import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import { ListChecks, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { daysFromToday } from "@/lib/tz";
+import { daysFromToday, fmtEastern } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -471,7 +471,7 @@ function TaskForm({
                 <ul className="space-y-1.5 text-xs">
                   {history.map((h, i) => (
                     <li key={i} className="flex gap-2 text-muted-foreground">
-                      <span className="shrink-0">{new Date(h.createdAt).toLocaleString()}</span>
+                      <span className="shrink-0">{fmtEastern(h.createdAt, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                       <span className="text-foreground">{h.summary}</span>
                     </li>
                   ))}

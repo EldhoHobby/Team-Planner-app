@@ -109,3 +109,36 @@
     --ring: 222.2 84% 4.9%;
   }
 }
+
+/* ── Service agreements print: black and white, no shading (saves colour ink).
+   Borders and dark text only; one customer per page via .sa-page. ── */
+@media print {
+  .sa-print,
+  .sa-print * {
+    color: #000 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    print-color-adjust: economy !important;
+    -webkit-print-color-adjust: economy !important;
+  }
+  .sa-print table,
+  .sa-print th,
+  .sa-print td {
+    border-color: #000 !important;
+  }
+  .sa-print input,
+  .sa-print select {
+    border: none !important;
+    padding: 0 !important;
+    appearance: none;
+  }
+  .sa-page {
+    break-after: page;
+  }
+  .sa-page:last-child {
+    break-after: auto;
+  }
+  .sa-print thead {
+    display: table-header-group; /* repeat header rows on each page */
+  }
+}

@@ -1,3 +1,4 @@
+import { ymdEastern } from "@/lib/tz";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
@@ -49,6 +50,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     workGroups, workGroupMemberships, projects, boards, boardColumns,
     tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
     holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
+    changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings,
   ] = await Promise.all([
     prisma.user.findMany({ where: { memberships: { some: { orgId } } } }),
     prisma.membership.findMany({ where: { orgId } }),
@@ -71,6 +73,13 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.techTask.findMany({ where: { orgId } }),
     prisma.techTaskNote.findMany({ where: { orgId } }),
     prisma.jobNote.findMany({ where: { orgId } }),
+    prisma.changeHistory.findMany({ where: { orgId } }),
+    prisma.saCustomer.findMany({ where: { orgId } }),
+    prisma.saProposal.findMany({ where: { orgId } }),
+    prisma.saProposalLine.findMany({ where: { orgId } }),
+    prisma.saContractLine.findMany({ where: { orgId } }),
+    prisma.saCallsRepairs.findMany({ where: { orgId } }),
+    prisma.saSettings.findMany({ where: { orgId } }),
   ]);
 
   await writeAudit(scope, {
@@ -90,6 +99,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
       workGroups, workGroupMemberships, projects, boards, boardColumns,
       tasks, taskAssignments, calendarEvents, timeOffs, technicianTimeOffs,
       holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
+      changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings,
     },
   };
 }
@@ -219,6 +229,28 @@ export async function restoreFullBackup(
       await tx.techTaskNote.createMany({ data: reOrg(rows(backup, "techTaskNotes"), orgId) });
       // Job comment threads. Absent in older backups → empty (createMany handles []).
       await tx.jobNote.createMany({ data: reOrg(rows(backup, "jobNotes"), orgId) });
+      // Permanent field history. Replaced ONLY when the file carries it, so
+      // restoring an older backup (no "changeHistory" key) never erases it.
+      // Service agreements. Replaced ONLY when the file carries them (older
+      // backups predate the module and must not wipe it).
+      if (Array.isArray(backup.data?.saCustomers)) {
+        await tx.saCallsRepairs.deleteMany({ where: { orgId } });
+        await tx.saContractLine.deleteMany({ where: { orgId } });
+        await tx.saProposalLine.deleteMany({ where: { orgId } });
+        await tx.saProposal.deleteMany({ where: { orgId } });
+        await tx.saCustomer.deleteMany({ where: { orgId } });
+        await tx.saSettings.deleteMany({ where: { orgId } });
+        await tx.saCustomer.createMany({ data: reOrg(rows(backup, "saCustomers"), orgId) });
+        await tx.saProposal.createMany({ data: reOrg(rows(backup, "saProposals"), orgId) });
+        await tx.saProposalLine.createMany({ data: reOrg(rows(backup, "saProposalLines"), orgId) });
+        await tx.saContractLine.createMany({ data: reOrg(rows(backup, "saContractLines"), orgId) });
+        await tx.saCallsRepairs.createMany({ data: reOrg(rows(backup, "saCalls"), orgId) });
+        await tx.saSettings.createMany({ data: reOrg(rows(backup, "saSettings"), orgId) });
+      }
+      if (Array.isArray(backup.data?.changeHistory)) {
+        await tx.changeHistory.deleteMany({ where: { orgId } });
+        await tx.changeHistory.createMany({ data: reOrg(rows(backup, "changeHistory"), orgId) });
+      }
 
       // ── 5. Orphan cleanup: users with no membership anywhere (and not in the
       //       file) lost their account in the replace — e.g. the wizard user. ──
@@ -234,7 +266,7 @@ export async function restoreFullBackup(
     entity: "data",
     entityId: "full-backup",
     action: "restored",
-    summary: `RESTORED a full app backup from ${backup.exportedAt?.slice(0, 10) ?? "unknown date"} — all data replaced (${users.length} people).`,
+    summary: `RESTORED a full app backup from ${backup.exportedAt ? ymdEastern(backup.exportedAt) : "unknown date"} — all data replaced (${users.length} people).`,
   });
 
   return {

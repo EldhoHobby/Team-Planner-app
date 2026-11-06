@@ -3,7 +3,7 @@
 
 services:
   proxy:
-    image: caddy:2-alpine
+    image: caddy:2.11.8-alpine   # pinned; bump deliberately
     restart: unless-stopped
     ports:
       - "80:80"
@@ -38,11 +38,11 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
-      SESSION_SECRET: ${SESSION_SECRET}
       APP_URL: ${APP_URL:-https://planner.localhost}
       SMTP_URL: ${SMTP_URL:-}
       SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
       SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
       TIMESHEET_TEMPLATE_PATH: ${TIMESHEET_TEMPLATE_PATH:-/app/timesheet-template/Time_Sheet_Template.xlsm}
       # ── Email → task ingest (Gmail via IMAP; blank = feature off) ──
@@ -74,7 +74,7 @@ services:
   # the model loads on first request and unloads after idling, so the idle
   # footprint is small even when EMAIL_AI_ENABLED=false.
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:0.40.14   # pinned; bump deliberately
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
@@ -85,7 +85,7 @@ services:
   # One-shot: downloads the summarizer model (only when the feature is on),
   # then exits. The app does NOT wait for it — AI is optional and lazy.
   ollama-init:
-    image: ollama/ollama
+    image: ollama/ollama:0.40.14   # pinned; bump deliberately
     environment:
       OLLAMA_HOST: http://ollama:11434
       EMAIL_AI_ENABLED: ${EMAIL_AI_ENABLED:-false}
@@ -112,7 +112,7 @@ services:
     restart: "no"
 
   db:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine   # pinned; bump deliberately
     restart: unless-stopped
     environment:
       POSTGRES_USER: planner
@@ -135,7 +135,7 @@ services:
   # BACKUP_KEEP_DAYS. Restore (into the running db):
   #   docker compose exec db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
   backup:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine   # pinned; bump deliberately
     restart: unless-stopped
     environment:
       PGPASSWORD: ${DB_PASSWORD}

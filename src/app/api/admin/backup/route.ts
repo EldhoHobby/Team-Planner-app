@@ -1,3 +1,4 @@
+import { todayYmd } from "@/lib/tz";
 import { requireScope } from "@/lib/auth/current-user";
 import { buildFullBackup } from "@/lib/services/full-backup";
 
@@ -16,7 +17,7 @@ export async function GET() {
   if (!scope.ctx.isOrgAdmin) return new Response("Forbidden", { status: 403 });
 
   const backup = await buildFullBackup(scope);
-  const date = new Date().toISOString().slice(0, 10);
+  const date = todayYmd();
   return new Response(JSON.stringify(backup, null, 1), {
     headers: {
       "Content-Type": "application/json",
