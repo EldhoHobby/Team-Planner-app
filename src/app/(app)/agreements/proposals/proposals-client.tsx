@@ -15,16 +15,19 @@ import {
 import type { ProposalListRow } from "@/lib/services/agreements/proposals";
 import { CustomerStatusBadge, ProposalBadge } from "../badges";
 import { bulkProposalsAction } from "../actions";
+import { MonthPicker } from "../month-picker";
+import { printInFrame } from "../print-frame";
 import type { BulkRow } from "../types";
 
 const SELECT = "h-9 rounded-md border bg-background px-2 text-sm";
-/** Proposals of Pending (parked) and Not renewed / Inactive customers stay out of the list unless asked for. */
-const hiddenByDefault = (s: SaCustomerStatus) => s === "PENDING" || !isOpenCustomer(s);
+/** Waiting on the customer (Pending / Expired – still waiting): listed in their own section by default. */
+const isWaiting = (s: SaCustomerStatus) => s === "PENDING" || s === "EXPIRED_WAITING";
 const labels = (l: SaAgreement[]) => l.map((a) => AGREEMENT_LABELS[a]).join(", ");
 
-/** Customer-status filter: "DEFAULT" = Active + Expired – still waiting (Pending is parked), "" = all, or one status. */
+/** Customer-status filter: "DEFAULT" = open customers (Active in the main list, Pending / Expired – still
+ *  waiting in a section of their own; Not renewed / Inactive left out), "" = all, or one status. */
 function matchesCustomer(filter: string, s: SaCustomerStatus) {
-  if (filter === "DEFAULT") return !hiddenByDefault(s);
+  if (filter === "DEFAULT") return isOpenCustomer(s);
   return filter === "" || filter === s;
 }
 
@@ -75,6 +78,26 @@ export function ProposalsClient({
   const [pending, start] = useTransition();
   const today = todayYmd();
 
+  // Proposals per "renews agreements ending" month, under the other filters — shown on the month picker.
+  const monthCounts = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    const c: Record<string, number> = {};
+    for (const r of rows) {
+      if (!r.renewsMonth) continue;
+      if (!(status === "" || (status === "OPEN" ? r.status === "DRAFT" || r.status === "SENT" : r.status === status))) continue;
+      if (!matchesCustomer(customer, r.customerStatus)) continue;
+      if (n && !r.customerName.toLowerCase().includes(n) && !r.soNumber.toLowerCase().includes(n)) continue;
+      c[r.renewsMonth] = (c[r.renewsMonth] ?? 0) + 1;
+    }
+    return c;
+  }, [rows, q, status, customer]);
+  const [printing, setPrinting] = useState(false);
+  const printSelected = () => {
+    setPrinting(true);
+    const title = month ? `Proposals ending ${month}` : printIds.length === 1 ? "Proposal" : "Proposals";
+    printInFrame(`/agreements/proposals/print?ids=${printIds.join(",")}${month ? `&title=${month}` : ""}`, title, () => setPrinting(false));
+  };
+
   const shown = useMemo(() => {
     const n = q.trim().toLowerCase();
     return rows.filter(
@@ -99,8 +122,18 @@ export function ProposalsClient({
     </th>
   );
 
-  const allSelected = shown.length > 0 && shown.every((r) => selected.has(r.id));
-  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(shown.map((r) => r.id)));
+  // Default view: Active customers' proposals first, the ones waiting on the customer in their own section.
+  const split = customer === "DEFAULT";
+  const mainRows = split ? sorted.filter((r) => r.customerStatus === "ACTIVE") : sorted;
+  const waitingRows = split ? sorted.filter((r) => isWaiting(r.customerStatus)) : [];
+  const allIn = (list: ProposalListRow[]) => list.length > 0 && list.every((r) => selected.has(r.id));
+  const toggleAll = (list: ProposalListRow[]) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      const on = !list.every((r) => n.has(r.id));
+      for (const r of list) { if (on) n.add(r.id); else n.delete(r.id); }
+      return n;
+    });
   const toggle = (id: string) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const printIds = [...selected].filter((id) => shown.some((r) => r.id === id));
 
@@ -125,6 +158,80 @@ export function ProposalsClient({
       router.refresh();
     });
 
+  const renderTable = (list: ProposalListRow[], noun: string, withClear: boolean) => (
+        <div className="overflow-x-auto rounded-lg border bg-card">
+          <table className="w-full text-sm">
+            <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+              <tr>
+                <th className="w-8 px-3 py-2"><input type="checkbox" aria-label="Select all" checked={allIn(list)} onChange={() => toggleAll(list)} /></th>
+                {sortTh("customer", "Customer")}
+                <th className="px-3 py-2 font-medium">Year</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                {sortTh("total", "Total", "text-right")}
+                <th className="px-3 py-2 font-medium">Agreements</th>
+                {sortTh("end", "New end date")}
+                {sortTh("changed", "Last change")}
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {list.map((r) => (
+                <tr
+                  key={r.id}
+                  className="cursor-pointer hover:bg-muted/30"
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest("a, button, input, label")) return;
+                    router.push(proposalHref(r.id));
+                  }}
+                >
+                  <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${r.customerName}`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                  <td className="px-3 py-2">
+                    <Link href={proposalHref(r.id)} className="font-medium hover:underline">{r.customerName}</Link>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-xs text-muted-foreground">{r.soNumber}</span>
+                      {r.customerStatus !== "ACTIVE" && <CustomerStatusBadge status={r.customerStatus} />}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">{r.year}</td>
+                  <td className="px-3 py-2">
+                    <ProposalBadge status={r.status} />
+                    {r.status === "SENT" && r.sentDate && (() => {
+                      const d = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${r.sentDate}T00:00:00Z`)) / 86_400_000);
+                      return <div className={cn("mt-0.5 whitespace-nowrap text-xs", d > 14 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>waiting {d} day{d === 1 ? "" : "s"}</div>;
+                    })()}
+                  </td>
+                  <td className="px-3 py-2 text-right font-medium tabular-nums">{fmtMoney(r.total)}</td>
+                  <td className="max-w-[20rem] px-3 py-2 text-muted-foreground">{labels(r.agreements)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{fmtDate(r.endDate) || "—"}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{fmtDate(ymdEastern(r.updatedAt))}</td>
+                </tr>
+              ))}
+              {!list.length && (
+                <tr>
+                  <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
+                    No {noun} match these filters.{" "}
+                    {withClear && (
+                      <button type="button" className="text-primary hover:underline" onClick={() => { setQ(""); setStatus(""); setMonth(""); setCustomer(""); }}>
+                        Clear filters
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            {list.length > 0 && (
+              <tfoot className="border-t bg-muted/40 text-sm">
+                <tr>
+                  <td />
+                  <td className="px-3 py-2 text-muted-foreground" colSpan={3}>{list.length} {noun}</td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums">{fmtMoney(list.reduce((a, r) => a + r.total, 0))}</td>
+                  <td colSpan={3} />
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+  );
+
   return (
     <div className="space-y-4">
       {canEdit && bulkOpen && (
@@ -137,7 +244,7 @@ export function ProposalsClient({
           </div>
           <label className="space-y-1 text-xs">
             <span className="block text-muted-foreground">Agreements ending in</span>
-            <input type="month" value={bulkMonth} onChange={(e) => setBulkMonth(e.target.value)} className={SELECT} />
+            <MonthPicker value={bulkMonth} onChange={setBulkMonth} allowClear={false} placeholder="Pick a month" ariaLabel="Agreements ending in" />
           </label>
           <Button disabled={!bulkMonth || pending} onClick={previewBulk}>Preview</Button>
           <Button variant="ghost" onClick={() => setBulkOpen(false)}>Close</Button>
@@ -159,12 +266,12 @@ export function ProposalsClient({
           <option value="">All</option>
           {PROPOSAL_STATUSES.map((s) => <option key={s} value={s}>{PROPOSAL_STATUS_LABELS[s]}</option>)}
         </select>
-        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          Renews agreements ending
-          <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className={SELECT} />
-        </label>
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <span>Renews agreements ending</span>
+          <MonthPicker value={month} onChange={setMonth} counts={monthCounts} countLabel="proposals" ariaLabel="Renews agreements ending" />
+        </div>
         <select value={customer} onChange={(e) => setCustomer(e.target.value)} className={SELECT} aria-label="Customer status">
-          <option value="DEFAULT">Active + Expired – still waiting</option>
+          <option value="DEFAULT">Active (waiting on customer listed below)</option>
           {CUSTOMER_STATUSES.map((st) => (
             <option key={st} value={st}>
               {CUSTOMER_STATUS_LABELS[st]} ({rows.filter((r) => r.customerStatus === st).length})
@@ -175,86 +282,24 @@ export function ProposalsClient({
         {canEdit && !bulkOpen && (
           <Button variant="outline" className="ml-auto" onClick={() => setBulkOpen(true)}>Create proposals in bulk…</Button>
         )}
-        <Button variant="outline" className={cn(!(canEdit && !bulkOpen) && "ml-auto")} disabled={!printIds.length} asChild={printIds.length > 0}>
-          {printIds.length ? (
-            <Link href={`/agreements/proposals/print?ids=${printIds.join(",")}${month ? `&title=${month}` : ""}`} target="_blank">
-              <Printer className="h-4 w-4" /> Print {printIds.length} selected
-            </Link>
-          ) : (
-            <span><Printer className="h-4 w-4" /> Print selected</span>
-          )}
+        <Button variant="outline" className={cn(!(canEdit && !bulkOpen) && "ml-auto")} disabled={!printIds.length || printing} onClick={printSelected}>
+          <Printer className="h-4 w-4" /> {printing ? "Preparing…" : printIds.length ? `Print ${printIds.length} selected` : "Print selected"}
         </Button>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border bg-card">
-        <table className="w-full text-sm">
-          <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-            <tr>
-              <th className="w-8 px-3 py-2"><input type="checkbox" aria-label="Select all" checked={allSelected} onChange={toggleAll} /></th>
-              {sortTh("customer", "Customer")}
-              <th className="px-3 py-2 font-medium">Year</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              {sortTh("total", "Total", "text-right")}
-              <th className="px-3 py-2 font-medium">Agreements</th>
-              {sortTh("end", "New end date")}
-              {sortTh("changed", "Last change")}
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {sorted.map((r) => (
-              <tr
-                key={r.id}
-                className="cursor-pointer hover:bg-muted/30"
-                onClick={(e) => {
-                  if ((e.target as HTMLElement).closest("a, button, input, label")) return;
-                  router.push(proposalHref(r.id));
-                }}
-              >
-                <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${r.customerName}`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
-                <td className="px-3 py-2">
-                  <Link href={proposalHref(r.id)} className="font-medium hover:underline">{r.customerName}</Link>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-mono text-xs text-muted-foreground">{r.soNumber}</span>
-                    {r.customerStatus !== "ACTIVE" && <CustomerStatusBadge status={r.customerStatus} />}
-                  </div>
-                </td>
-                <td className="px-3 py-2 tabular-nums">{r.year}</td>
-                <td className="px-3 py-2">
-                  <ProposalBadge status={r.status} />
-                  {r.status === "SENT" && r.sentDate && (() => {
-                    const d = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${r.sentDate}T00:00:00Z`)) / 86_400_000);
-                    return <div className={cn("mt-0.5 whitespace-nowrap text-xs", d > 14 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>waiting {d} day{d === 1 ? "" : "s"}</div>;
-                  })()}
-                </td>
-                <td className="px-3 py-2 text-right font-medium tabular-nums">{fmtMoney(r.total)}</td>
-                <td className="max-w-[20rem] px-3 py-2 text-muted-foreground">{labels(r.agreements)}</td>
-                <td className="px-3 py-2 whitespace-nowrap">{fmtDate(r.endDate) || "—"}</td>
-                <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{fmtDate(ymdEastern(r.updatedAt))}</td>
-              </tr>
-            ))}
-            {!shown.length && (
-              <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
-                  No proposals match these filters.{" "}
-                  <button type="button" className="text-primary hover:underline" onClick={() => { setQ(""); setStatus(""); setMonth(""); setCustomer(""); }}>
-                    Clear filters
-                  </button>
-                </td>
-              </tr>
-            )}
-          </tbody>
-          {shown.length > 0 && (
-            <tfoot className="border-t bg-muted/40 text-sm">
-              <tr>
-                <td />
-                <td className="px-3 py-2 text-muted-foreground" colSpan={3}>{shown.length} of {rows.length} proposals</td>
-                <td className="px-3 py-2 text-right font-semibold tabular-nums">{fmtMoney(shown.reduce((a, r) => a + r.total, 0))}</td>
-                <td colSpan={3} />
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
+      {renderTable(mainRows, split ? "proposals for Active customers" : "proposals", true)}
+
+      {split && (
+        <section className="space-y-2">
+          <div>
+            <h2 className="font-semibold">Pending &amp; waiting on the customer</h2>
+            <p className="text-xs text-muted-foreground">
+              Proposals for Pending and Expired – still waiting customers. Change a customer back to Active to move its proposal up.
+            </p>
+          </div>
+          {renderTable(waitingRows, "proposals waiting on the customer", false)}
+        </section>
+      )}
 
       <Modal
         open={preview !== null}

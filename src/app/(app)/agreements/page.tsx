@@ -77,6 +77,7 @@ function WaitingSection({ items }: { items: WaitingItem[] }) {
               key={st}
               id={`waiting-${st}`}
               variant="group"
+              defaultOpen={false}
               title={CUSTOMER_STATUS_LABELS[st]}
               aside={`${group.length} · ${fmtMoney(group.reduce((a, i) => a + i.annualValue, 0))}/yr`}
             >
@@ -163,6 +164,7 @@ export default async function AgreementsDashboard() {
                   key={g.state}
                   id={`needs-action-${g.state}`}
                   variant="group"
+                  defaultOpen={g.state === "EXPIRED" || g.state === "DUE"}
                   title={g.title}
                   aside={`${group.length} · ${fmtMoney(group.reduce((a, i) => a + i.annualValue, 0))}/yr`}
                 >

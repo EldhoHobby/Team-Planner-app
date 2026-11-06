@@ -4,12 +4,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const KEY = (id: string) => `agreements.collapsed.${id}`;
-
 /**
  * A collapsible block for the agreements dashboard. "section" = a card with a title bar,
- * "group" = a sub-heading inside a card. Open by default; the choice is remembered per
- * browser (localStorage), read after mount so server and browser render the same first.
+ * "group" = a sub-heading inside a card. Every page load starts in the dashboard's set layout
+ * (`defaultOpen`); clicking opens / closes it for that visit.
  */
 export function Collapsible({
   id,
@@ -17,6 +15,7 @@ export function Collapsible({
   subtitle,
   aside,
   variant = "section",
+  defaultOpen = true,
   children,
 }: {
   id: string;
@@ -24,22 +23,15 @@ export function Collapsible({
   subtitle?: string;
   aside?: string;
   variant?: "section" | "group";
+  defaultOpen?: boolean;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(defaultOpen);
+  // Drop the open / closed choice older versions remembered per browser — the set layout wins now.
   useEffect(() => {
-    try {
-      if (localStorage.getItem(KEY(id)) === "1") setOpen(false);
-    } catch {}
+    try { localStorage.removeItem(`agreements.collapsed.${id}`); } catch {}
   }, [id]);
-  const toggle = () =>
-    setOpen((o) => {
-      try {
-        if (o) localStorage.setItem(KEY(id), "1");
-        else localStorage.removeItem(KEY(id));
-      } catch {}
-      return !o;
-    });
+  const toggle = () => setOpen((o) => !o);
 
   const bodyId = `collapsible-${id}`;
   const Heading = variant === "section" ? "h2" : "h3";

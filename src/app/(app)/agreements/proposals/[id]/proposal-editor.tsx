@@ -13,6 +13,7 @@ import type { ProposalDetail } from "@/lib/services/agreements/proposals";
 import { CustomerStatusBadge, ProposalBadge, UnconfirmedSo } from "../../badges";
 import { CloseProposalDialog } from "../../close-proposal-dialog";
 import { ProposalSheet } from "../proposal-sheet";
+import { printInFrame } from "../../print-frame";
 import {
   addLineAction, deleteProposalAction, proposalTransitionAction, removeLineAction, setLinePriceAction, updateProposalHeaderAction,
 } from "../../actions";
@@ -41,6 +42,7 @@ export function ProposalEditor({
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const [closing, setClosing] = useState(false);
+  const [printing, setPrinting] = useState(false);
   const p = data.proposal;
   const c = data.customer;
   const editable = canEdit && (p.status === "DRAFT" || p.status === "SENT");
@@ -89,8 +91,16 @@ export function ProposalEditor({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" asChild>
-              <Link href={`/agreements/proposals/print?ids=${p.id}`} target="_blank"><Printer className="h-4 w-4" /> Print / PDF</Link>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={printing}
+              onClick={() => {
+                setPrinting(true);
+                printInFrame(`/agreements/proposals/print?ids=${p.id}`, `Proposal - ${c.name} ${p.year}`, () => setPrinting(false));
+              }}
+            >
+              <Printer className="h-4 w-4" /> {printing ? "Preparing…" : "Print / PDF"}
             </Button>
             {canEdit && p.status === "DRAFT" && (
               <Button size="sm" disabled={pending} onClick={() => transition("send", "Marked as sent.")}><Send className="h-4 w-4" /> Mark sent</Button>

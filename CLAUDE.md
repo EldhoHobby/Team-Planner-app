@@ -359,7 +359,9 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   list, renewals-by-month chart, recent activity), Pipeline board (Due → Draft → Sent → Signed /
   Declined, drag to move), Customers list + customer page (header card; tabs Agreements /
   History / Proposals / Calls & repairs / Activity), Proposals list (bulk create by end month,
-  bulk print) + proposal page (editable lines, Draft → Sent → Signed / Declined / Withdrawn,
+  bulk print; default view = Active customers' proposals, with Pending / Expired – still waiting in a
+  section of their own; filters in the URL; `month-picker.tsx` year + month grid with per-month counts;
+  Print buttons print in the same tab via an off-screen iframe — `print-frame.ts`) + proposal page (editable lines, Draft → Sent → Signed / Declined / Withdrawn,
   B&W landscape print). Models: `SaCustomer` (status Active / Pending / Expired – still waiting = "open", shown + renewed by default — `OPEN_CUSTOMER_STATUSES`; Not renewed / Inactive hidden unless filtered; every Agreements screen auto-refreshes (auto-refresh.tsx in the layout: 60 s + on tab focus, skipped while typing / a dialog is open / dragging); Needs action, the Due/Expired KPIs and the pipeline Due column are ACTIVE only — Pending / Expired – still waiting get their own dashboard section + KPI counts; keyed by the SERVICE SO # — not `Task.soNumber`;
   `soConfirmed` flags suggested/TEMP numbers), `SaContractLine` (signed, customer+year+agreement),
   `SaProposal` + `SaProposalLine`, `SaCallsRepairs`, `SaSettings`. Services in
