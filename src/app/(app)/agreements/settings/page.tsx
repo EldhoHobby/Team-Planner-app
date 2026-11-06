@@ -6,6 +6,7 @@ import { SA_EDITOR_GROUP } from "@/lib/agreements/constants";
 import { SettingsForm } from "./settings-form";
 import { ImportCard } from "./import-card";
 import { ResetCard } from "./reset-card";
+import { WorkbookCard } from "./workbook-card";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ export default async function AgreementSettingsPage() {
           </p>
           {!canEdit && <p className="mt-2 font-medium text-amber-700 dark:text-amber-400">You have view-only access.</p>}
         </section>
+        {canEdit && <WorkbookCard />}
         {scope.ctx.isOrgAdmin && <ImportCard />}
         {scope.ctx.isOrgAdmin && <ResetCard />}
       </div>

@@ -1,7 +1,8 @@
 import type { SaAgreement, SaCustomerStatus } from "@/lib/agreements/constants";
 import type { ImportSummary } from "@/lib/services/agreements/import";
+import type { WorkbookImportSummary } from "@/lib/services/agreements/workbook";
 
-export type { ImportSummary };
+export type { ImportSummary, WorkbookImportSummary };
 
 export interface ActionResult {
   ok?: boolean;
@@ -28,4 +29,8 @@ export interface BulkResult extends ActionResult {
 
 export interface ImportResult extends ActionResult {
   summary?: ImportSummary;
+}
+
+export interface WorkbookImportResult extends ActionResult {
+  summary?: WorkbookImportSummary;
 }

@@ -367,7 +367,7 @@ Let's Encrypt. HTTPS is required (the session cookie is `Secure`).
   renewal state — an agreement stays "in force" while its newest line is in the newest year OR
   its end date hasn't passed, so split-month renewals work; each agreement renews into ITS next
   year). Signing copies proposal lines into contract lines; live proposals for a year never share
-  an agreement. Integration test `workflow.int.test.ts` runs only with SA_IT=1 against a
+  an agreement. **Monthly workbook** (`src/lib/services/agreements/workbook.ts`, `GET /api/agreements/export`, Settings → Monthly workbook card; editors only): exports Read me / Dashboard / Pipeline / Customers / Agreements / Proposals / Proposal lines / Calls & repairs / Activity (31 days) + one read-only sheet per open customer; import reads the data sheets back (yellow headers editable, rows matched by ID, blank ID = new where allowed, DELETE/REMOVE columns, proposal Status column drives the normal transitions), skips rows whose Version moved on in the app (conflict list), writes only through the services (history + audit). Integration test `workflow.int.test.ts` runs only with SA_IT=1 against a
   throwaway DB. Edit rights: org admins + "Customer Service" work group. NOT yet built: Excel
   report generators (Maintenance package, Customer SA 5-year), report_runs, Terminations,
   Warranties.

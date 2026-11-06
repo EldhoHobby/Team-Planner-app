@@ -13,8 +13,9 @@ import {
   type ProposalAction,
 } from "@/lib/services/agreements/proposals";
 import { importPrototype, resetAgreements } from "@/lib/services/agreements/import";
+import { importAgreementsWorkbook } from "@/lib/services/agreements/workbook";
 import type { SaAgreement } from "@/lib/agreements/constants";
-import type { ActionResult, BulkResult, ImportResult } from "./types";
+import type { ActionResult, BulkResult, ImportResult, WorkbookImportResult } from "./types";
 
 function fail(e: unknown, fallback: string): ActionResult {
   if (e instanceof StaleSaveError) return { error: e.message, stale: true };
@@ -169,6 +170,21 @@ export async function importPrototypeAction(formData: FormData): Promise<ImportR
     return { ok: true, summary };
   } catch (e) {
     return fail(e, "Could not read that workbook.");
+  }
+}
+
+export async function importWorkbookAction(formData: FormData): Promise<WorkbookImportResult> {
+  const { scope } = await requireScope();
+  try {
+    const file = formData.get("file");
+    if (!(file instanceof File) || file.size === 0) return { error: "Choose the exported workbook first." };
+    if (file.size > 15 * 1024 * 1024) return { error: "That file is larger than 15 MB." };
+    const apply = formData.get("apply") === "true";
+    const summary = await importAgreementsWorkbook(scope, Buffer.from(await file.arrayBuffer()), apply);
+    if (apply) refresh();
+    return { ok: true, summary };
+  } catch (e) {
+    return fail(e, "Could not read that workbook.") as WorkbookImportResult;
   }
 }
 
