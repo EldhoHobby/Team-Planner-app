@@ -29,10 +29,16 @@ export const AGREEMENT_LABELS: Record<SaAgreement, string> = {
 
 export const CUSTOMER_STATUS_LABELS: Record<SaCustomerStatus, string> = {
   ACTIVE: "Active",
+  PENDING: "Pending",
+  EXPIRED_WAITING: "Expired – still waiting",
   NOT_RENEWED: "Not renewed",
   INACTIVE: "Inactive",
 };
 export const CUSTOMER_STATUSES = Object.keys(CUSTOMER_STATUS_LABELS) as SaCustomerStatus[];
+/** Customers still in play: shown on the lists by default, counted for renewals and bulk proposals.
+ *  Not renewed / Inactive are hidden unless asked for. */
+export const OPEN_CUSTOMER_STATUSES: readonly SaCustomerStatus[] = ["ACTIVE", "PENDING", "EXPIRED_WAITING"];
+export const isOpenCustomer = (s: SaCustomerStatus) => OPEN_CUSTOMER_STATUSES.includes(s);
 
 export const SOFTWARE_LABELS: Record<SaSoftware, string> = {
   QSCADA_PLUS: "QSCADA-Plus",

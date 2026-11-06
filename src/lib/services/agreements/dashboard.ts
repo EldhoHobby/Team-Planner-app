@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
-import type { SaProposalStatus } from "@/lib/agreements/constants";
+import { isOpenCustomer, type SaProposalStatus } from "@/lib/agreements/constants";
 import type { RenewalState } from "@/lib/agreements/renewal";
 import { HISTORY_ENTITY } from "./common";
 import { loadPortfolio } from "./customers";
@@ -30,7 +30,8 @@ export interface ActionItem {
 
 export async function getDashboard(scope: TenantScope) {
   const { rows, today, dueWindowDays } = await loadPortfolio(scope);
-  const active = rows.filter((r) => r.status === "ACTIVE");
+  // "Open" = Active + Pending + Expired – still waiting: they still need renewal work.
+  const active = rows.filter((r) => isOpenCustomer(r.status));
   const year = today.slice(0, 4);
 
   const allProposals = rows.flatMap((r) => r.proposals.map((p) => ({ ...p, customerId: r.id })));
@@ -38,7 +39,7 @@ export async function getDashboard(scope: TenantScope) {
   const signedThisYear = allProposals.filter((p) => p.status === "SIGNED" && p.signedDate?.startsWith(year));
 
   const kpis = {
-    activeCustomers: active.length,
+    activeCustomers: rows.filter((r) => r.status === "ACTIVE").length,
     annualValue: active.reduce((a, r) => a + r.renewal.annualValue, 0),
     due: active.filter((r) => r.renewal.state === "DUE").length,
     expired: active.filter((r) => r.renewal.state === "EXPIRED").length,
@@ -127,7 +128,7 @@ export async function getPipeline(scope: TenantScope) {
   );
   const cards: PipelineCard[] = [];
   for (const r of rows) {
-    if (r.status === "ACTIVE" && (r.renewal.state === "DUE" || r.renewal.state === "EXPIRED")) {
+    if (isOpenCustomer(r.status) && (r.renewal.state === "DUE" || r.renewal.state === "EXPIRED")) {
       cards.push({
         key: `due-${r.id}`, column: "DUE", customerId: r.id, name: r.name, soNumber: r.soNumber,
         proposalId: null, proposalVersion: null, status: null, year: r.renewal.currentYear === null ? null : r.renewal.currentYear + 1,

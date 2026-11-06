@@ -60,7 +60,7 @@ export default async function AgreementsDashboard() {
     <div className="space-y-6">
       <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="Key figures">
         <Kpi label="Active customers" value={String(k.activeCustomers)} href="/agreements/customers?status=ACTIVE" />
-        <Kpi label="Annual contract value" value={fmtMoney(k.annualValue)} sub="Active customers, current year" />
+        <Kpi label="Annual contract value" value={fmtMoney(k.annualValue)} sub="Active, pending and expired – waiting customers, current year" />
         <Kpi label={`Due in ${d.dueWindowDays} days`} value={String(k.due)} sub="no proposal yet" href="/agreements/pipeline" />
         <Kpi label="Expired" value={String(k.expired)} sub="term ended, not renewed" href="/agreements/customers?renewal=EXPIRED" />
         <Kpi label="Awaiting signature" value={String(k.awaitingSignature)} sub={fmtMoney(k.awaitingValue)} href="/agreements/proposals?status=SENT" />
@@ -108,7 +108,7 @@ export default async function AgreementsDashboard() {
         <section className="space-y-6 lg:col-span-2">
           <div className="rounded-lg border bg-card p-4">
             <h2 className="font-semibold">Renewals by month</h2>
-            <p className="text-xs text-muted-foreground">Value of Active customers&apos; agreements ending in each month</p>
+            <p className="text-xs text-muted-foreground">Value of open customers&apos; agreements (active, pending, expired – waiting) ending in each month</p>
             <RenewalsChart data={d.renewalsByMonth} />
           </div>
 

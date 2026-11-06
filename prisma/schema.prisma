@@ -781,6 +781,8 @@ model Attachment {
 
 enum SaCustomerStatus {
   ACTIVE
+  PENDING
+  EXPIRED_WAITING
   NOT_RENEWED
   INACTIVE
 }

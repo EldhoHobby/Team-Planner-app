@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
-  CUSTOMER_STATUSES, CUSTOMER_STATUS_LABELS, SOFTWARES, SOFTWARE_LABELS, fmtDate, fmtMoney,
+  CUSTOMER_STATUSES, CUSTOMER_STATUS_LABELS, isOpenCustomer, SOFTWARES, SOFTWARE_LABELS, fmtDate, fmtMoney,
   type SaCustomerStatus, type SaSoftware,
 } from "@/lib/agreements/constants";
 import { RENEWAL_STATE_LABELS, type RenewalState } from "@/lib/agreements/renewal";
@@ -55,7 +55,7 @@ export function CustomersTable({
     const n = q.trim().toLowerCase();
     const list = rows.filter(
       (r) =>
-        (!status || r.status === status) &&
+        (!status || (status === "OPEN" ? isOpenCustomer(r.status) : r.status === status)) &&
         (!renewal || r.renewal === renewal) &&
         (!software || r.software === software) &&
         (!unconfirmed || !r.soConfirmed) &&
@@ -81,7 +81,8 @@ export function CustomersTable({
       <div className="flex flex-wrap items-center gap-2">
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, SO # or state" className="w-60" aria-label="Search customers" />
         <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Customer status">
-          <option value="">All statuses (incl. inactive)</option>
+          <option value="OPEN">Open (active, pending, expired – waiting)</option>
+          <option value="">All statuses (incl. not renewed / inactive)</option>
           {CUSTOMER_STATUSES.map((s) => <option key={s} value={s}>{CUSTOMER_STATUS_LABELS[s]}</option>)}
         </select>
         <select value={renewal} onChange={(e) => setRenewal(e.target.value)} className={SELECT} aria-label="Renewal state">

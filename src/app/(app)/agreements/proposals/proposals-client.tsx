@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import {
-  AGREEMENT_LABELS, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement,
+  AGREEMENT_LABELS, isOpenCustomer, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement,
 } from "@/lib/agreements/constants";
 import type { ProposalListRow } from "@/lib/services/agreements/proposals";
 import { ProposalBadge } from "../badges";
@@ -37,7 +37,7 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
       (r) =>
         (status === "" || (status === "OPEN" ? r.status === "DRAFT" || r.status === "SENT" : r.status === status)) &&
         (!month || r.renewsMonth === month) &&
-        (showInactive || r.customerStatus === "ACTIVE") &&
+        (showInactive || isOpenCustomer(r.customerStatus)) &&
         (!n || r.customerName.toLowerCase().includes(n) || r.soNumber.toLowerCase().includes(n)),
     );
   }, [rows, q, status, month, showInactive]);
@@ -75,7 +75,7 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
           <div className="min-w-[16rem] flex-1">
             <h2 className="font-semibold">Create proposals in bulk</h2>
             <p className="text-xs text-muted-foreground">
-              For every Active customer with agreements ending in the month you pick. Agreements already in a proposal are skipped.
+              For every Active, Pending or Expired – still waiting customer with agreements ending in the month you pick. Agreements already in a proposal are skipped.
             </p>
           </div>
           <label className="space-y-1 text-xs">
@@ -165,7 +165,7 @@ export function ProposalsClient({ rows, canEdit, initialStatus }: { rows: Propos
         {preview && (
           <div className="space-y-3 text-sm">
             {!preview.length ? (
-              <p>No Active customer has agreements ending in that month.</p>
+              <p>No Active, Pending or Expired – still waiting customer has agreements ending in that month.</p>
             ) : (
               <ul className="max-h-80 divide-y overflow-y-auto rounded-md border">
                 {preview.map((r) => (

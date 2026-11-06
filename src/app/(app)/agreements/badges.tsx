@@ -51,7 +51,8 @@ export function ProposalBadge({ status, className }: { status: SaProposalStatus;
 }
 
 export function CustomerStatusBadge({ status }: { status: SaCustomerStatus }) {
-  const tone = status === "ACTIVE" ? "good" : status === "NOT_RENEWED" ? "warning" : "neutral";
+  const tone: keyof typeof TONE =
+    status === "ACTIVE" ? "good" : status === "PENDING" ? "info" : status === "EXPIRED_WAITING" ? "critical" : status === "NOT_RENEWED" ? "warning" : "neutral";
   return <span className={cn(BASE, TONE[tone])}>{CUSTOMER_STATUS_LABELS[status]}</span>;
 }
 

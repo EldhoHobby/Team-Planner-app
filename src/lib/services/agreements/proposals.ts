@@ -4,7 +4,7 @@ import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { StaleSaveError, assertFreshWrite, versionGuard } from "@/lib/db/optimistic";
 import { todayYmd } from "@/lib/tz";
-import { AGREEMENT_LABELS, PROPOSAL_STATUS_LABELS, SA_AGREEMENTS, fmtMoney, type SaAgreement } from "@/lib/agreements/constants";
+import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, OPEN_CUSTOMER_STATUSES, PROPOSAL_STATUS_LABELS, SA_AGREEMENTS, fmtMoney, type SaAgreement } from "@/lib/agreements/constants";
 import { addOneYear, proposePrices } from "@/lib/agreements/pricing";
 import { claimedAgreements, customerRenewal, priceHistory, sortByAgreement, type ProposalLite } from "@/lib/agreements/renewal";
 import type { FieldChange } from "@/lib/services/change-history";
@@ -95,7 +95,7 @@ export async function bulkCreateProposals(scope: TenantScope, month: string, app
   if (apply) await assertCanEdit(scope);
   const settings = await getSettings(scope);
   const customers = await prisma.saCustomer.findMany({
-    where: { orgId: scope.ctx.orgId, status: "ACTIVE" },
+    where: { orgId: scope.ctx.orgId, status: { in: [...OPEN_CUSTOMER_STATUSES] } },
     include: { contracts: true, proposals: { include: { lines: true } } },
     orderBy: { name: "asc" },
   });
@@ -343,7 +343,7 @@ export async function transitionProposal(
     }];
     if (action === "decline" && opts.markNotRenewed && c.status !== "NOT_RENEWED") {
       await tx.saCustomer.update({ where: { id: c.id }, data: { status: "NOT_RENEWED", version: { increment: 1 } } });
-      changes.push({ field: "status", oldValue: c.status === "ACTIVE" ? "Active" : "Inactive", newValue: "Not renewed" });
+      changes.push({ field: "status", oldValue: CUSTOMER_STATUS_LABELS[c.status], newValue: CUSTOMER_STATUS_LABELS.NOT_RENEWED });
     }
     await history(tx, scope, c.id, changes);
   });
