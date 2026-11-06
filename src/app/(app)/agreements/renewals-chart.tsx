@@ -73,7 +73,10 @@ export function StackedBarChart({
   selected,
   onSelect,
   tooltipExtra,
+  wide = false,
 }: {
+  /** Wider, shorter drawing for a full-width card. */
+  wide?: boolean;
   series: Series[];
   points: StackPoint[];
   ariaLabel: string;
@@ -84,15 +87,15 @@ export function StackedBarChart({
   const [hover, setHover] = useState<number | null>(null);
   const totals = points.map((p) => series.reduce((a, s) => a + (p.values[s.key] ?? 0), 0));
   const { max, step } = niceMax(Math.max(0, ...totals));
-  const W = 560;
-  const H = 230;
+  const W = wide ? 1000 : 560;
+  const H = wide ? 250 : 230;
   const left = 44;
   const right = 6;
   const top = 18;
   const base = H - (points.some((p) => p.sub) ? 34 : 22);
   const plotW = W - left - right;
   const slot = plotW / Math.max(1, points.length);
-  const bar = Math.min(34, slot * 0.62);
+  const bar = Math.min(wide ? 44 : 34, slot * 0.62);
   const y = (v: number) => base - ((base - top) * v) / max;
   const ticks = Array.from({ length: Math.round(max / step) + 1 }, (_, i) => i * step);
   const h = hover === null ? null : points[hover]!;

@@ -96,7 +96,7 @@ export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]
       </div>
       {error && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
 
-      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+      <div className="grid auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-3 overflow-x-auto pb-2">
         {COLUMNS.map((col) => {
           const list = shown.filter((c) => c.column === col.id).sort((a, b) =>
             col.id === "DUE" ? (a.daysToEnd ?? 0) - (b.daysToEnd ?? 0) : b.value - a.value,
@@ -155,16 +155,19 @@ export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]
                     {c.customerStatus !== "ACTIVE" && <div className="mt-1"><CustomerStatusBadge status={c.customerStatus} /></div>}
                     <div className="mt-1 flex items-baseline justify-between gap-2">
                       <span className="font-semibold tabular-nums">{fmtMoney(c.value)}</span>
-                      {c.column === "SENT" && (() => {
-                        const d = daysSince(c.dateLabel?.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? null, today);
-                        return d !== null ? (
-                          <span className={cn("text-[11px]", d > 14 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
-                            waiting {d} day{d === 1 ? "" : "s"}
-                          </span>
-                        ) : null;
-                      })()}
+
                       <span className={cn("text-[11px]", c.dateLabel === "Expired" ? "font-medium text-red-700 dark:text-red-400" : "text-muted-foreground")}>
-                        {c.column === "DUE"
+                        {c.column === "SENT" && c.dateLabel
+                          ? (() => {
+                              const sent = c.dateLabel.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
+                              const d = daysSince(sent, today);
+                              return (
+                                <span className={cn(d !== null && d > 14 && "font-medium text-amber-700 dark:text-amber-400")}>
+                                  Sent {fmtDate(sent)}{d !== null ? ` · ${d}d` : ""}
+                                </span>
+                              );
+                            })()
+                          : c.column === "DUE"
                           ? c.dateLabel === "Expired"
                             ? `Expired ${fmtDate(c.endDate)}`
                             : `Ends ${fmtDate(c.endDate)}`

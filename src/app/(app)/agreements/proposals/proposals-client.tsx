@@ -38,6 +38,8 @@ export function ProposalsClient({
   const [customer, setCustomer] = useState(initialCustomer);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMonth, setBulkMonth] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [sort, setSort] = useState<{ key: "customer" | "total" | "end" | "changed"; dir: 1 | -1 }>({ key: "changed", dir: -1 });
   const [preview, setPreview] = useState<BulkRow[] | null>(null);
   const [result, setResult] = useState<BulkRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +56,19 @@ export function ProposalsClient({
         (!n || r.customerName.toLowerCase().includes(n) || r.soNumber.toLowerCase().includes(n)),
     );
   }, [rows, q, status, month, customer]);
+  const sorted = useMemo(() => {
+    const v = (r: ProposalListRow): string | number =>
+      sort.key === "customer" ? r.customerName.toLowerCase() : sort.key === "total" ? r.total : sort.key === "end" ? r.endDate ?? "9999" : r.updatedAt;
+    return [...shown].sort((a, b) => (v(a) < v(b) ? -1 : v(a) > v(b) ? 1 : 0) * sort.dir);
+  }, [shown, sort]);
+  const sortTh = (key: typeof sort.key, label: string, cls = "") => (
+    <th className={cn("whitespace-nowrap px-3 py-2 font-medium", cls)} aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : undefined}>
+      <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : key === "total" || key === "changed" ? -1 : 1 }))}>
+        {label}
+        {sort.key === key && <span aria-hidden>{sort.dir === 1 ? "▲" : "▼"}</span>}
+      </button>
+    </th>
+  );
 
   const allSelected = shown.length > 0 && shown.every((r) => selected.has(r.id));
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(shown.map((r) => r.id)));
@@ -83,7 +98,7 @@ export function ProposalsClient({
 
   return (
     <div className="space-y-4">
-      {canEdit && (
+      {canEdit && bulkOpen && (
         <section className="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-4 print:hidden">
           <div className="min-w-[16rem] flex-1">
             <h2 className="font-semibold">Create proposals in bulk</h2>
@@ -96,6 +111,7 @@ export function ProposalsClient({
             <input type="month" value={bulkMonth} onChange={(e) => setBulkMonth(e.target.value)} className={SELECT} />
           </label>
           <Button disabled={!bulkMonth || pending} onClick={previewBulk}>Preview</Button>
+          <Button variant="ghost" onClick={() => setBulkOpen(false)}>Close</Button>
         </section>
       )}
 
@@ -127,7 +143,10 @@ export function ProposalsClient({
           ))}
           <option value="">All customer statuses</option>
         </select>
-        <Button variant="outline" className="ml-auto" disabled={!printIds.length} asChild={printIds.length > 0}>
+        {canEdit && !bulkOpen && (
+          <Button variant="outline" className="ml-auto" onClick={() => setBulkOpen(true)}>Create proposals in bulk…</Button>
+        )}
+        <Button variant="outline" className={cn(!(canEdit && !bulkOpen) && "ml-auto")} disabled={!printIds.length} asChild={printIds.length > 0}>
           {printIds.length ? (
             <Link href={`/agreements/proposals/print?ids=${printIds.join(",")}${month ? `&title=${month}` : ""}`} target="_blank">
               <Printer className="h-4 w-4" /> Print {printIds.length} selected
@@ -143,18 +162,25 @@ export function ProposalsClient({
           <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
             <tr>
               <th className="w-8 px-3 py-2"><input type="checkbox" aria-label="Select all" checked={allSelected} onChange={toggleAll} /></th>
-              <th className="px-3 py-2 font-medium">Customer</th>
+              {sortTh("customer", "Customer")}
               <th className="px-3 py-2 font-medium">Year</th>
               <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 text-right font-medium">Total</th>
+              {sortTh("total", "Total", "text-right")}
               <th className="px-3 py-2 font-medium">Agreements</th>
-              <th className="px-3 py-2 font-medium">New end date</th>
-              <th className="px-3 py-2 font-medium">Last change</th>
+              {sortTh("end", "New end date")}
+              {sortTh("changed", "Last change")}
             </tr>
           </thead>
           <tbody className="divide-y">
-            {shown.map((r) => (
-              <tr key={r.id} className="hover:bg-muted/30">
+            {sorted.map((r) => (
+              <tr
+                key={r.id}
+                className="cursor-pointer hover:bg-muted/30"
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest("a, button, input, label")) return;
+                  router.push(`/agreements/proposals/${r.id}`);
+                }}
+              >
                 <td className="px-3 py-2"><input type="checkbox" aria-label={`Select ${r.customerName}`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
                 <td className="px-3 py-2">
                   <Link href={`/agreements/proposals/${r.id}`} className="font-medium hover:underline">{r.customerName}</Link>
@@ -168,7 +194,7 @@ export function ProposalsClient({
                   <ProposalBadge status={r.status} />
                   {r.status === "SENT" && r.sentDate && (() => {
                     const d = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${r.sentDate}T00:00:00Z`)) / 86_400_000);
-                    return <div className={cn("mt-0.5 text-xs", d > 14 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>waiting {d} day{d === 1 ? "" : "s"}</div>;
+                    return <div className={cn("mt-0.5 whitespace-nowrap text-xs", d > 14 ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>waiting {d} day{d === 1 ? "" : "s"}</div>;
                   })()}
                 </td>
                 <td className="px-3 py-2 text-right font-medium tabular-nums">{fmtMoney(r.total)}</td>

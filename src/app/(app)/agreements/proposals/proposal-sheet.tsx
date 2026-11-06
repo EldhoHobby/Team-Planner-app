@@ -249,7 +249,10 @@ export function EditCell({
 }) {
   const show = value === null ? "" : String(Math.round(value * 10) / 10);
   const [draft, setDraft] = useState(show);
+  const [focused, setFocused] = useState(false);
   useEffect(() => setDraft(show), [show]);
+  // Money reads as "67,020" until you click in; editing shows the plain number.
+  const display = !focused && prefix === "$" && draft !== "" && Number.isFinite(Number(draft)) ? Number(draft).toLocaleString("en-US") : draft;
   const commit = () => {
     const v = Number(draft.replace(/[$,%\s]/g, ""));
     if (draft.trim() !== "" && Number.isFinite(v) && String(v) !== show) onCommit(v);
@@ -260,11 +263,12 @@ export function EditCell({
       {prefix && <span className="text-muted-foreground">{prefix}</span>}
       <input
         aria-label={ariaLabel}
-        value={draft}
+        value={display}
         disabled={disabled}
         inputMode="decimal"
+        onFocus={(e) => { setFocused(true); requestAnimationFrame(() => e.target.select()); }}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onBlur={() => { setFocused(false); commit(); }}
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           if (e.key === "Escape") setDraft(show);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,7 @@ export function CustomersTable({
   const [unconfirmed, setUnconfirmed] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "name", dir: 1 });
   const [adding, setAdding] = useState(false);
+  const router = useRouter();
 
   const shown = useMemo(() => {
     const n = q.trim().toLowerCase();
@@ -114,7 +116,14 @@ export function CustomersTable({
           </thead>
           <tbody className="divide-y">
             {shown.map((r) => (
-              <tr key={r.id} className="hover:bg-muted/30">
+              <tr
+                key={r.id}
+                className="cursor-pointer hover:bg-muted/30"
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest("a, button, input, label")) return;
+                  router.push(`/agreements/customers/${r.id}`);
+                }}
+              >
                 <td className="px-3 py-2">
                   <Link href={`/agreements/customers/${r.id}`} className="font-medium hover:underline">{r.name}</Link>
                   <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
