@@ -543,14 +543,15 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     ["", ""],
     ["How it works", "The four MASTER sheets (navy tabs) — Customers, Pricing, Proposals, Calls — are the single source of truth. Every other sheet is formulas that read from them and recalculates as soon as you change a master cell."],
     ["Report sheets", "Dashboard, Pending & waiting, Pipeline, Proposal status, Customer metrics and the 5-year summary (blue tabs) aggregate the master live: counts, totals, renewals by month and lists that grow and shrink as statuses change."],
-    ["Customer sheets", "Customer View (yellow tab): pick any customer in the yellow box. Each open customer (Active, Pending, Expired – still waiting) also has its own sheet. All of them are formulas — change the master, not these."],
+    ["Customer sheets", "Laid out like the Central workbook's Customer View. Customer View (yellow tab): pick any customer in the yellow box. Each open customer (Active, Pending, Expired – still waiting) also has its own sheet. Everything is formulas except the yellow PROPOSAL cells (End date, Increase %, prices), which you may type into — see \"New proposal\". Agreements the customer never had are greyed out. The buttons are links: New Proposal → the yellow prices, Mark Signed → Proposals sheet, Edit in Pricing → Pricing sheet."],
     ["Editing", "On the master sheets, NAVY column headers can be edited; GREY headers are formulas or reference and are ignored on import. Rows link by SO #, so renaming a customer in Customers updates every sheet."],
     ["Adding rows", "Leave ID blank to add: a customer (Customers), a signed agreement (Pricing: SO #, Year, Agreement, Price, Status Signed), a proposal line (Pricing: Status Proposed + the Proposal ID), or a calls year (Calls: SO #, Year)."],
-    ["New proposal", "1) On Pricing add one row per agreement: SO #, Year (the new year), Agreement, Price (the customer sheet's green Policy price row is the suggestion), Status Proposed, Proposal ID blank. 2) Optional: on Proposals add a row with the same SO # and Year to set its Status (Draft / Sent / Signed …), dates, end date and notes — without it the proposal comes in as a Draft. The customer sheet and reports pick it up straight away; the import creates it in the app."],
+    ["New proposal", "EASIEST: on the customer's sheet, the PROPOSAL row shows next year's prices worked out from the Settings sheet while there is no proposal yet. Type over any yellow price or Increase % (a blank or 0 price leaves that agreement out) and/or the End date; on import the row as shown becomes a Draft proposal. If the customer already has a Draft / Sent proposal, the yellow cells you type into change just those prices. (Typed cells don't update the other sheets until the file is imported.) "
+      + "OR on Pricing: add one row per agreement — SO #, Year (the new year), Agreement, Price, Status Proposed, Proposal ID blank — and optionally a Proposals row with the same SO # and Year to set its Status (Draft / Sent / Signed …), dates, end date and notes (without it the proposal comes in as a Draft). Pricing rows show up on every sheet straight away, and win if both are used for the same agreement."],
     ["Deleting", "Pricing: type DELETE in the Delete column (signed lines, or lines on Draft / Sent proposals). Nothing else is ever deleted."],
     ["Proposals", "Change Status on the Proposals sheet to Sent / Signed / Declined / Withdrawn / Draft. Signing creates the signed agreements from the proposal's Pricing rows, exactly as in the app. Dates you enter are kept."],
-    ["Settings", "The Settings sheet holds the renewal pricing policy (tier limits and %, TDMS increase, standard prices for Diagnostic, Backup & DR, After Hours etc., the After Hours waiver) and the due window. Each customer sheet's green \"Policy price\" row is worked out from it; edits there are imported back into the app's settings."],
-    ["If the app is down", "Keep working in this file: change statuses and details on Customers, record signed agreements on Pricing (Status Signed), move proposals on Proposals, and use a customer sheet's Policy price row to price a renewal. Start new proposals as described under \"New proposal\". When the app is back, import the file — everything comes in, through the normal checks."],
+    ["Settings", "The Settings sheet holds the renewal pricing policy (tier limits and %, TDMS increase, standard prices for Diagnostic, Backup & DR, After Hours etc., the After Hours waiver) and the due window. Each customer sheet's PROPOSAL row is worked out from it until a proposal exists; edits there are imported back into the app's settings."],
+    ["If the app is down", "Keep working in this file: change statuses and details on Customers, record signed agreements on Pricing (Status Signed), move proposals on Proposals, and price renewals on the customer sheets' yellow PROPOSAL row. Start new proposals as described under \"New proposal\". When the app is back, import the file — everything comes in, through the normal checks."],
     ["Don't change", "The ID and Version columns, or the sheet names — they're how rows find their way back."],
     ["Bringing it back", "App → Agreements → Settings → Monthly workbook → choose this file → Preview → Apply. Rows changed in the app after this export are skipped and listed."],
     ["Excel version", "Works in Excel 2016 and later. Formulas recalculate when the file opens; previews that don't calculate (some email / phone viewers) may show blanks until it's opened in Excel."],
@@ -569,7 +570,7 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
 /**
  * Settings: the renewal pricing policy the app uses (Agreements → Settings), laid out so the
  * workbook can price renewals on its own. Yellow cells are inputs; the customer sheets'
- * "Policy price" rows and the reports read them. Imported back (version-checked).
+ * PROPOSAL rows (until a proposal exists) and the reports read them. Imported back (version-checked).
  */
 function buildSettingsSheet(ws: ExcelJS.Worksheet, s: Awaited<ReturnType<typeof getSettings>>) {
   ws.properties.tabColor = { argb: NAVY };
@@ -592,7 +593,7 @@ function buildSettingsSheet(ws: ExcelJS.Worksheet, s: Awaited<ReturnType<typeof 
 
   put(ws, 1, 1, "SETTINGS — renewal pricing policy (Rev 062426)", { bold: true, size: 14, color: NAVY });
   ws.mergeCells("A2:E2");
-  note(2, 1, "Yellow cells are the inputs. The customer sheets work out next year's \"Policy price\" from this page, and the reports use the due window. "
+  note(2, 1, "Yellow cells are the inputs. The customer sheets price next year's PROPOSAL row from this page (until a proposal exists), and the reports use the due window. "
     + "Change a value here and every sheet recalculates. Changes are brought back into the app by the normal workbook import (Agreements → Settings → Monthly workbook).");
   ws.getRow(2).height = 42;
 
@@ -654,7 +655,7 @@ function buildSettingsSheet(ws: ExcelJS.Worksheet, s: Awaited<ReturnType<typeof 
     "3. Otherwise an agreement marked \"Escalates by tier\" goes up by its tier % — the tier is chosen by that line's own last-year price.",
     "4. Otherwise the price stays the same. Prices are rounded to whole dollars.",
     "5. Last: After Hours becomes $0 when the waiver is on and the proposed SCADA Software price reaches the waiver amount.",
-    "Each customer sheet shows this as the \"Policy price\" row next to the proposal actually sent, so overrides stand out.",
+    "Each customer sheet shows the result in its yellow PROPOSAL row while the customer has no proposal for next year.",
   ];
   const s0 = lastAg + 3;
   steps.forEach((t, i) => {
@@ -668,164 +669,215 @@ function buildSettingsSheet(ws: ExcelJS.Worksheet, s: Awaited<ReturnType<typeof 
   ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 }
 
-/** The prototype's "Customer View" layout, every value a formula keyed by the SO # in B4. */
+// Customer sheets copy the "QEI Service Agreements - Central" Customer View cell for cell (rows,
+// widths, colours, borders, formats, grey-out of agreements the customer never had). Its macros
+// can't come along (.xlsx), so: the buttons are links, the yellow proposal cells are read back by
+// the import (CV below), and with no proposal yet the proposal row shows the Settings policy price
+// (what Central's "New Proposal" button would have created).
+const CV = { year1: 12, years: 5, inc: 17, callsHead: 19, status: 27, end: 29, pct: 30, head: 31, price: 33, store: 63 } as const;
+const CV_TITLE = "SERVICE AGREEMENTS";
+const CV_EDGE: Partial<ExcelJS.Border> = { style: "thin", color: { argb: "FFBFBFBF" } };
+const CV_MONEY = '\\$#,##0;\\(\\$#,##0\\);"-"';
+const CV_DATE = "mm-dd-yy";
+const CV_COUNT = '0;\\-0;"-"';
+
+/** One customer, keyed by the SO # in B4 (Customer View: picked by name in B2). */
 function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: string; so: string }) {
-  ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } };
+  const ag = SA_AGREEMENTS; // columns B.., TOTAL after them
+  const TOT = 2 + ag.length;
+  const lastAg = colL(1 + ag.length);
+  const totC = colL(TOT);
+  const SO = "$B$4";
+  const R = CV;
+  const yLast = R.year1 + R.years - 1;
+
+  ws.views = [{ state: "normal", showGridLines: false }];
+  ws.pageSetup = {
+    orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, blackAndWhite: true,
+    margins: { left: 0.75, right: 0.75, top: 1, bottom: 1, header: 0.5, footer: 0.5 },
+  };
+  ws.headerFooter = { oddFooter: "&C&A  -  printed &D" };
   ws.properties.tabColor = o.picker ? { argb: "FFFFC000" } : { argb: "FF8EA9DB" };
+  for (let c = 1; c <= TOT; c++) ws.getColumn(c).width = 12.43;
   ws.getColumn(1).width = 17;
-  for (let c = 2; c <= 15; c++) ws.getColumn(c).width = 12.4;
   ws.getColumn(5).width = 17;
   ws.getColumn(9).width = 16;
-  const ag = SA_AGREEMENTS; // columns B..N, TOTAL in O
-  const SO = "$B$4";
+  ([[1, 18], [2, 24], [11, 27.95], [R.head, 27.95], [R.head + 1, 6]] as const).forEach(([r, h]) => (ws.getRow(r).height = h));
 
-  put(ws, 1, 1, "SERVICE AGREEMENTS", { bold: true, size: 14, color: NAVY });
-  put(ws, 2, 1, "Customer", { bold: true });
+  type St = { b?: boolean; i?: boolean; size?: number; color?: string; fill?: string; fmt?: string; h?: "left" | "center" | "right"; v?: "middle"; wrap?: boolean };
+  const set = (r: number, c: number, v: unknown, s: St = {}) => {
+    const cell = ws.getCell(r, c);
+    cell.value = (v ?? null) as ExcelJS.CellValue;
+    cell.font = { name: "Arial", size: s.size ?? 10, bold: s.b, italic: s.i, color: s.color ? { argb: s.color } : undefined };
+    if (s.fill) cell.fill = fill(s.fill);
+    if (s.fmt) cell.numFmt = s.fmt;
+    if (s.h || s.v || s.wrap) cell.alignment = { horizontal: s.h, vertical: s.v, wrapText: s.wrap };
+    return cell;
+  };
+  const grid = (r1: number, c1: number, r2: number, c2: number) => {
+    for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) ws.getCell(r, c).border = { top: CV_EDGE, left: CV_EDGE, bottom: CV_EDGE, right: CV_EDGE };
+  };
+  const title = (r: number, t: string) => set(r, 1, t, { b: true, size: 11, color: NAVY });
+  const hint = (r: number, c: number, t: string) => set(r, c, t, { i: true, size: 9, color: "FF808080" });
+  const head = (r: number, c: number, t: string | null) => set(r, c, t, { b: true, color: WHITE, fill: NAVY, h: "center", v: "middle", wrap: true });
+
+  // ── header block ──
+  set(1, 1, CV_TITLE, { b: true, size: 14, color: NAVY });
+  set(2, 1, "Customer", { b: true });
   ws.mergeCells("B2:D2");
   if (o.picker) {
-    put(ws, 2, 2, o.name, { bold: true, size: 12, fill: INPUT });
+    set(2, 2, o.name, { b: true, size: 12, fill: INPUT });
     validate(ws, "B2", { type: "list", allowBlank: false, formulae: [`${sheetRef(S.customers)}!$A$2:$A$${CR}`] });
-    put(ws, 3, 2, "Pick a customer from the list (or type the exact name). Everything below reads from the master sheets.", { italic: true, color: "FF595959" });
+    hint(3, 2, "Pick a customer from the list (or type the exact name and press Enter).");
   } else {
-    put(ws, 2, 2, f(`IFERROR(INDEX(${Cu("name")},MATCH(${SO},${Cu("so")},0)),${q(o.name)})`), { bold: true, size: 12 });
+    set(2, 2, f(`IFERROR(INDEX(${Cu("name")},MATCH(${SO},${Cu("so")},0)),${q(o.name)})`), { b: true, size: 12, fill: INPUT });
+    hint(3, 2, "This sheet is one customer. To look up any other customer use the Customer View sheet.");
   }
+  grid(2, 2, 2, 4);
+  // Central's macro buttons, as links
+  const button = (c1: number, c2: number, target: string, label: string) => {
+    ws.mergeCells(2, c1, 2, c2);
+    set(2, c1, f(`HYPERLINK(${q(`#${target}`)},${q(label)})`), { fill: "FFF0F0F0", h: "center", v: "middle", color: "FF000000" });
+    for (let c = c1; c <= c2; c++) ws.getCell(2, c).border = { top: { style: "thin", color: { argb: "FFA6A6A6" } }, left: { style: "thin", color: { argb: "FFA6A6A6" } }, bottom: { style: "medium", color: { argb: "FF808080" } }, right: { style: "medium", color: { argb: "FF808080" } } };
+  };
+  button(7, 8, `${sheetRef(ws.name)}!B${R.price}`, "New Proposal");
+  button(9, 10, `${sheetRef(S.proposals)}!A1`, "Mark Signed");
+  button(11, 13, `${sheetRef(S.pricing)}!A1`, "Edit in Pricing");
+
   const look = (c: keyof typeof CU) => `IFERROR(INDEX(${Cu(c)},MATCH(${SO},${Cu("so")},0))&"","")`;
-  const label = (r: number, c: number, t: string) => put(ws, r, c, t, { bold: true, fill: LABEL });
-  const field = (r: number, c: number, merge: string, v: unknown, fmt?: string) => {
-    ws.mergeCells(merge);
-    put(ws, r, c, v, { bold: true, fmt });
+  const label = (r: number, c: number, t: string) => set(r, c, t, { b: true, fill: LABEL });
+  const field = (range: string, r: number, c: number, v: unknown, s: St = {}) => {
+    ws.mergeCells(range);
+    set(r, c, v, s);
   };
   label(4, 1, "SO #");
-  field(4, 2, "B4:D4", o.picker ? f(`IFERROR(INDEX(${Cu("so")},MATCH($B$2,${Cu("name")},0)),"")`) : o.so);
-  label(4, 5, "Status"); field(4, 6, "F4:H4", f(look("status")));
-  label(4, 9, "State"); field(4, 10, "J4:M4", f(look("state")));
-  label(5, 1, "Software"); field(5, 2, "B5:D5", f(look("software")));
-  label(5, 5, "Software version"); field(5, 6, "F5:H5", f(look("swVer")));
-  label(5, 9, "WV / PE version"); field(5, 10, "J5:M5", f(look("wvpe")));
-  label(6, 1, "Server"); field(6, 2, "B6:D6", f(look("server")));
-  label(6, 5, "Last server SO #"); field(6, 6, "F6:H6", f(look("lastServerSo")));
-  label(6, 9, "QWEB licenses"); field(6, 10, "J6:M6", f(look("qweb")));
-  const metric = (c: keyof typeof MC) => `IFERROR(INDEX(${Mt(c)},MATCH(${SO},${Mt("so")},0)),"")`;
-  label(7, 1, "Next end date"); field(7, 2, "B7:D7", f(metric("end")), DATE);
-  label(7, 5, "Annual value"); field(7, 6, "F7:H7", f(metric("value")), MONEY);
-  label(7, 9, "Renewal"); field(7, 10, "J7:M7", f(metric("renewal")));
-  label(8, 1, "Server install"); field(8, 2, "B8:D8", f(look("serverInstall")));
-  label(8, 5, "Customer since");
-  field(8, 6, "F8:H8", f(`IFERROR(_xlfn.AGGREGATE(15,6,${Pr("year")}/((${Pr("so")}=${SO})*(${Pr("status")}="Signed")),1),"")`), "0");
-  label(8, 9, "SO # confirmed"); field(8, 10, "J8:M8", f(look("soConfirmed")));
-  label(9, 1, "Notes");
-  ws.mergeCells("B9:M9");
-  put(ws, 9, 2, f(look("notes")), { wrap: true });
-  ws.getRow(9).height = 30;
-  box(ws, 4, 1, 9, 13);
+  field("B4:D4", 4, 2, o.picker ? f(`IFERROR(INDEX(${Cu("so")},MATCH($B$2,${Cu("name")},0))&"","")`) : o.so, { b: true });
+  label(4, 5, "Status"); field("F4:H4", 4, 6, f(look("status")), { b: true });
+  label(4, 9, "State"); field("J4:M4", 4, 10, f(look("state")));
+  label(5, 1, "Software"); field("B5:D5", 5, 2, f(look("software")), { b: true });
+  label(5, 5, "Software version"); field("F5:H5", 5, 6, f(look("swVer")));
+  label(5, 9, "WV / PE version"); field("J5:M5", 5, 10, f(look("wvpe")));
+  label(6, 1, "Server"); field("B6:D6", 6, 2, f(look("server")));
+  label(6, 5, "Last server SO #"); field("F6:H6", 6, 6, f(look("lastServerSo")));
+  label(6, 9, "QWEB licenses"); field("J6:M6", 6, 10, f(look("qweb")));
+  label(7, 1, "Next end date");
+  field("B7:D7", 7, 2, f(`IF(N($A$${R.year1})=0,"",IFERROR(_xlfn.AGGREGATE(15,6,${Pr("end")}/((${Pr("so")}=${SO})*(${Pr("status")}="Signed")*(${Pr("year")}=$A$${R.year1})*(${Pr("end")}>0)),1),""))`), { fmt: CV_DATE, h: "left" });
+  label(8, 1, "Notes");
+  field(`B8:${lastAg}8`, 8, 2, f(look("notes")), { h: "left", wrap: true });
+  grid(4, 1, 6, 13);
+  grid(7, 1, 7, 4);
+  grid(8, 1, 8, TOT);
 
-  // Price history: the customer's latest signed year and the four before it.
-  put(ws, 10, 1, "PRICE HISTORY (last 5 signed years)", { bold: true, size: 11, color: NAVY });
-  put(ws, 11, 1, "YEAR", { bold: true, color: WHITE, fill: NAVY, align: "center" });
-  ag.forEach((a, i) => put(ws, 11, 2 + i, AGREEMENT_LABELS[a], { bold: true, color: WHITE, fill: NAVY, wrap: true, align: "center" }));
-  put(ws, 11, 2 + ag.length, "TOTAL", { bold: true, color: WHITE, fill: NAVY, align: "center" });
-  ws.getRow(11).height = 30;
-  const lastC = colL(1 + ag.length);
-  for (let i = 0; i < 5; i++) {
-    const r = 12 + i;
-    put(ws, r, 1, f(i === 0
+  // ── price history: latest signed year and the four before it ──
+  title(10, "PRICE HISTORY (last 5 signed years)");
+  head(11, 1, "YEAR");
+  ag.forEach((a, i) => head(11, 2 + i, AGREEMENT_LABELS[a]));
+  head(11, TOT, "TOTAL");
+  for (let r = R.year1; r <= yLast; r++) {
+    set(r, 1, f(r === R.year1
       ? `IFERROR(_xlfn.AGGREGATE(14,6,${Pr("year")}/((${Pr("so")}=${SO})*(${Pr("status")}="Signed")),1),"")`
-      : `IF(N(A${r - 1})=0,"",A${r - 1}-1)`), { bold: true, fmt: "0", align: "center" });
+      : `IF(N(A${r - 1})=0,"",A${r - 1}-1)`), { b: true, fmt: "0", h: "center" });
     ag.forEach((_, j) => {
       const col = colL(2 + j);
-      put(ws, r, 2 + j, f(`IF($A${r}="","",SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},$A${r},${Pr("agreement")},${col}$11,${Pr("status")},"Signed"))`), { fmt: MONEY });
+      set(r, 2 + j, f(`IF($A${r}="","",SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},$A${r},${Pr("agreement")},${col}$11,${Pr("status")},"Signed"))`), { fmt: CV_MONEY, h: "right" });
     });
-    put(ws, r, 2 + ag.length, f(`IF($A${r}="","",SUM(B${r}:${lastC}${r}))`), { fmt: MONEY, bold: true });
+    set(r, TOT, f(`IF($A${r}="","",SUM(B${r}:${lastAg}${r}))`), { b: true, fmt: CV_MONEY, h: "right" });
   }
-  put(ws, 17, 1, "5-year increase", { bold: true, fill: LABEL, fmt: PCT });
-  for (let j = 0; j <= ag.length; j++) {
-    const col = colL(2 + j);
-    put(ws, 17, 2 + j, f(`IFERROR(IF(OR(N(${col}12)=0,N(${col}16)=0),"",${col}12/${col}16-1),"")`), { fill: LABEL, fmt: PCT });
+  set(R.inc, 1, "5-year increase", { b: true, i: true, fill: LABEL, fmt: PCT, h: "center" });
+  for (let c = 2; c <= TOT; c++) {
+    const col = colL(c);
+    set(R.inc, c, f(`IFERROR(IF(OR(N(${col}${R.year1})=0,N(${col}${yLast})=0),"",${col}${R.year1}/${col}${yLast}-1),"")`), { fill: LABEL, fmt: PCT, h: "center" });
   }
-  box(ws, 11, 1, 17, 2 + ag.length);
+  grid(11, 1, R.inc, TOT);
 
-  put(ws, 19, 1, "CALLS AND REPAIRS", { bold: true, size: 11, color: NAVY });
-  ["YEAR", "CALLS", "REPAIRS"].forEach((h, i) => put(ws, 20, 1 + i, h, { bold: true, color: WHITE, fill: NAVY, align: "center" }));
-  for (let i = 0; i < 5; i++) {
-    const r = 21 + i;
-    put(ws, r, 1, f(`IF(N(A${12 + i})=0,"",A${12 + i})`), { bold: true, fmt: "0", align: "center" });
-    put(ws, r, 2, f(`IF($A${r}="","",SUMIFS(${Kc("calls")},${Kc("so")},${SO},${Kc("year")},$A${r}))`), { fmt: COUNT });
-    put(ws, r, 3, f(`IF($A${r}="","",SUMIFS(${Kc("repairs")},${Kc("so")},${SO},${Kc("year")},$A${r}))`), { fmt: COUNT });
+  // ── calls and repairs, same years ──
+  title(R.callsHead - 1, "CALLS AND REPAIRS");
+  ["YEAR", "CALLS", "REPAIRS"].forEach((h, i) => set(R.callsHead, 1 + i, h, { b: true, color: WHITE, fill: NAVY, h: "center" }));
+  for (let i = 0; i < R.years; i++) {
+    const r = R.callsHead + 1 + i;
+    set(r, 1, f(`IF(N(A${R.year1 + i})=0,"",A${R.year1 + i})`), { b: true, fmt: "0", h: "center" });
+    set(r, 2, f(`IF($A${r}="","",SUMIFS(${Kc("calls")},${Kc("so")},${SO},${Kc("year")},$A${r}))`), { fmt: CV_COUNT, h: "center" });
+    set(r, 3, f(`IF($A${r}="","",SUMIFS(${Kc("repairs")},${Kc("so")},${SO},${Kc("year")},$A${r}))`), { fmt: CV_COUNT, h: "center" });
   }
-  box(ws, 20, 1, 25, 3);
+  grid(R.callsHead, 1, R.callsHead + R.years, 3);
 
-  // Next year: last signed year (+ each agreement's term end), the policy price worked out from
-  // the Settings sheet, the proposal actually entered (Pricing rows with Status "Proposed") and
-  // how they compare.
-  const R = { head: 30, signed: 31, ends: 32, nextEnds: 33, policy: 34, ppct: 35, prop: 36, propPct: 37, diff: 38 } as const;
-  const pm = `MATCH(1,INDEX((${Xp("so")}=${SO})*(${Xp("year")}=$A$${R.prop}),0),0)`;
-  put(ws, 27, 1, "PROPOSAL", { bold: true, size: 11, color: NAVY });
-  put(ws, 27, 4, "Status", { bold: true });
-  ws.mergeCells("E27:I27");
-  put(ws, 27, 5, f(`IF($A$${R.prop}="","",IFERROR(INDEX(${Xp("status")},${pm})&IF(INDEX(${Xp("status")},${pm})="Sent"," "&TEXT(INDEX(${Xp("sent")},${pm}),"m/d/yyyy")&" - not signed yet",""),"No proposal yet"))`), { bold: true });
-  put(ws, 28, 1, "Proposal end date", { bold: true, fill: LABEL });
-  ws.mergeCells("B28:C28");
-  put(ws, 28, 2, f(`IF($A$${R.prop}="","",IFERROR(INDEX(${Xp("end")},${pm}),""))`), { fmt: DATE, bold: true });
-  box(ws, 28, 1, 28, 3);
-  ws.mergeCells("E28:O28");
-  put(ws, 28, 5, "Green row = policy price from the Settings sheet. To propose: on Pricing add a row per agreement (this SO #, the new Year, Agreement, Price, Status \"Proposed\", no Proposal ID) — see Read me → New proposal.", { italic: true, color: "FF595959", wrap: true });
-  ws.getRow(28).height = 26;
+  // ── proposal for the year after the latest signed one ──
+  const Y = `$A$${R.price}`;
+  const anyC = `$${totC}$${R.store}`; // Proposed Pricing rows for that year
+  const pmOpen = `MATCH(1,INDEX((${Xp("so")}=${SO})*(${Xp("year")}=${Y})*((${Xp("status")}="Draft")+(${Xp("status")}="Sent")),0),0)`;
+  const pmAny = `MATCH(1,INDEX((${Xp("so")}=${SO})*(${Xp("year")}=${Y}),0),0)`;
+  const xAt = (c: keyof typeof XC, pm: string) => `INDEX(${Xp(c)},${pm})`;
+  const dated = (c: keyof typeof XC, pm: string) => `IF(N(${xAt(c, pm)})>0," "&TEXT(${xAt(c, pm)},"m/d/yyyy"),"")`;
+  const said = (pm: string) => `IF(OR(${xAt("status", pm)}="Draft",${xAt("status", pm)}=""),"DRAFT - not sent yet",`
+    + `IF(${xAt("status", pm)}="Sent","SENT"&${dated("sent", pm)}&" - not signed yet",`
+    + `IF(${xAt("status", pm)}="Signed","SIGNED"&${dated("signed", pm)},UPPER(${xAt("status", pm)})&${dated("closed", pm)})))`;
+  const lastSigned = `IFERROR(_xlfn.AGGREGATE(14,6,${Pr("signed")}/((${Pr("so")}=${SO})*(${Pr("year")}=$A$${R.year1})*(${Pr("status")}="Signed")*(${Pr("signed")}>0)),1),0)`;
+  title(R.status, "PROPOSAL");
+  set(R.status, 4, "Status", { b: true });
+  ws.mergeCells(`E${R.status}:I${R.status}`);
+  set(R.status, 5, f(`IF(${Y}="","",IFERROR(${said(pmOpen)},IFERROR(${said(pmAny)},`
+    + `IF(N(${lastSigned})>0,"SIGNED "&TEXT(${lastSigned},"m/d/yyyy")&" - "&${Y}&" prices below are the policy","No proposal yet - "&${Y}&" prices below are the policy"))))`),
+  { b: true, size: 11, color: "FFC00000" });
+  hint(R.status, 11, "Type a % or a price in the yellow cells; it's saved to the app when this file is imported.");
 
-  put(ws, R.head, 1, "", { fill: NAVY });
-  ag.forEach((a, i) => put(ws, R.head, 2 + i, AGREEMENT_LABELS[a], { bold: true, color: WHITE, fill: NAVY, wrap: true, align: "center" }));
-  put(ws, R.head, 2 + ag.length, "TOTAL", { bold: true, color: WHITE, fill: NAVY, align: "center" });
-  ws.getRow(R.head).height = 30;
+  const endOf = (pm: string) => `IF(N(${xAt("end", pm)})=0,1/0,${xAt("end", pm)})`;
+  set(R.end, 1, "End date", { b: true, h: "center" });
+  ws.mergeCells(`B${R.end}:C${R.end}`);
+  set(R.end, 2, f(`IF(${Y}="","",IFERROR(${endOf(pmOpen)},IFERROR(${endOf(pmAny)},IF(N($B$7)=0,"",EDATE($B$7,12)))))`), { b: true, fill: INPUT, fmt: CV_DATE, h: "center" });
+  grid(R.end, 1, R.end, 3);
+  hint(R.end, 4, "< one end date for the whole proposal");
+
+  set(R.pct, 1, "Increase %", { b: true, fmt: PCT, h: "center" });
+  for (let c = 2; c < TOT; c++) {
+    const col = colL(c);
+    set(R.pct, c, f(`IFERROR(IF(OR(N(${col}$${R.price})=0,N(${col}$${R.year1})=0),"",${col}$${R.price}/${col}$${R.year1}-1),"")`), { fill: INPUT, fmt: PCT, h: "center" });
+  }
+  grid(R.pct, 1, R.pct, TOT - 1);
+
+  head(R.head, 1, null);
+  ag.forEach((a, i) => head(R.head, 2 + i, AGREEMENT_LABELS[a]));
+  head(R.head, TOT, "TOTAL");
+  grid(R.head, 1, R.head, TOT);
+
+  // Prices: the proposal's Proposed Pricing rows; with none yet, the Settings policy price for each
+  // agreement the customer had in its latest signed year.
   const scadaC = colL(2 + ag.indexOf("SCADA_SOFTWARE"));
-  const had = (col: string) => `COUNTIFS(${Pr("so")},${SO},${Pr("year")},$A$12,${Pr("agreement")},${col}$${R.head},${Pr("status")},"Signed")`;
-
-  // last signed year (the base the policy prices from)
-  put(ws, R.signed, 1, f(`IF(N(A12)=0,"",A12)`), { bold: true, fmt: '"Signed "0', fill: LABEL });
-  for (let j = 0; j <= ag.length; j++) {
-    const col = colL(2 + j);
-    put(ws, R.signed, 2 + j, f(`IF($A$${R.signed}="","",${col}12)`), { fmt: MONEY, bold: j === ag.length });
-  }
-  // each agreement's current term end, and the next term's (one year later)
-  put(ws, R.ends, 1, "Term ends", { bold: true, fill: LABEL });
-  put(ws, R.nextEnds, 1, "Next term ends", { bold: true, fill: LABEL });
-  ag.forEach((_, j) => {
-    const col = colL(2 + j);
-    put(ws, R.ends, 2 + j, f(`IF($A$${R.signed}="","",IFERROR(_xlfn.AGGREGATE(14,6,${Pr("end")}/((${Pr("so")}=${SO})*(${Pr("year")}=$A$12)*(${Pr("agreement")}=${col}$${R.head})*(${Pr("status")}="Signed")*(${Pr("end")}>0)),1),""))`), { fmt: DATE, align: "center" });
-    put(ws, R.nextEnds, 2 + j, f(`IF(N(${col}${R.ends})=0,"",EDATE(${col}${R.ends},12))`), { fmt: DATE, align: "center", color: "FF595959" });
-  });
-  // policy price per agreement the customer had in that year
-  put(ws, R.policy, 1, f(`IF(N(A12)=0,"",A12+1)`), { bold: true, fmt: '"Policy "0', fill: "FFC6E0B4" });
+  set(R.price, 1, f(`IF(N(A${R.year1})=0,"",A${R.year1}+1)`), { b: true, fill: LABEL, fmt: "0", h: "center" });
   ag.forEach((a, j) => {
     const col = colL(2 + j);
-    const L = `${col}$12`;
+    const L = `${col}$${R.year1}`;
     const r = agRow(a);
     const tier = `IF(${L}<=${setB(SET.tierLowMax)},${setB(SET.pctLow)},IF(${L}<=${setB(SET.tierMidMax)},${setB(SET.pctMid)},${setB(SET.pctHigh)}))`;
     let core = `IF(${setB(r)}="Yes",${L}*(1+${tier}),${L})`;
     if (a === "SCADA_SOFTWARE") core = `IF(AND($B$5=${q(SOFTWARE_LABELS.TDMS)},${setB(SET.tdmsPct)}<>""),${L}*(1+${setB(SET.tdmsPct)}),${core})`;
     if (FIXED_PRICE_AGREEMENTS.includes(a)) core = `IF(${setC(r)}<>"",${setC(r)},${core})`;
-    let value = `ROUND(${core},0)`;
-    if (a === "AFTER_HOURS") value = `IF(AND(${setB(SET.waive)}="Yes",N($${scadaC}$${R.policy})>=${setB(SET.waiveAt)}),0,${value})`;
-    put(ws, R.policy, 2 + j, f(`IF($A$${R.policy}="","",IF(${had(col)}=0,"",${value}))`), { fmt: MONEY, fill: "FFE2EFDA" });
+    let policy = `ROUND(${core},0)`;
+    if (a === "AFTER_HOURS") policy = `IF(AND(${setB(SET.waive)}="Yes",N($${scadaC}$${R.price})>=${setB(SET.waiveAt)}),0,${policy})`;
+    set(R.price, 2 + j, f(`IF(${Y}="","",IF(${anyC}>0,SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},${Y},${Pr("agreement")},${col}$${R.head},${Pr("status")},"Proposed"),IF(${col}$${R.store + 1}=0,0,${policy})))`),
+      { fill: INPUT, fmt: CV_MONEY, h: "right" });
   });
-  put(ws, R.policy, 2 + ag.length, f(`IF($A$${R.policy}="","",SUM(B${R.policy}:${lastC}${R.policy}))`), { fmt: MONEY, bold: true, fill: "FFE2EFDA" });
-  put(ws, R.ppct, 1, "Policy increase", { bold: true, fill: LABEL });
-  // the proposal entered (Pricing, Status Proposed)
-  put(ws, R.prop, 1, f(`IF(N(A12)=0,"",A12+1)`), { bold: true, fmt: '"Proposal "0', fill: LABEL });
+  set(R.price, TOT, f(`IF(${Y}="","",SUM(B${R.price}:${lastAg}${R.price}))`), { b: true, fill: LABEL, fmt: CV_MONEY, h: "right" });
+  grid(R.price, 1, R.price, TOT);
+
+  // ── hidden helpers (Central keeps its formula store here too) ──
+  set(R.store, 1, "helpers (do not edit)");
   ag.forEach((_, j) => {
     const col = colL(2 + j);
-    put(ws, R.prop, 2 + j, f(`IF($A$${R.prop}="","",SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},$A$${R.prop},${Pr("agreement")},${col}$${R.head},${Pr("status")},"Proposed"))`), { fmt: MONEY, bold: true });
+    ws.getCell(R.store, 2 + j).value = f(`COUNTIFS(${Pr("so")},${SO},${Pr("agreement")},${col}$11)`); // ever had it
+    ws.getCell(R.store + 1, 2 + j).value = f(`IF(N($A$${R.year1})=0,0,COUNTIFS(${Pr("so")},${SO},${Pr("year")},$A$${R.year1},${Pr("agreement")},${col}$11,${Pr("status")},"Signed"))`);
   });
-  put(ws, R.prop, 2 + ag.length, f(`IF($A$${R.prop}="","",SUM(B${R.prop}:${lastC}${R.prop}))`), { fmt: MONEY, bold: true });
-  put(ws, R.propPct, 1, "Proposal increase", { bold: true, fill: LABEL });
-  put(ws, R.diff, 1, "Proposal − policy", { bold: true, fill: LABEL });
-  for (let j = 0; j <= ag.length; j++) {
-    const col = colL(2 + j);
-    const S_ = `${col}$${R.signed}`, P = `${col}$${R.policy}`, X = `${col}$${R.prop}`;
-    put(ws, R.ppct, 2 + j, f(`IFERROR(IF(OR(N(${S_})=0,${P}=""),"",${P}/${S_}-1),"")`), { fmt: PCT, color: "FF595959" });
-    put(ws, R.propPct, 2 + j, f(`IFERROR(IF(OR(N(${S_})=0,N(${X})=0),"",${X}/${S_}-1),"")`), { fmt: PCT, color: "FF595959" });
-    put(ws, R.diff, 2 + j, f(`IF(OR(${P}="",N(${X})=0),"",${X}-${P})`), { fmt: MONEY, color: "FF595959" });
-  }
-  box(ws, R.head, 1, R.diff, 2 + ag.length);
-  ws.views = [{ state: "normal", showGridLines: false }];
+  ws.getCell(R.store, TOT).value = f(`IF(N(${Y})=0,0,COUNTIFS(${Pr("so")},${SO},${Pr("year")},${Y},${Pr("status")},"Proposed"))`);
+  for (let r = R.store; r <= R.store + 2; r++) ws.getRow(r).hidden = true;
+
+  // Agreements the customer never had: lighter header, greyed cells (as in Central).
+  const never = `B$${R.store}=0`;
+  const pale = { type: "pattern" as const, pattern: "solid" as const, fgColor: { argb: "FF8EA9DB" }, bgColor: { argb: "FF8EA9DB" } };
+  const grey = { font: { color: { argb: "FFBFBFBF" } }, fill: { type: "pattern" as const, pattern: "solid" as const, fgColor: { argb: "FFF2F2F2" }, bgColor: { argb: "FFF2F2F2" } } };
+  ws.addConditionalFormatting({ ref: `B11:${lastAg}11`, rules: [{ type: "expression", priority: 1, formulae: [never], style: { fill: pale } }] });
+  ws.addConditionalFormatting({ ref: `B${R.head}:${lastAg}${R.head}`, rules: [{ type: "expression", priority: 2, formulae: [never], style: { fill: pale } }] });
+  ws.addConditionalFormatting({ ref: `B${R.year1}:${lastAg}${R.inc}`, rules: [{ type: "expression", priority: 3, formulae: [never], style: grey }] });
+  ws.addConditionalFormatting({ ref: `B${R.pct}:${lastAg}${R.pct}`, rules: [{ type: "expression", priority: 4, formulae: [never], style: grey }] });
+  ws.addConditionalFormatting({ ref: `B${R.price}:${lastAg}${R.price}`, rules: [{ type: "expression", priority: 5, formulae: [never], style: grey }] });
 }
 
 // ─────────────────────────────── import ───────────────────────────────
@@ -845,6 +897,12 @@ export interface WorkbookImportSummary {
 
 interface Op { label: string; run: () => Promise<void> }
 type Row = { line: number; get: (h: string) => Cell };
+/** A proposal started in the workbook: Proposed Pricing rows without a Proposal ID and / or a customer sheet's yellow row. */
+type NewProposal = { so: string; year: number; lines: { agreement: SaAgreement; price: number }[]; rows: number[]; from: string[]; endDate: string | null };
+/** Formula cells (incl. Excel's "shared" formulas after a save) are never typed input. */
+const isFormula = (v: Cell) => !!v && typeof v === "object" && !(v instanceof Date) && ("formula" in (v as object) || "sharedFormula" in (v as object));
+/** What a cell shows: a formula's last calculated result, else the value. */
+const shown = (v: Cell): Cell => (isFormula(v) ? ((v as { result?: Cell }).result ?? null) : v);
 
 function readSheet(wb: ExcelJS.Workbook, name: string): Row[] | null {
   const ws = wb.worksheets.find((w) => w.name.trim().toLowerCase() === name.toLowerCase());
@@ -958,7 +1016,11 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
   const custBySo = new Map(customers.map((c) => [c.soNumber.toUpperCase(), c]));
   const newSos = new Set<string>();
   /** New proposals entered in the workbook: Proposed Pricing rows with SO # + Year and no Proposal ID. */
-  const newProps = new Map<string, { so: string; year: number; lines: { agreement: SaAgreement; price: number }[]; rows: number[] }>();
+  const newProps = new Map<string, NewProposal>();
+  /** SO|year|agreement proposal lines already changed by a Pricing row (they win over a customer sheet). */
+  const touched = new Set<string>();
+  const exportedMs = exportedAt ? Date.parse(exportedAt) : NaN;
+  const stale = (d: Date) => Number.isFinite(exportedMs) && d.getTime() > exportedMs;
   const lineById = new Map(lines.map((l) => [l.id, l]));
   const propById = new Map(proposals.map((p) => [p.id, p]));
   const plineById = new Map(proposals.flatMap((p) => p.lines.map((l) => [l.id, { ...l, proposal: p }] as const)));
@@ -1080,11 +1142,12 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
               skip(S.pricing, row, `${so} already has a signed ${year} ${AGREEMENT_LABELS[agreement]}`); continue;
             }
             const key = `${so}|${year}`;
-            const g = newProps.get(key) ?? { so, year, lines: [], rows: [] };
+            const g = newProps.get(key) ?? { so, year, lines: [], rows: [], from: [], endDate: null };
             if (g.lines.some((l) => l.agreement === agreement)) { skip(S.pricing, row, `${so} ${year}: ${AGREEMENT_LABELS[agreement]} is listed twice`); continue; }
             g.lines.push({ agreement, price });
             g.rows.push(row.line);
             newProps.set(key, g);
+            touched.add(`${so}|${year}|${agreement}`);
             continue;
           }
         }
@@ -1092,6 +1155,7 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
         if (!EDITABLE_PROPOSAL.includes(p.status)) { skip(S.pricing, row, `${cname} ${p.year} proposal is ${PROPOSAL_STATUS_LABELS[p.status].toLowerCase()} — locked`); continue; }
         if (!agreement || price === null) { skip(S.pricing, row, "a new Proposed row needs Agreement and Price"); continue; }
         if (p.lines.some((l) => l.agreement === agreement)) { skip(S.pricing, row, `${cname} ${p.year} proposal already has ${AGREEMENT_LABELS[agreement]}`); continue; }
+        touched.add(`${custById.get(p.customerId)?.soNumber ?? ""}|${p.year}|${agreement}`);
         plan(S.pricing, "created", `${cname} ${p.year} proposal: add ${AGREEMENT_LABELS[agreement]} at $${price}`, async () => { await addLine(scope, p.id, agreement, price); });
         continue;
       }
@@ -1154,6 +1218,7 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     if (!EDITABLE_PROPOSAL.includes(pl.proposal.status)) { skip(S.pricing, row, `${label}: proposal is ${PROPOSAL_STATUS_LABELS[pl.proposal.status].toLowerCase()} — locked`); continue; }
     if (kind === "ACTIVE" || kind === "CANCELLED") { skip(S.pricing, row, `${label}: sign proposals on the Proposals sheet (Status → Signed), not on Pricing`); continue; }
     if (num(row.get("Version")) !== pl.version) { skip(S.pricing, row, `${label}: ${conflict}`); continue; }
+    touched.add(`${custById.get(pl.proposal.customerId)?.soNumber ?? ""}|${pl.proposal.year}|${pl.agreement}`);
     if (wantsDelete) plan(S.pricing, "deleted", `${label}: remove`, async () => { await removeLine(scope, id); });
     else plan(S.pricing, "updated", `${label}: $${Number(pl.price)} → $${price}`, async () => {
       const fr = await prisma.saProposalLine.findUniqueOrThrow({ where: { id } });
@@ -1161,20 +1226,110 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     });
   }
 
+  // ── Customer sheets: prices / % / end date typed into the yellow proposal cells ──
+  // (Central's macros saved these to Pricing on the spot; here the import does it.) An open
+  // proposal is edited line by line; with none, the row as shown — typed values plus the policy
+  // prices — becomes a new Draft (like Central's "New Proposal"). Pricing rows win on overlap.
+  const CS = "Customer sheets";
+  const csNote = (msg: string) => { counts(CS).skipped++; summary.skipped.push(`${CS}: ${msg}`); };
+  const pendingEnds: { p: (typeof proposals)[number]; end: string; where: string }[] = [];
+  for (const ws of wb.worksheets) {
+    if (text(ws.getCell(1, 1).value) !== CV_TITLE || text(ws.getCell(CV.end, 1).value) !== "End date") continue;
+    const where = ws.name;
+    const typed = new Map<SaAgreement, number | null>(); // null = cleared / 0 = take it off
+    let bad = false;
+    SA_AGREEMENTS.forEach((a, j) => {
+      const pv = ws.getCell(CV.price, 2 + j).value as Cell;
+      const xv = ws.getCell(CV.pct, 2 + j).value as Cell;
+      if (!isFormula(pv)) {
+        const n = text(pv) === null ? 0 : num(pv);
+        if (n === null || n < 0) bad = true;
+        else typed.set(a, n ? Math.round(n) : null);
+      } else if (!isFormula(xv) && text(xv) !== null) {
+        const pct = num(xv);
+        const base = num(shown(ws.getCell(CV.year1, 2 + j).value as Cell));
+        if (pct === null || !base) bad = true;
+        else typed.set(a, Math.round(base * (1 + pct)));
+      }
+    });
+    const ev = ws.getCell(CV.end, 2).value as Cell;
+    const endTyped = !isFormula(ev) && text(ev) !== null ? dateCell(ev) : null;
+    if (!typed.size && !endTyped) continue;
+    if (bad) { csNote(`${where}: a yellow cell holds something that isn't a price or % (or last year's price is missing) — nothing taken from this sheet`); continue; }
+    const so = (text(shown(ws.getCell(4, 2).value as Cell)) ?? "").toUpperCase();
+    const year = intCell(shown(ws.getCell(CV.price, 1).value as Cell));
+    const cust = custBySo.get(so);
+    if (!cust || !year) { csNote(`${where}: can't tell the customer or the proposal year — open the file in Excel, save it, and import again`); continue; }
+    const open = proposals.filter((p) => p.customerId === cust.id && p.year === year && EDITABLE_PROPOSAL.includes(p.status));
+    if (open.length > 1) { csNote(`${where}: ${cust.name} has ${open.length} open ${year} proposals — change the prices on Pricing instead`); continue; }
+
+    if (open.length === 1) {
+      const p = open[0]!;
+      for (const [a, price] of typed) {
+        const lab = `${where}: ${year} ${AGREEMENT_LABELS[a]}`;
+        const key = `${so}|${year}|${a}`;
+        if (touched.has(key)) { csNote(`${lab} — also changed on Pricing; the Pricing row was used`); continue; }
+        touched.add(key);
+        const line = p.lines.find((l) => l.agreement === a);
+        if (price === null) {
+          if (!line) continue;
+          if (stale(line.updatedAt)) { csNote(`${lab}: ${conflict}`); continue; }
+          plan(CS, "deleted", `${lab}: take off the proposal`, async () => { await removeLine(scope, line.id); });
+        } else if (line) {
+          if (Number(line.price) === price) { counts(CS).unchanged++; continue; }
+          if (stale(line.updatedAt)) { csNote(`${lab}: ${conflict}`); continue; }
+          plan(CS, "updated", `${lab}: $${Number(line.price)} → $${price}`, async () => {
+            const fr = await prisma.saProposalLine.findUniqueOrThrow({ where: { id: line.id } });
+            await setLinePrice(scope, line.id, price, fr.version);
+          });
+        } else {
+          plan(CS, "created", `${lab}: add at $${price}`, async () => { await addLine(scope, p.id, a, price); });
+        }
+      }
+      if (endTyped && endTyped !== ymd(p.endDate)) pendingEnds.push({ p, end: endTyped, where });
+      continue;
+    }
+
+    // No open proposal: the row as shown becomes a new one.
+    const key = `${so}|${year}`;
+    const g = newProps.get(key) ?? { so, year, lines: [], rows: [], from: [], endDate: null };
+    // (An uncalculated file has no year in A33 and was turned away above; a missing result is 0 —
+    // ExcelJS drops zero results when it reads.)
+    const add: NewProposal["lines"] = [];
+    SA_AGREEMENTS.forEach((a, j) => {
+      if (g.lines.some((l) => l.agreement === a)) return; // a Pricing row already gives this one
+      const price = typed.has(a) ? typed.get(a)! : num(shown(ws.getCell(CV.price, 2 + j).value as Cell));
+      if (!price) return;
+      if (lines.some((l) => l.customerId === cust.id && l.year === year && l.agreement === a && l.status === "ACTIVE")) {
+        csNote(`${where}: ${cust.name} already has a signed ${year} ${AGREEMENT_LABELS[a]} — left out`);
+        return;
+      }
+      add.push({ agreement: a, price: Math.round(price) });
+    });
+    if (!add.length && !g.lines.length) { csNote(`${where}: no prices for a ${year} proposal`); continue; }
+    g.lines.push(...add);
+    g.from.push(`the ${where} sheet`);
+    if (endTyped) g.endDate = endTyped;
+    newProps.set(key, g);
+  }
+
   // ── Proposals ──
+  const headerIds = new Set<string>();
   const planNewProposal = (
-    g: { so: string; year: number; lines: { agreement: SaAgreement; price: number }[]; rows: number[] },
+    g: NewProposal,
     o: { status: SaProposalStatus; endDate: string | null; notes: string | null; sent: string | null; signed: string | null; closed: string | null; reason: string | null },
   ) => {
     const path = statusPath("DRAFT", o.status)!;
     const name = custBySo.get(g.so)?.name ?? g.so;
     const total = g.lines.reduce((a, l) => a + Math.round(l.price), 0);
-    counts(S.pricing).created += g.lines.length;
+    const endDate = o.endDate ?? g.endDate;
+    counts(S.pricing).created += g.rows.length;
+    const from = [g.rows.length ? `Pricing rows ${g.rows.join(", ")}` : "", ...g.from].filter(Boolean).join("; ");
     plan(
       S.proposals, "created",
-      `new ${name} ${g.year} proposal (${PROPOSAL_STATUS_LABELS[o.status]}, ${g.lines.length} agreements, $${total.toLocaleString("en-US")}; Pricing rows ${g.rows.join(", ")})`,
+      `new ${name} ${g.year} proposal (${PROPOSAL_STATUS_LABELS[o.status]}, ${g.lines.length} agreements, $${total.toLocaleString("en-US")}; from ${from})`,
       async () => {
-        const id = await createProposalFromLines(scope, await resolveSo(g.so), { year: g.year, lines: g.lines, endDate: o.endDate, notes: o.notes });
+        const id = await createProposalFromLines(scope, await resolveSo(g.so), { year: g.year, lines: g.lines, endDate, notes: o.notes });
         await moveProposal(scope, id, path, o);
       },
     );
@@ -1219,6 +1374,7 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     const path = statusPath(db.status, target);
     if (path === null) { skip(S.proposals, row, `${label}: can't go from ${PROPOSAL_STATUS_LABELS[db.status]} to ${PROPOSAL_STATUS_LABELS[target]}`); continue; }
     if (headerDiff && !EDITABLE_PROPOSAL.includes(db.status)) { skip(S.proposals, row, `${label}: end date / notes are locked on a ${PROPOSAL_STATUS_LABELS[db.status].toLowerCase()} proposal`); continue; }
+    if (headerDiff) headerIds.add(id);
     const what = [headerDiff && "end date / notes", statusDiff && `${PROPOSAL_STATUS_LABELS[db.status]} → ${PROPOSAL_STATUS_LABELS[target]}`, dateDiff && "dates"].filter(Boolean).join(", ");
     plan(S.proposals, "updated", `${label}: ${what}`, async () => {
       if (headerDiff) {
@@ -1231,6 +1387,17 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
   // Proposed Pricing rows for a new SO # + Year without a Proposals row → a Draft.
   for (const g of newProps.values()) {
     planNewProposal(g, { status: "DRAFT", endDate: null, notes: null, sent: null, signed: null, closed: null, reason: null });
+  }
+  // End dates typed on a customer sheet for an open proposal (the Proposals row wins if it changed too).
+  for (const { p, end, where } of pendingEnds) {
+    const lab = `${where}: ${p.year} proposal end date`;
+    if (headerIds.has(p.id)) { csNote(`${lab} — the Proposals row changed this proposal too; that row was used`); continue; }
+    if (stale(p.updatedAt)) { csNote(`${lab}: ${conflict}`); continue; }
+    headerIds.add(p.id);
+    plan(CS, "updated", `${lab} → ${end}`, async () => {
+      const fr = await prisma.saProposal.findUniqueOrThrow({ where: { id: p.id } });
+      await updateProposalHeader(scope, p.id, { endDate: end, notes: fr.notes }, fr.version);
+    });
   }
 
   if (apply) {
