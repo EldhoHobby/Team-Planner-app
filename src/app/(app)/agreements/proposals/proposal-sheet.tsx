@@ -47,6 +47,9 @@ export function ProposalSheet({
   pending = false,
   onPrice,
   onEndDate,
+  onAdd,
+  onRemove,
+  onNotes,
 }: {
   d: ProposalDetail;
   printDate: string;
@@ -54,6 +57,10 @@ export function ProposalSheet({
   pending?: boolean;
   onPrice?: (line: ProposalDetail["proposal"]["lines"][number], price: number) => void;
   onEndDate?: (endDate: string | null) => void;
+  /** Add an agreement to the proposal (its column header "+"). */
+  onAdd?: (agreement: SaAgreement, price: number) => void;
+  onRemove?: (line: ProposalDetail["proposal"]["lines"][number]) => void;
+  onNotes?: (notes: string | null) => void;
 }) {
   const c = d.customer;
   const p = d.proposal;
@@ -74,7 +81,7 @@ export function ProposalSheet({
   ];
 
   return (
-    <article className="space-y-4 rounded-lg border bg-card p-5 text-xs print:space-y-3 print:rounded-none print:border-0 print:p-0 print:text-[8pt]">
+    <article className="space-y-4 overflow-x-auto rounded-lg border bg-card p-5 text-xs print:overflow-visible print:space-y-3 print:rounded-none print:border-0 print:p-0 print:text-[8pt]">
       <header className="flex items-baseline justify-between gap-4 border-b pb-2 print:border-black">
         <h2 className="text-base font-bold tracking-wide">SERVICE AGREEMENTS</h2>
         <p className="text-lg font-bold">{c.name}</p>
@@ -111,7 +118,7 @@ export function ProposalSheet({
       {/* Price history */}
       <section>
         <h3 className="mb-1 font-bold">PRICE HISTORY (last {h.rows.length} years)</h3>
-        <table className="w-full table-fixed border-collapse">
+        <table className="w-full min-w-[60rem] table-fixed border-collapse print:min-w-0">
           <thead>
             <tr className="bg-muted/50">
               <th className={cn(TH, "w-[7%]")}>YEAR</th>
@@ -166,7 +173,11 @@ export function ProposalSheet({
         <div className="mb-1 flex flex-wrap items-baseline gap-x-6 gap-y-1">
           <h3 className="font-bold">PROPOSAL</h3>
           <span><span className={cn(LBL, "mr-2")}>Status</span>{proposalStatusLine(p)}</span>
-          {editable && <span className="text-muted-foreground print:hidden">Type a % or a price in the yellow cells; each change saves at once.</span>}
+          {editable && (
+            <span className="text-muted-foreground print:hidden">
+              Type a % or a price in the yellow cells (Enter saves, Esc undoes). Use + to add an agreement and × to remove one.
+            </span>
+          )}
         </div>
         <div className="mb-2 flex items-center gap-2">
           <span className={cn(LBL, "inline-block w-28")}>End date</span>
@@ -177,7 +188,7 @@ export function ProposalSheet({
           )}
           {editable && <span className="text-muted-foreground print:hidden">&lt; one end date for the whole proposal</span>}
         </div>
-        <table className="w-full table-fixed border-collapse">
+        <table className="w-full min-w-[60rem] table-fixed border-collapse print:min-w-0">
           <tbody>
             <tr>
               <td className={cn(TD, "w-[7%] text-left text-[10px] font-semibold print:text-[7pt]")}>Increase %</td>
@@ -207,9 +218,40 @@ export function ProposalSheet({
               {SA_AGREEMENTS.map((a) => {
                 const l = byAgreement.get(a);
                 return (
-                  <td key={a} className={cn(TD, dim(a), editable && l && "p-0")}>
+                  <td key={a} className={cn(TD, dim(a), editable && "p-0")}>
                     {editable && l ? (
-                      <EditCell value={l.price} prefix="$" ariaLabel={`${AGREEMENT_LABELS[a]} proposed price`} disabled={pending} onCommit={(v) => onPrice?.(l, v)} />
+                      <span className="group relative block">
+                        <EditCell value={l.price} prefix="$" ariaLabel={`${AGREEMENT_LABELS[a]} proposed price`} disabled={pending} onCommit={(v) => onPrice?.(l, v)} />
+                        {onRemove && (
+                          <button
+                            type="button"
+                            title={`Remove ${AGREEMENT_LABELS[a]}`}
+                            aria-label={`Remove ${AGREEMENT_LABELS[a]}`}
+                            disabled={pending}
+                            onClick={() => confirm(`Remove ${AGREEMENT_LABELS[a]} from this proposal?`) && onRemove(l)}
+                            className="absolute -right-1 -top-2 hidden h-4 w-4 items-center justify-center rounded-full border bg-card text-[10px] leading-none text-muted-foreground hover:text-destructive group-hover:flex group-focus-within:flex print:hidden"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </span>
+                    ) : editable && onAdd ? (
+                      <button
+                        type="button"
+                        title={`Add ${AGREEMENT_LABELS[a]}`}
+                        aria-label={`Add ${AGREEMENT_LABELS[a]}`}
+                        disabled={pending}
+                        onClick={() => {
+                          const suggest = Math.round(newest[a] ?? 0);
+                          const raw = prompt(`Price for ${AGREEMENT_LABELS[a]} ($)`, suggest ? String(suggest) : "");
+                          if (raw === null) return;
+                          const v = Number(raw.replace(/[$,\s]/g, ""));
+                          if (Number.isFinite(v) && v >= 0) onAdd(a, v);
+                        }}
+                        className="block w-full py-0.5 text-center text-muted-foreground hover:bg-muted hover:text-foreground print:hidden"
+                      >
+                        +
+                      </button>
                     ) : (
                       fmtMoney(l?.price ?? 0)
                     )}
@@ -220,7 +262,14 @@ export function ProposalSheet({
             </tr>
           </tbody>
         </table>
-        {p.notes && <p className="mt-2 whitespace-pre-wrap"><span className={LBL}>Notes: </span>{p.notes}</p>}
+        {editable && onNotes ? (
+          <>
+            <NotesBox value={p.notes} disabled={pending} onCommit={onNotes} />
+            {p.notes && <p className="mt-2 hidden whitespace-pre-wrap print:block"><span className={LBL}>Notes: </span>{p.notes}</p>}
+          </>
+        ) : (
+          p.notes && <p className="mt-2 whitespace-pre-wrap"><span className={LBL}>Notes: </span>{p.notes}</p>
+        )}
       </section>
 
       <footer className="hidden justify-between border-t border-black pt-1 text-[7pt] print:flex">
@@ -277,6 +326,28 @@ export function EditCell({
       />
       {suffix && <span className="text-muted-foreground">{suffix}</span>}
     </span>
+  );
+}
+
+function NotesBox({ value, disabled, onCommit }: { value: string | null; disabled?: boolean; onCommit: (v: string | null) => void }) {
+  const [draft, setDraft] = useState(value ?? "");
+  useEffect(() => setDraft(value ?? ""), [value]);
+  const dirty = (draft.trim() || null) !== (value ?? null);
+  return (
+    <label className="mt-3 block print:hidden">
+      <span className="flex items-baseline justify-between gap-2">
+        <span className={LBL}>Notes</span>
+        <span className="text-muted-foreground">{dirty ? "Unsaved — click outside the box to save" : "Printed under the proposal"}</span>
+      </span>
+      <textarea
+        value={draft}
+        rows={2}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => dirty && onCommit(draft.trim() || null)}
+        className="mt-1 w-full rounded border bg-yellow-100 p-1.5 dark:bg-yellow-900/40"
+      />
+    </label>
   );
 }
 
