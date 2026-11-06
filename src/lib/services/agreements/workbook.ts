@@ -712,8 +712,7 @@ function buildSettingsSheet(ws: ExcelJS.Worksheet, s: Awaited<ReturnType<typeof 
 // import (CV below). With no proposal yet the proposal row shows the Settings policy price.
 // Hidden rows: 63–64 = helper counts; 65 / 66 / 67 = the yellow cells' formulas as text, so the
 // macros can put a formula back after a typed value has been saved to Pricing.
-// Rows 17–20: increase vs the year before; 21: the 5-year increase.
-const CV = { year1: 12, years: 5, yoy: 17, inc: 21, callsHead: 23, status: 31, end: 33, pct: 34, head: 35, price: 37, store: 63, fPct: 65, fPrice: 66, fEnd: 67 } as const;
+const CV = { year1: 12, years: 5, inc: 17, callsHead: 19, status: 27, end: 29, pct: 30, head: 31, price: 33, store: 63, fPct: 65, fPrice: 66, fEnd: 67 } as const;
 const CV_TITLE = "SERVICE AGREEMENTS";
 const CV_BUTTONS = {
   newProposal: { cell: "G2", range: "G2:H2", label: "New Proposal" },
@@ -839,15 +838,6 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
       set(r, 2 + j, f(`IF($A${r}="","",SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},$A${r},${Pr("agreement")},${col}$11,${Pr("status")},"Signed"))`), { fmt: CV_MONEY, h: "right" });
     });
     set(r, TOT, f(`IF($A${r}="","",SUM(B${r}:${lastAg}${r}))`), { b: true, fmt: CV_MONEY, h: "right" });
-  }
-  // Increase vs the year before ("2026 vs 2025" …), then the whole 5-year span.
-  for (let k = 0; k < R.years - 1; k++) {
-    const r = R.yoy + k, a = R.year1 + k, b = a + 1;
-    set(r, 1, f(`IF(OR(N(A${a})=0,N(A${b})=0),"",A${a}&" vs "&A${b})`), { b: true, i: true, fill: LABEL, h: "center" });
-    for (let c = 2; c <= TOT; c++) {
-      const col = colL(c);
-      set(r, c, f(`IFERROR(IF(OR(N(${col}${a})=0,N(${col}${b})=0),"",${col}${a}/${col}${b}-1),"")`), { fill: LABEL, fmt: PCT, h: "center" });
-    }
   }
   set(R.inc, 1, "5-year increase", { b: true, i: true, fill: LABEL, fmt: PCT, h: "center" });
   for (let c = 2; c <= TOT; c++) {

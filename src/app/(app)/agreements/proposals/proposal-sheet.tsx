@@ -201,17 +201,6 @@ export function ProposalSheet({
                 { v: money(r.total), b: true, align: "right", edge: true },
               ]} />
             ))}
-            {/* increase vs the year before, then over the whole 5 years */}
-            {rows.slice(0, -1).map((r, k) => {
-              const prev = rows[k + 1]!;
-              return (
-                <Row key={`yoy-${r.year}`} cells={[
-                  { v: `${r.year} vs ${prev.year}`, b: true, i: true, fill: LABEL, align: "center", edge: true },
-                  ...SA_AGREEMENTS.map((a): Cell => ({ v: pct(growth(r.prices[a], prev.prices[a])), fill: LABEL, align: "center", edge: true, dim: dim(a) })),
-                  { v: pct(growth(r.total, prev.total)), fill: LABEL, align: "center", edge: true },
-                ]} />
-              );
-            })}
             <Row cells={[
               { v: "5-year increase", b: true, i: true, fill: LABEL, align: "center", edge: true },
               ...SA_AGREEMENTS.map((a): Cell => ({ v: pct(growth(first?.prices[a], last?.prices[a])), fill: LABEL, align: "center", edge: true, dim: dim(a) })),
