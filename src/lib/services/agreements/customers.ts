@@ -23,6 +23,7 @@ export interface PortfolioRow {
   status: SaCustomerStatus;
   state: string | null;
   software: SaSoftware | null;
+  notes: string | null;
   renewal: CustomerRenewal;
   proposals: ProposalLite[];
 }
@@ -41,7 +42,7 @@ export async function loadPortfolio(scope: TenantScope): Promise<{ rows: Portfol
     const proposals = c.proposals.map(toProposalLite);
     return {
       id: c.id, soNumber: c.soNumber, soConfirmed: c.soConfirmed, name: c.name, status: c.status, state: c.state,
-      software: c.software,
+      software: c.software, notes: c.notes,
       renewal: customerRenewal(c.contracts.map(toLineLite), proposals, today, settings.dueWindowDays),
       proposals,
     };

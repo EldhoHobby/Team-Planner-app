@@ -27,6 +27,8 @@ export interface ActionItem {
   proposalId: string | null;
   /** Days since the proposal was sent (SENT only). */
   sentDaysAgo: number | null;
+  /** The customer's notes (Customers → Notes). */
+  notes: string | null;
 }
 
 /** A Pending / Expired – still waiting customer: kept out of "Needs action", listed on its own. */
@@ -43,6 +45,7 @@ export interface WaitingItem {
   proposalStatus: SaProposalStatus | null;
   /** Day ("YYYY-MM-DD", US Eastern) of the latest status change, if recorded. */
   since: string | null;
+  notes: string | null;
 }
 
 /** Customer statuses that park a customer outside the normal renewal follow-up. */
@@ -83,6 +86,7 @@ export async function getDashboard(scope: TenantScope) {
         customerId: r.id, name: r.name, soNumber: r.soNumber, state: r.renewal.state,
         nextEndDate: r.renewal.nextEndDate, daysToEnd: r.renewal.daysToEnd, annualValue: r.renewal.annualValue,
         proposalId: open?.id ?? null, sentDaysAgo: open?.status === "SENT" ? daysAgo(today, open.sentDate) : null,
+        notes: r.notes,
       };
     })
     .filter((a) => a.state !== "SENT" || (a.sentDaysAgo ?? 0) > 14)
@@ -144,6 +148,7 @@ export async function getDashboard(scope: TenantScope) {
         customerId: r.id, name: r.name, soNumber: r.soNumber, status: r.status, renewalState: r.renewal.state,
         nextEndDate: r.renewal.nextEndDate, daysToEnd: r.renewal.daysToEnd, annualValue: r.renewal.annualValue,
         proposalId: p?.id ?? null, proposalStatus: p?.status ?? null, since: since.get(r.id) ?? null,
+        notes: r.notes,
       };
     })
     .sort((a, b) => a.status.localeCompare(b.status) || a.name.localeCompare(b.name));

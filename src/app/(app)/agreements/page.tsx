@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, StickyNote } from "lucide-react";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
@@ -35,6 +35,18 @@ function when(daysToEnd: number | null, end: string | null) {
   if (daysToEnd < 0) return `ended ${fmtDate(end)} (${-daysToEnd} days ago)`;
   if (daysToEnd === 0) return "ends today";
   return `ends ${fmtDate(end)} (in ${daysToEnd} days)`;
+}
+
+/** The customer's notes under a dashboard row (two lines; the full text on hover). */
+function Notes({ text }: { text: string | null }) {
+  const t = text?.trim();
+  if (!t) return null;
+  return (
+    <p className="mt-1 line-clamp-2 whitespace-pre-line text-xs text-foreground/80" title={t}>
+      <StickyNote className="mr-1 inline h-3 w-3 -translate-y-px text-muted-foreground" aria-label="Notes" />
+      {t}
+    </p>
+  );
 }
 
 /** Needs-action sub-groups, in the order they're worked. */
@@ -77,6 +89,7 @@ function WaitingSection({ items }: { items: WaitingItem[] }) {
                         {a.soNumber} · {a.annualValue ? `${fmtMoney(a.annualValue)}/yr` : "no current agreements"} · {when(a.daysToEnd, a.nextEndDate)}
                         {a.since && ` · since ${fmtDate(a.since)}`}
                       </p>
+                      <Notes text={a.notes} />
                     </div>
                     <CustomerStatusBadge status={a.status} />
                     {a.proposalId && a.proposalStatus ? (
@@ -162,6 +175,7 @@ export default async function AgreementsDashboard() {
                             {a.soNumber} · {fmtMoney(a.annualValue)}/yr · {when(a.daysToEnd, a.nextEndDate)}
                             {a.sentDaysAgo !== null && ` · sent ${a.sentDaysAgo} days ago`}
                           </p>
+                          <Notes text={a.notes} />
                         </div>
                         <RenewalBadge state={a.state} />
                         {a.proposalId ? (
