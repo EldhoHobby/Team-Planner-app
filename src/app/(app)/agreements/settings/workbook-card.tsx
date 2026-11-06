@@ -39,8 +39,10 @@ export function WorkbookCard() {
         <h2 className="font-semibold">Monthly workbook</h2>
         <p className="mt-1 text-xs text-muted-foreground">
           One Excel file with every view — Dashboard, Pipeline, Customers, Agreements, Proposals, Calls &amp; repairs, the last
-          31 days of Activity — plus a sheet for each Active, Pending and Expired – still waiting customer. Edit the yellow
-          columns and bring the file back here to update the app.
+          31 days of Activity — plus a sheet for each Active, Pending and Expired – still waiting customer. It&apos;s a
+          macro-enabled file (.xlsm) that works like the Central workbook: click Enable Content when Excel asks (if Excel
+          says macros are blocked, right-click the file → Properties → Unblock). Edit it and bring the file back here to
+          update the app.
         </p>
       </div>
 
@@ -52,7 +54,7 @@ export function WorkbookCard() {
 
       <div className="space-y-2 border-t pt-3">
         <p className="text-xs font-medium">Bring changes back</p>
-        <input ref={fileRef} type="file" accept=".xlsx" className="block text-xs" onChange={() => setSummary(null)} />
+        <input ref={fileRef} type="file" accept=".xlsm,.xlsx" className="block text-xs" onChange={() => setSummary(null)} />
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={pending} onClick={() => run(false)}>
             <Upload className="h-4 w-4" /> Preview changes

@@ -1,6 +1,6 @@
 {
   "name": "team-planner",
-  "version": "0.0.35",
+  "version": "0.0.37",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -20,6 +20,7 @@
     "@radix-ui/react-label": "^2.1.1",
     "@radix-ui/react-slot": "^1.1.1",
     "argon2": "^0.41.1",
+    "cfb": "1.2.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",

@@ -37,6 +37,8 @@ import { FIXED_PRICE_AGREEMENTS, POLICY_PRICE_HINTS } from "@/lib/agreements/pri
 import { assertCanEdit, audit, getSettings, history, updateSettings, ymd, HISTORY_ENTITY } from "./common";
 import { addContractLine, createCustomer, deleteContractLine, saveCalls, updateContractLine, updateCustomer, type CustomerInput } from "./customers";
 import { addLine, createProposalFromLines, removeLine, setLinePrice, transitionProposal, updateProposalHeader, type ProposalAction } from "./proposals";
+import { agreementsModuleCode, THIS_WORKBOOK_CODE, type MacroLayout } from "./vba/macros";
+import { packageXlsm } from "./vba/xlsm";
 
 export const WORKBOOK_MARKER = "QEI service agreements workbook";
 const S = {
@@ -159,7 +161,7 @@ function masterSheet(ws: ExcelJS.Worksheet, cols: Col[], last: number) {
     }
   });
   ws.getRow(1).height = 28;
-  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: last, column: cols.length } };
 }
 
 function safeSheetName(name: string, used: Set<string>): string {
@@ -284,7 +286,7 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     const D = `$${XC.status}${r}`;
     xws.getCell(r, 1).value = f(custName(`$${XC.so}${r}`));
     // Total: by Proposal ID; a new row (no ID yet) totals the Proposed Pricing rows with its SO # + Year and no Proposal ID.
-    xws.getCell(r, 11).value = f(`IF($${XC.id}${r}="",IF(OR($${XC.so}${r}="",$${XC.year}${r}=""),"",SUMIFS(${Pr("price")},${Pr("so")},$${XC.so}${r},${Pr("year")},$${XC.year}${r},${Pr("status")},"Proposed",${Pr("pid")},"")),SUMIFS(${Pr("price")},${Pr("pid")},$${XC.id}${r}))`);
+    xws.getCell(r, 11).value = f(`IF($${XC.id}${r}="",IF(OR($${XC.so}${r}="",$${XC.year}${r}=""),"",SUMIFS(${Pr("price")},${Pr("so")},$${XC.so}${r},${Pr("year")},$${XC.year}${r},${Pr("status")},IF(${D}="Signed","Signed","Proposed"),${Pr("pid")},"")),SUMIFS(${Pr("price")},${Pr("pid")},$${XC.id}${r}))`);
     xws.getCell(r, 13).value = f(`IF(AND(${D}="Sent",N($${XC.sent}${r})>0),TODAY()-$${XC.sent}${r},"")`);
     xws.getCell(r, 16).value = f(
       `IF(${D}="Draft","D",IF(${D}="Sent","S",IF(AND(${D}="Signed",N($${XC.signed}${r})>0,TODAY()-$${XC.signed}${r}<=${RECENT}),"G",IF(AND(OR(${D}="Declined",${D}="Withdrawn"),N($${XC.closed}${r})>0,TODAY()-$${XC.closed}${r}<=${RECENT}),"C",""))))`,
@@ -515,11 +517,12 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
 
   // ── DERIVED: Customer View (picker) + one sheet per open customer ──
   const firstOpen = customers.find((c) => OPEN_CUSTOMER_STATUSES.includes(c.status)) ?? customers[0];
-  buildCustomerSheet(sheets[S.view]!, { picker: true, name: firstOpen?.name ?? "", so: firstOpen?.soNumber ?? "" });
+  const links: SheetLink[] = [];
+  buildCustomerSheet(sheets[S.view]!, { picker: true, name: firstOpen?.name ?? "", so: firstOpen?.soNumber ?? "" }, links);
   const used = new Set<string>(RESERVED);
   for (const c of customers.filter((x) => OPEN_CUSTOMER_STATUSES.includes(x.status))) {
     const ws = wb.addWorksheet(safeSheetName(c.name, used));
-    buildCustomerSheet(ws, { picker: false, name: c.name, so: c.soNumber });
+    buildCustomerSheet(ws, { picker: false, name: c.name, so: c.soNumber }, links);
   }
 
   // ── Activity (last 31 days, snapshot) ──
@@ -543,10 +546,11 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     ["", ""],
     ["How it works", "The four MASTER sheets (navy tabs) — Customers, Pricing, Proposals, Calls — are the single source of truth. Every other sheet is formulas that read from them and recalculates as soon as you change a master cell."],
     ["Report sheets", "Dashboard, Pending & waiting, Pipeline, Proposal status, Customer metrics and the 5-year summary (blue tabs) aggregate the master live: counts, totals, renewals by month and lists that grow and shrink as statuses change."],
-    ["Customer sheets", "Laid out like the Central workbook's Customer View. Customer View (yellow tab): pick any customer in the yellow box. Each open customer (Active, Pending, Expired – still waiting) also has its own sheet. Everything is formulas except the yellow PROPOSAL cells (End date, Increase %, prices), which you may type into — see \"New proposal\". Agreements the customer never had are greyed out. The buttons are links: New Proposal → the yellow prices, Mark Signed → Proposals sheet, Edit in Pricing → Pricing sheet."],
+    ["Macros", "This file has macros, like the Central workbook. When Excel shows the yellow bar, click Enable Content. Excel blocks macros in files downloaded from the internet: if it says macros were blocked, close the file, right-click it → Properties → tick Unblock → OK (or save it in a trusted folder) and open it again. Without macros everything still works except the live saving and the buttons — the yellow cells you type in are still brought into the app by the import."],
+    ["Customer sheets", "Laid out like the Central workbook's Customer View. Customer View (yellow tab): type part of a name or an SO # in the yellow box and press Enter, or pick from the list. Each open customer (Active, Pending, Expired – still waiting) also has its own sheet. Everything is formulas except the yellow PROPOSAL cells (End date, Increase %, prices): typing in them saves to the Pricing sheet straight away (Status Proposed) and the cell shows its formula again; clearing a price (or 0) takes that agreement off. Agreements the customer never had are greyed out. Buttons: New Proposal creates next year's proposal from the prices shown; Mark Signed marks the open proposal signed today (Pricing rows → Signed, Proposals row → Signed); Edit in Pricing shows this customer's rows on the Pricing sheet (clear the filter to see all). Printing a customer sheet gives one black-and-white landscape page (rows 1–33); with macros on, the buttons and the grey hints are left off the printout."],
     ["Editing", "On the master sheets, NAVY column headers can be edited; GREY headers are formulas or reference and are ignored on import. Rows link by SO #, so renaming a customer in Customers updates every sheet."],
     ["Adding rows", "Leave ID blank to add: a customer (Customers), a signed agreement (Pricing: SO #, Year, Agreement, Price, Status Signed), a proposal line (Pricing: Status Proposed + the Proposal ID), or a calls year (Calls: SO #, Year)."],
-    ["New proposal", "EASIEST: on the customer's sheet, the PROPOSAL row shows next year's prices worked out from the Settings sheet while there is no proposal yet. Type over any yellow price or Increase % (a blank or 0 price leaves that agreement out) and/or the End date; on import the row as shown becomes a Draft proposal. If the customer already has a Draft / Sent proposal, the yellow cells you type into change just those prices. (Typed cells don't update the other sheets until the file is imported.) "
+    ["New proposal", "EASIEST: on the customer's sheet, the PROPOSAL row shows next year's prices worked out from the Settings sheet while there is no proposal yet. Click New Proposal, or just type over any yellow price or Increase % (a blank or 0 price leaves that agreement out) or the End date — the row as shown becomes the proposal on the Pricing sheet (Status Proposed), and comes into the app as a Draft. If the customer already has a Draft / Sent proposal, the yellow cells you type into change just those prices. When the customer signs, click Mark Signed. (With macros blocked, typed cells are still imported but don't update the other sheets until then.) "
       + "OR on Pricing: add one row per agreement — SO #, Year (the new year), Agreement, Price, Status Proposed, Proposal ID blank — and optionally a Proposals row with the same SO # and Year to set its Status (Draft / Sent / Signed …), dates, end date and notes (without it the proposal comes in as a Draft). Pricing rows show up on every sheet straight away, and win if both are used for the same agreement."],
     ["Deleting", "Pricing: type DELETE in the Delete column (signed lines, or lines on Draft / Sent proposals). Nothing else is ever deleted."],
     ["Proposals", "Change Status on the Proposals sheet to Sent / Signed / Declined / Withdrawn / Draft. Signing creates the signed agreements from the proposal's Pricing rows, exactly as in the app. Dates you enter are kept."],
@@ -554,7 +558,7 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     ["If the app is down", "Keep working in this file: change statuses and details on Customers, record signed agreements on Pricing (Status Signed), move proposals on Proposals, and price renewals on the customer sheets' yellow PROPOSAL row. Start new proposals as described under \"New proposal\". When the app is back, import the file — everything comes in, through the normal checks."],
     ["Don't change", "The ID and Version columns, or the sheet names — they're how rows find their way back."],
     ["Bringing it back", "App → Agreements → Settings → Monthly workbook → choose this file → Preview → Apply. Rows changed in the app after this export are skipped and listed."],
-    ["Excel version", "Works in Excel 2016 and later. Formulas recalculate when the file opens; previews that don't calculate (some email / phone viewers) may show blanks until it's opened in Excel."],
+    ["Excel version", "Works in Excel 2016 and later (Windows; macros need desktop Excel). Formulas recalculate when the file opens; previews that don't calculate (some email / phone viewers) may show blanks until it's opened in Excel. Keep it as .xlsm when saving."],
   ];
   readme.forEach(([k, v], i) => {
     put(rm, i + 1, 1, k, { bold: true, fill: k && i > 4 ? LABEL : undefined });
@@ -562,9 +566,40 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
   });
   put(rm, 1, 1, WORKBOOK_MARKER, { bold: true, size: 14, color: NAVY });
 
-  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  const buf = toMacroWorkbook(Buffer.from(await wb.xlsx.writeBuffer()), links);
   await audit(scope, "workbook", "workbook_exported", `Exported the service-agreements workbook (${customers.length} customers)`);
   return buf;
+}
+
+/** Column letter → number (A = 1). */
+const colN = (letter: string) => [...letter].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+
+/** Where everything is, for the generated VBA (vba/macros.ts). */
+export function macroLayout(): MacroLayout {
+  const p = (c: keyof typeof PC) => colN(PC[c]);
+  const x = (c: keyof typeof XC) => colN(XC[c]);
+  return {
+    title: CV_TITLE,
+    sheets: { pricing: S.pricing, proposals: S.proposals, customers: S.customers, view: S.view },
+    pricing: {
+      year: p("year"), agreement: p("agreement"), price: p("price"), status: p("status"), end: p("end"), so: p("so"), signed: p("signed"),
+      notes: p("notes"), created: p("created"), del: p("del"), id: p("id"), lastCol: p("openProp"), lastRow: PR,
+      clear: (["year", "agreement", "price", "status", "end", "so", "signed", "notes", "created", "invoiced", "checked", "pid", "del"] as const).map(p),
+    },
+    proposals: { so: x("so"), year: x("year"), status: x("status"), end: x("end"), signed: x("signed"), id: x("id"), lastRow: XR },
+    customers: { name: colN(CU.name), so: colN(CU.so), lastRow: CR },
+    sheet: {
+      year1: CV.year1, end: CV.end, pct: CV.pct, head: CV.head, price: CV.price, fPct: CV.fPct, fPrice: CV.fPrice, fEnd: CV.fEnd,
+      agFirst: 2, agLast: 1 + SA_AGREEMENTS.length, total: 2 + SA_AGREEMENTS.length,
+    },
+    buttons: { newProposal: CV_BUTTONS.newProposal.label, markSigned: CV_BUTTONS.markSigned.label, editPricing: CV_BUTTONS.editPricing.label },
+    print: { buttons: Object.values(CV_BUTTONS).map((b) => b.range), hints: [...CV_HINTS] },
+  };
+}
+
+/** The ExcelJS .xlsx → the macro-enabled .xlsm the user downloads. */
+function toMacroWorkbook(xlsx: Buffer, links: SheetLink[]): Buffer {
+  return packageXlsm(xlsx, { links, thisWorkbook: THIS_WORKBOOK_CODE, modules: [{ name: "Agreements", code: agreementsModuleCode(macroLayout()) }] });
 }
 
 /**
@@ -670,19 +705,34 @@ function buildSettingsSheet(ws: ExcelJS.Worksheet, s: Awaited<ReturnType<typeof 
 }
 
 // Customer sheets copy the "QEI Service Agreements - Central" Customer View cell for cell (rows,
-// widths, colours, borders, formats, grey-out of agreements the customer never had). Its macros
-// can't come along (.xlsx), so: the buttons are links, the yellow proposal cells are read back by
-// the import (CV below), and with no proposal yet the proposal row shows the Settings policy price
-// (what Central's "New Proposal" button would have created).
-const CV = { year1: 12, years: 5, inc: 17, callsHead: 19, status: 27, end: 29, pct: 30, head: 31, price: 33, store: 63 } as const;
+// widths, colours, borders, formats, grey-out of agreements the customer never had). Like Central,
+// the file carries macros (vba/macros.ts): typing in the yellow proposal cells writes Pricing on
+// the spot and the buttons (real hyperlinks + Workbook_SheetFollowHyperlink) run New Proposal /
+// Mark Signed / Edit in Pricing. With macros blocked, the yellow cells are still read back by the
+// import (CV below). With no proposal yet the proposal row shows the Settings policy price.
+// Hidden rows: 63–64 = helper counts; 65 / 66 / 67 = the yellow cells' formulas as text, so the
+// macros can put a formula back after a typed value has been saved to Pricing.
+// Rows 17–20: increase vs the year before; 21: the 5-year increase.
+const CV = { year1: 12, years: 5, yoy: 17, inc: 21, callsHead: 23, status: 31, end: 33, pct: 34, head: 35, price: 37, store: 63, fPct: 65, fPrice: 66, fEnd: 67 } as const;
 const CV_TITLE = "SERVICE AGREEMENTS";
+const CV_BUTTONS = {
+  newProposal: { cell: "G2", range: "G2:H2", label: "New Proposal" },
+  markSigned: { cell: "I2", range: "I2:J2", label: "Mark Signed" },
+  editPricing: { cell: "K2", range: "K2:M2", label: "Edit in Pricing" },
+} as const;
+/** Screen-only hint cells (the macros blank them, and the buttons, while a sheet prints). */
+const CV_HINTS = ["B3", `K${CV.status}`] as const;
+/** An internal hyperlink to add to a sheet's XML (ExcelJS can't write location-only links). */
+interface SheetLink { sheet: string; cell: string; location: string; display: string }
+/** A formula as VBA's Range.Formula expects it: no "=" and no "_xlfn." prefixes (stored as text). */
+const storeFormula = (formula: string) => formula.replace(/_xlfn\./g, "");
 const CV_EDGE: Partial<ExcelJS.Border> = { style: "thin", color: { argb: "FFBFBFBF" } };
 const CV_MONEY = '\\$#,##0;\\(\\$#,##0\\);"-"';
 const CV_DATE = "mm-dd-yy";
 const CV_COUNT = '0;\\-0;"-"';
 
 /** One customer, keyed by the SO # in B4 (Customer View: picked by name in B2). */
-function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: string; so: string }) {
+function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: string; so: string }, links: SheetLink[]) {
   const ag = SA_AGREEMENTS; // columns B.., TOTAL after them
   const TOT = 2 + ag.length;
   const lastAg = colL(1 + ag.length);
@@ -692,9 +742,12 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
   const yLast = R.year1 + R.years - 1;
 
   ws.views = [{ state: "normal", showGridLines: false }];
+  // One clean landscape page, black and white: rows 1–33 only (the hidden helper / formula-store
+  // rows never print). The macros blank the buttons and hints while it prints.
   ws.pageSetup = {
-    orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, blackAndWhite: true,
-    margins: { left: 0.75, right: 0.75, top: 1, bottom: 1, header: 0.5, footer: 0.5 },
+    orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 1, blackAndWhite: true, horizontalCentered: true,
+    margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 },
+    printArea: `A1:${totC}${R.price}`,
   };
   ws.headerFooter = { oddFooter: "&C&A  -  printed &D" };
   ws.properties.tabColor = o.picker ? { argb: "FFFFC000" } : { argb: "FF8EA9DB" };
@@ -727,22 +780,26 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
   ws.mergeCells("B2:D2");
   if (o.picker) {
     set(2, 2, o.name, { b: true, size: 12, fill: INPUT });
-    validate(ws, "B2", { type: "list", allowBlank: false, formulae: [`${sheetRef(S.customers)}!$A$2:$A$${CR}`] });
-    hint(3, 2, "Pick a customer from the list (or type the exact name and press Enter).");
+    // No error box: the macro accepts part of a name or an SO # (Central's picker).
+    validate(ws, "B2", { type: "list", allowBlank: true, showErrorMessage: false, formulae: [`${sheetRef(S.customers)}!$A$2:$A$${CR}`] });
+    hint(3, 2, "Type part of a name or an SO # and press Enter, or pick from the list.");
   } else {
     set(2, 2, f(`IFERROR(INDEX(${Cu("name")},MATCH(${SO},${Cu("so")},0)),${q(o.name)})`), { b: true, size: 12, fill: INPUT });
     hint(3, 2, "This sheet is one customer. To look up any other customer use the Customer View sheet.");
   }
   grid(2, 2, 2, 4);
-  // Central's macro buttons, as links
-  const button = (c1: number, c2: number, target: string, label: string) => {
+  // Central's buttons: real internal hyperlinks (added to the sheet XML on export) — clicking one
+  // runs its macro through Workbook_SheetFollowHyperlink. Without macros Edit in Pricing still
+  // jumps to Pricing.
+  const button = (c1: number, c2: number, b: { cell: string; label: string }, location: string) => {
     ws.mergeCells(2, c1, 2, c2);
-    set(2, c1, f(`HYPERLINK(${q(`#${target}`)},${q(label)})`), { fill: "FFF0F0F0", h: "center", v: "middle", color: "FF000000" });
+    set(2, c1, b.label, { fill: "FFF0F0F0", h: "center", v: "middle", color: "FF000000" });
     for (let c = c1; c <= c2; c++) ws.getCell(2, c).border = { top: { style: "thin", color: { argb: "FFA6A6A6" } }, left: { style: "thin", color: { argb: "FFA6A6A6" } }, bottom: { style: "medium", color: { argb: "FF808080" } }, right: { style: "medium", color: { argb: "FF808080" } } };
+    links.push({ sheet: ws.name, cell: b.cell, location, display: b.label });
   };
-  button(7, 8, `${sheetRef(ws.name)}!B${R.price}`, "New Proposal");
-  button(9, 10, `${sheetRef(S.proposals)}!A1`, "Mark Signed");
-  button(11, 13, `${sheetRef(S.pricing)}!A1`, "Edit in Pricing");
+  button(7, 8, CV_BUTTONS.newProposal, `${sheetRef(ws.name)}!${CV_BUTTONS.newProposal.cell}`);
+  button(9, 10, CV_BUTTONS.markSigned, `${sheetRef(ws.name)}!${CV_BUTTONS.markSigned.cell}`);
+  button(11, 13, CV_BUTTONS.editPricing, `${sheetRef(S.pricing)}!A1`);
 
   const look = (c: keyof typeof CU) => `IFERROR(INDEX(${Cu(c)},MATCH(${SO},${Cu("so")},0))&"","")`;
   const label = (r: number, c: number, t: string) => set(r, c, t, { b: true, fill: LABEL });
@@ -783,6 +840,15 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
     });
     set(r, TOT, f(`IF($A${r}="","",SUM(B${r}:${lastAg}${r}))`), { b: true, fmt: CV_MONEY, h: "right" });
   }
+  // Increase vs the year before ("2026 vs 2025" …), then the whole 5-year span.
+  for (let k = 0; k < R.years - 1; k++) {
+    const r = R.yoy + k, a = R.year1 + k, b = a + 1;
+    set(r, 1, f(`IF(OR(N(A${a})=0,N(A${b})=0),"",A${a}&" vs "&A${b})`), { b: true, i: true, fill: LABEL, h: "center" });
+    for (let c = 2; c <= TOT; c++) {
+      const col = colL(c);
+      set(r, c, f(`IFERROR(IF(OR(N(${col}${a})=0,N(${col}${b})=0),"",${col}${a}/${col}${b}-1),"")`), { fill: LABEL, fmt: PCT, h: "center" });
+    }
+  }
   set(R.inc, 1, "5-year increase", { b: true, i: true, fill: LABEL, fmt: PCT, h: "center" });
   for (let c = 2; c <= TOT; c++) {
     const col = colL(c);
@@ -816,21 +882,28 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
   set(R.status, 4, "Status", { b: true });
   ws.mergeCells(`E${R.status}:I${R.status}`);
   set(R.status, 5, f(`IF(${Y}="","",IFERROR(${said(pmOpen)},IFERROR(${said(pmAny)},`
-    + `IF(N(${lastSigned})>0,"SIGNED "&TEXT(${lastSigned},"m/d/yyyy")&" - "&${Y}&" prices below are the policy","No proposal yet - "&${Y}&" prices below are the policy"))))`),
+    // Proposed Pricing rows with no Proposals row yet (started on this sheet / with New Proposal):
+    + `IF(${anyC}>0,"PROPOSED - not signed yet",`
+    + `IF(N(${lastSigned})>0,"SIGNED "&TEXT(${lastSigned},"m/d/yyyy")&" - "&${Y}&" prices below are the policy","No proposal yet - "&${Y}&" prices below are the policy")))))`),
   { b: true, size: 11, color: "FFC00000" });
-  hint(R.status, 11, "Type a % or a price in the yellow cells; it's saved to the app when this file is imported.");
+  hint(R.status, 11, "Type a % or a price in the yellow cells; it saves to Pricing.");
 
   const endOf = (pm: string) => `IF(N(${xAt("end", pm)})=0,1/0,${xAt("end", pm)})`;
+  const pricedEnd = `_xlfn.AGGREGATE(14,6,${Pr("end")}/((${Pr("so")}=${SO})*(${Pr("year")}=${Y})*(${Pr("status")}="Proposed")*(${Pr("end")}>0)),1)`;
+  const endFormula = `IF(${Y}="","",IFERROR(${endOf(pmOpen)},IFERROR(${endOf(pmAny)},IFERROR(${pricedEnd},IF(N($B$7)=0,"",EDATE($B$7,12))))))`;
   set(R.end, 1, "End date", { b: true, h: "center" });
   ws.mergeCells(`B${R.end}:C${R.end}`);
-  set(R.end, 2, f(`IF(${Y}="","",IFERROR(${endOf(pmOpen)},IFERROR(${endOf(pmAny)},IF(N($B$7)=0,"",EDATE($B$7,12)))))`), { b: true, fill: INPUT, fmt: CV_DATE, h: "center" });
+  set(R.end, 2, f(endFormula), { b: true, fill: INPUT, fmt: CV_DATE, h: "center" });
+  ws.getCell(R.fEnd, 2).value = storeFormula(endFormula);
   grid(R.end, 1, R.end, 3);
   hint(R.end, 4, "< one end date for the whole proposal");
 
   set(R.pct, 1, "Increase %", { b: true, fmt: PCT, h: "center" });
   for (let c = 2; c < TOT; c++) {
     const col = colL(c);
-    set(R.pct, c, f(`IFERROR(IF(OR(N(${col}$${R.price})=0,N(${col}$${R.year1})=0),"",${col}$${R.price}/${col}$${R.year1}-1),"")`), { fill: INPUT, fmt: PCT, h: "center" });
+    const pct = `IFERROR(IF(OR(N(${col}$${R.price})=0,N(${col}$${R.year1})=0),"",${col}$${R.price}/${col}$${R.year1}-1),"")`;
+    set(R.pct, c, f(pct), { fill: INPUT, fmt: PCT, h: "center" });
+    ws.getCell(R.fPct, c).value = storeFormula(pct);
   }
   grid(R.pct, 1, R.pct, TOT - 1);
 
@@ -853,8 +926,9 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
     if (FIXED_PRICE_AGREEMENTS.includes(a)) core = `IF(${setC(r)}<>"",${setC(r)},${core})`;
     let policy = `ROUND(${core},0)`;
     if (a === "AFTER_HOURS") policy = `IF(AND(${setB(SET.waive)}="Yes",N($${scadaC}$${R.price})>=${setB(SET.waiveAt)}),0,${policy})`;
-    set(R.price, 2 + j, f(`IF(${Y}="","",IF(${anyC}>0,SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},${Y},${Pr("agreement")},${col}$${R.head},${Pr("status")},"Proposed"),IF(${col}$${R.store + 1}=0,0,${policy})))`),
-      { fill: INPUT, fmt: CV_MONEY, h: "right" });
+    const price = `IF(${Y}="","",IF(${anyC}>0,SUMIFS(${Pr("price")},${Pr("so")},${SO},${Pr("year")},${Y},${Pr("agreement")},${col}$${R.head},${Pr("status")},"Proposed"),IF(${col}$${R.store + 1}=0,0,${policy})))`;
+    set(R.price, 2 + j, f(price), { fill: INPUT, fmt: CV_MONEY, h: "right" });
+    ws.getCell(R.fPrice, 2 + j).value = storeFormula(price);
   });
   set(R.price, TOT, f(`IF(${Y}="","",SUM(B${R.price}:${lastAg}${R.price}))`), { b: true, fill: LABEL, fmt: CV_MONEY, h: "right" });
   grid(R.price, 1, R.price, TOT);
@@ -867,7 +941,8 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
     ws.getCell(R.store + 1, 2 + j).value = f(`IF(N($A$${R.year1})=0,0,COUNTIFS(${Pr("so")},${SO},${Pr("year")},$A$${R.year1},${Pr("agreement")},${col}$11,${Pr("status")},"Signed"))`);
   });
   ws.getCell(R.store, TOT).value = f(`IF(N(${Y})=0,0,COUNTIFS(${Pr("so")},${SO},${Pr("year")},${Y},${Pr("status")},"Proposed"))`);
-  for (let r = R.store; r <= R.store + 2; r++) ws.getRow(r).hidden = true;
+  set(R.fPct, 1, "formula store (do not edit)");
+  for (let r = R.store; r <= R.fEnd; r++) ws.getRow(r).hidden = true;
 
   // Agreements the customer never had: lighter header, greyed cells (as in Central).
   const never = `B$${R.store}=0`;
@@ -1105,6 +1180,17 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
   }
 
   // ── Pricing (signed / cancelled agreements and proposal lines) — before proposal status, so signing uses new prices ──
+  // Proposals being signed in this file (Status "Signed" on the Proposals sheet), by SO # + Year: a
+  // new Pricing row marked Signed for one of them is a line of that proposal (the workbook's Mark
+  // Signed button), not a stand-alone signed agreement.
+  const xRows = readSheet(wb, S.proposals);
+  const signedInFile = new Set<string>();
+  for (const row of xRows ?? []) {
+    const so = (t(row.get("SO #")) ?? "").toUpperCase();
+    const year = intCell(row.get("Year"));
+    if (so && year && parseProposalStatus(t(row.get("Status"))) === "SIGNED") signedInFile.add(`${so}|${year}`);
+  }
+
   const pRowsIn = readSheet(wb, S.pricing);
   if (pRowsIn) for (const row of pRowsIn) {
     const id = t(row.get("ID"));
@@ -1121,7 +1207,9 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
 
     if (!id) {
       if (wantsDelete) continue;
-      if (kind === "PROPOSED") {
+      const rowSo = (t(row.get("SO #")) ?? "").toUpperCase();
+      const signingProposal = kind === "ACTIVE" && !t(row.get("Proposal ID")) && !!year && signedInFile.has(`${rowSo}|${year}`);
+      if (kind === "PROPOSED" || signingProposal) {
         const pid = t(row.get("Proposal ID"));
         let p = pid ? propById.get(pid) : undefined;
         if (pid && !p) { skip(S.pricing, row, `unknown Proposal ID ${pid}`); continue; }
@@ -1146,6 +1234,7 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
             if (g.lines.some((l) => l.agreement === agreement)) { skip(S.pricing, row, `${so} ${year}: ${AGREEMENT_LABELS[agreement]} is listed twice`); continue; }
             g.lines.push({ agreement, price });
             g.rows.push(row.line);
+            g.endDate ??= dateCell(row.get("End date"));
             newProps.set(key, g);
             touched.add(`${so}|${year}|${agreement}`);
             continue;
@@ -1216,7 +1305,8 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     const changesPrice = price !== null && price !== Number(pl.price);
     if (!wantsDelete && !changesPrice) { counts(S.pricing).unchanged++; continue; }
     if (!EDITABLE_PROPOSAL.includes(pl.proposal.status)) { skip(S.pricing, row, `${label}: proposal is ${PROPOSAL_STATUS_LABELS[pl.proposal.status].toLowerCase()} — locked`); continue; }
-    if (kind === "ACTIVE" || kind === "CANCELLED") { skip(S.pricing, row, `${label}: sign proposals on the Proposals sheet (Status → Signed), not on Pricing`); continue; }
+    // Status "Signed" on a proposal line (the workbook's Mark Signed) is fine: the Proposals row signs it.
+    if (kind === "CANCELLED") { skip(S.pricing, row, `${label}: a proposal line can't be Cancelled — take it off (Delete) or decline the proposal on the Proposals sheet`); continue; }
     if (num(row.get("Version")) !== pl.version) { skip(S.pricing, row, `${label}: ${conflict}`); continue; }
     touched.add(`${custById.get(pl.proposal.customerId)?.soNumber ?? ""}|${pl.proposal.year}|${pl.agreement}`);
     if (wantsDelete) plan(S.pricing, "deleted", `${label}: remove`, async () => { await removeLine(scope, id); });
@@ -1293,7 +1383,7 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     // No open proposal: the row as shown becomes a new one.
     const key = `${so}|${year}`;
     const g = newProps.get(key) ?? { so, year, lines: [], rows: [], from: [], endDate: null };
-    // (An uncalculated file has no year in A33 and was turned away above; a missing result is 0 —
+    // (An uncalculated file has no proposal year (column A of the price row) and was turned away above; a missing result is 0 —
     // ExcelJS drops zero results when it reads.)
     const add: NewProposal["lines"] = [];
     SA_AGREEMENTS.forEach((a, j) => {
@@ -1334,7 +1424,6 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
       },
     );
   };
-  const xRows = readSheet(wb, S.proposals);
   if (xRows) for (const row of xRows) {
     const id = t(row.get("ID"));
     if (!id) {
@@ -1536,5 +1625,5 @@ async function planSettings(
 
 /** File name for a download made today (Eastern). */
 export function workbookFileName(): string {
-  return `service-agreements-${todayYmd()}.xlsx`;
+  return `service-agreements-${todayYmd()}.xlsm`;
 }

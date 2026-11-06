@@ -134,6 +134,24 @@
   }
   .sa-page {
     break-after: page;
+    /* one landscape page (Letter 215.9 mm − 2 × 8 mm margins), footer pinned to the bottom like Excel's */
+    height: 196mm;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sa-page > .sa-sheet {
+    flex: 1;
+  }
+  .sa-page > .sa-sheet > div {
+    height: 100%;
+  }
+  .sa-page .sa-footer {
+    margin-top: auto;
+  }
+  /* Excel fits the customer sheet (A:O ≈ 1100 pt at 10 pt Arial) to the page width — ≈ 68 %. */
+  .sa-sheet-body {
+    font-size: 6.8pt !important;
   }
   .sa-page:last-child {
     break-after: auto;

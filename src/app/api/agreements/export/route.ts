@@ -17,7 +17,7 @@ export async function GET() {
     const data = await buildAgreementsWorkbook(scope);
     return new Response(new Uint8Array(data), {
       headers: {
-        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Type": "application/vnd.ms-excel.sheet.macroEnabled.12",
         "Content-Disposition": `attachment; filename="${workbookFileName()}"`,
       },
     });
