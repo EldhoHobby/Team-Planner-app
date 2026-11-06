@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { AgreementNav } from "./nav";
+import { AutoRefresh } from "./auto-refresh";
 
 export default function AgreementsLayout({ children }: { children: ReactNode }) {
   return (
@@ -12,6 +13,7 @@ export default function AgreementsLayout({ children }: { children: ReactNode }) 
         <AgreementNav />
       </header>
       {children}
+      <AutoRefresh />
     </div>
   );
 }
