@@ -87,6 +87,60 @@ export async function createProposal(scope: TenantScope, customerId: string) {
 }
 
 /**
+ * A proposal priced somewhere else (the monthly workbook, while the app was unavailable):
+ * a Draft for `year` with exactly these lines and prices. lastPrice = the customer's signed
+ * price for that agreement in year − 1 (null = a new agreement). End date defaults to one year
+ * after the earliest end date of those year − 1 agreements.
+ */
+export async function createProposalFromLines(
+  scope: TenantScope,
+  customerId: string,
+  input: { year: number; lines: { agreement: SaAgreement; price: number }[]; endDate: string | null; notes: string | null },
+) {
+  await assertCanEdit(scope);
+  const { year } = input;
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new ForbiddenError("Pick a proposal year.");
+  if (!input.lines.length) throw new ForbiddenError("A proposal needs at least one agreement.");
+  const seen = new Set<SaAgreement>();
+  for (const l of input.lines) {
+    if (!SA_AGREEMENTS.includes(l.agreement)) throw new ForbiddenError("Unknown agreement.");
+    if (seen.has(l.agreement)) throw new ForbiddenError(`${AGREEMENT_LABELS[l.agreement]} is listed twice.`);
+    if (!Number.isFinite(l.price) || l.price < 0) throw new ForbiddenError("Price must be zero or more.");
+    seen.add(l.agreement);
+  }
+  const res = await prisma.$transaction(async (tx) => {
+    const c = await loadCustomerFull(tx, scope, customerId);
+    const claimed = claimedAgreements(c.proposals.map(toProposalLite), year);
+    const taken = input.lines.filter((l) => claimed.has(l.agreement)).map((l) => AGREEMENT_LABELS[l.agreement]);
+    if (taken.length) throw new ForbiddenError(`${taken.join(", ")} already in a ${year} proposal for ${c.name}.`);
+    const prev = c.contracts.filter((l) => l.status === "ACTIVE" && l.year === year - 1);
+    const lastOf = (a: SaAgreement) => prev.find((l) => l.agreement === a);
+    const endDate = input.endDate ?? plusYear(
+      input.lines.map((l) => ymd(lastOf(l.agreement)?.endDate ?? null)).filter((d): d is string => !!d).sort()[0] ?? null,
+    );
+    const p = await tx.saProposal.create({
+      data: {
+        orgId: scope.ctx.orgId, customerId, year, status: "DRAFT", endDate: dateOf(endDate), notes: input.notes?.trim() || null,
+        createdById: scope.ctx.userId,
+        lines: {
+          create: input.lines.map((l) => {
+            const last = lastOf(l.agreement);
+            return { orgId: scope.ctx.orgId, agreement: l.agreement, lastPrice: last ? Number(last.price) : null, price: Math.round(l.price), rule: "manual" };
+          }),
+        },
+      },
+    });
+    const total = input.lines.reduce((a, l) => a + Math.round(l.price), 0);
+    await history(tx, scope, customerId, [{
+      field: `${year} proposal`, oldValue: null, newValue: `created from the workbook (${input.lines.length} agreements, ${fmtMoney(total)})`,
+    }]);
+    return { id: p.id, name: c.name };
+  });
+  await audit(scope, customerId, "proposal_created", `Created ${year} proposal for ${res.name} from the workbook`);
+  return res.id;
+}
+
+/**
  * Bulk: for every ACTIVE customer, propose the current agreements that end in
  * `month` ("YYYY-MM") and are not already in a live proposal. apply=false previews.
  */

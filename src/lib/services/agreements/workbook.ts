@@ -36,7 +36,7 @@ import { dateCell, num, text, type Cell } from "@/lib/agreements/import-parse";
 import { FIXED_PRICE_AGREEMENTS, POLICY_PRICE_HINTS } from "@/lib/agreements/pricing";
 import { assertCanEdit, audit, getSettings, history, updateSettings, ymd, HISTORY_ENTITY } from "./common";
 import { addContractLine, createCustomer, deleteContractLine, saveCalls, updateContractLine, updateCustomer, type CustomerInput } from "./customers";
-import { addLine, removeLine, setLinePrice, transitionProposal, updateProposalHeader, type ProposalAction } from "./proposals";
+import { addLine, createProposalFromLines, removeLine, setLinePrice, transitionProposal, updateProposalHeader, type ProposalAction } from "./proposals";
 
 export const WORKBOOK_MARKER = "QEI service agreements workbook";
 const S = {
@@ -269,7 +269,7 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
   // ── MASTER: Proposals ──
   const xws = sheets[S.proposals]!;
   masterSheet(xws, [
-    { header: "Customer", width: 30 }, { header: "SO #", width: 10 }, { header: "Year", width: 8 },
+    { header: "Customer", width: 30 }, { header: "SO #", width: 10, edit: true }, { header: "Year", width: 8, edit: true },
     { header: "Status", width: 11, edit: true, list: Object.values(PROPOSAL_STATUS_LABELS) }, { header: "End date", width: 12, edit: true, fmt: DATE },
     { header: "Sent date", width: 12, edit: true, fmt: DATE }, { header: "Signed date", width: 12, edit: true, fmt: DATE }, { header: "Closed date", width: 12, edit: true, fmt: DATE },
     { header: "Decline reason", width: 28, edit: true }, { header: "Notes", width: 40, edit: true }, { header: "Total", width: 12, fmt: MONEY },
@@ -283,7 +283,8 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     const p = props[r - 2];
     const D = `$${XC.status}${r}`;
     xws.getCell(r, 1).value = f(custName(`$${XC.so}${r}`));
-    xws.getCell(r, 11).value = f(`IF($${XC.id}${r}="","",SUMIFS(${Pr("price")},${Pr("pid")},$${XC.id}${r}))`);
+    // Total: by Proposal ID; a new row (no ID yet) totals the Proposed Pricing rows with its SO # + Year and no Proposal ID.
+    xws.getCell(r, 11).value = f(`IF($${XC.id}${r}="",IF(OR($${XC.so}${r}="",$${XC.year}${r}=""),"",SUMIFS(${Pr("price")},${Pr("so")},$${XC.so}${r},${Pr("year")},$${XC.year}${r},${Pr("status")},"Proposed",${Pr("pid")},"")),SUMIFS(${Pr("price")},${Pr("pid")},$${XC.id}${r}))`);
     xws.getCell(r, 13).value = f(`IF(AND(${D}="Sent",N($${XC.sent}${r})>0),TODAY()-$${XC.sent}${r},"")`);
     xws.getCell(r, 16).value = f(
       `IF(${D}="Draft","D",IF(${D}="Sent","S",IF(AND(${D}="Signed",N($${XC.signed}${r})>0,TODAY()-$${XC.signed}${r}<=${RECENT}),"G",IF(AND(OR(${D}="Declined",${D}="Withdrawn"),N($${XC.closed}${r})>0,TODAY()-$${XC.closed}${r}<=${RECENT}),"C",""))))`,
@@ -544,11 +545,12 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
     ["Report sheets", "Dashboard, Pending & waiting, Pipeline, Proposal status, Customer metrics and the 5-year summary (blue tabs) aggregate the master live: counts, totals, renewals by month and lists that grow and shrink as statuses change."],
     ["Customer sheets", "Customer View (yellow tab): pick any customer in the yellow box. Each open customer (Active, Pending, Expired – still waiting) also has its own sheet. All of them are formulas — change the master, not these."],
     ["Editing", "On the master sheets, NAVY column headers can be edited; GREY headers are formulas or reference and are ignored on import. Rows link by SO #, so renaming a customer in Customers updates every sheet."],
-    ["Adding rows", "Leave ID blank to add: a customer (Customers), a signed agreement (Pricing: SO #, Year, Agreement, Price, Status Signed), a proposal line (Pricing: Status Proposed + the Proposal ID), or a calls year (Calls: SO #, Year). New proposals are started in the app."],
+    ["Adding rows", "Leave ID blank to add: a customer (Customers), a signed agreement (Pricing: SO #, Year, Agreement, Price, Status Signed), a proposal line (Pricing: Status Proposed + the Proposal ID), or a calls year (Calls: SO #, Year)."],
+    ["New proposal", "1) On Pricing add one row per agreement: SO #, Year (the new year), Agreement, Price (the customer sheet's green Policy price row is the suggestion), Status Proposed, Proposal ID blank. 2) Optional: on Proposals add a row with the same SO # and Year to set its Status (Draft / Sent / Signed …), dates, end date and notes — without it the proposal comes in as a Draft. The customer sheet and reports pick it up straight away; the import creates it in the app."],
     ["Deleting", "Pricing: type DELETE in the Delete column (signed lines, or lines on Draft / Sent proposals). Nothing else is ever deleted."],
     ["Proposals", "Change Status on the Proposals sheet to Sent / Signed / Declined / Withdrawn / Draft. Signing creates the signed agreements from the proposal's Pricing rows, exactly as in the app. Dates you enter are kept."],
     ["Settings", "The Settings sheet holds the renewal pricing policy (tier limits and %, TDMS increase, standard prices for Diagnostic, Backup & DR, After Hours etc., the After Hours waiver) and the due window. Each customer sheet's green \"Policy price\" row is worked out from it; edits there are imported back into the app's settings."],
-    ["If the app is down", "Keep working in this file: change statuses and details on Customers, record signed agreements on Pricing (Status Signed), move proposals on Proposals, and use a customer sheet's Policy price row to price a renewal. When the app is back, import the file — everything above comes in. (A brand-new proposal still has to be started in the app.)"],
+    ["If the app is down", "Keep working in this file: change statuses and details on Customers, record signed agreements on Pricing (Status Signed), move proposals on Proposals, and use a customer sheet's Policy price row to price a renewal. Start new proposals as described under \"New proposal\". When the app is back, import the file — everything comes in, through the normal checks."],
     ["Don't change", "The ID and Version columns, or the sheet names — they're how rows find their way back."],
     ["Bringing it back", "App → Agreements → Settings → Monthly workbook → choose this file → Preview → Apply. Rows changed in the app after this export are skipped and listed."],
     ["Excel version", "Works in Excel 2016 and later. Formulas recalculate when the file opens; previews that don't calculate (some email / phone viewers) may show blanks until it's opened in Excel."],
@@ -766,7 +768,7 @@ function buildCustomerSheet(ws: ExcelJS.Worksheet, o: { picker: boolean; name: s
   put(ws, 28, 2, f(`IF($A$${R.prop}="","",IFERROR(INDEX(${Xp("end")},${pm}),""))`), { fmt: DATE, bold: true });
   box(ws, 28, 1, 28, 3);
   ws.mergeCells("E28:O28");
-  put(ws, 28, 5, "Green row = policy price from the Settings sheet (tiers, TDMS, standard prices, After Hours waiver). To propose it, add Pricing rows with Status \"Proposed\".", { italic: true, color: "FF595959", wrap: true });
+  put(ws, 28, 5, "Green row = policy price from the Settings sheet. To propose: on Pricing add a row per agreement (this SO #, the new Year, Agreement, Price, Status \"Proposed\", no Proposal ID) — see Read me → New proposal.", { italic: true, color: "FF595959", wrap: true });
   ws.getRow(28).height = 26;
 
   put(ws, R.head, 1, "", { fill: NAVY });
@@ -955,6 +957,8 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
   const custById = new Map(customers.map((c) => [c.id, c]));
   const custBySo = new Map(customers.map((c) => [c.soNumber.toUpperCase(), c]));
   const newSos = new Set<string>();
+  /** New proposals entered in the workbook: Proposed Pricing rows with SO # + Year and no Proposal ID. */
+  const newProps = new Map<string, { so: string; year: number; lines: { agreement: SaAgreement; price: number }[]; rows: number[] }>();
   const lineById = new Map(lines.map((l) => [l.id, l]));
   const propById = new Map(proposals.map((p) => [p.id, p]));
   const plineById = new Map(proposals.flatMap((p) => p.lines.map((l) => [l.id, { ...l, proposal: p }] as const)));
@@ -1057,8 +1061,33 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
       if (wantsDelete) continue;
       if (kind === "PROPOSED") {
         const pid = t(row.get("Proposal ID"));
-        const p = pid ? propById.get(pid) : undefined;
-        if (!p) { skip(S.pricing, row, "a new Proposed row needs the Proposal ID of a Draft / Sent proposal"); continue; }
+        let p = pid ? propById.get(pid) : undefined;
+        if (pid && !p) { skip(S.pricing, row, `unknown Proposal ID ${pid}`); continue; }
+        if (!p) {
+          // No Proposal ID: join the customer's open proposal for that year, or start a new one.
+          const so = (t(row.get("SO #")) ?? "").toUpperCase();
+          if (!soKnown(so) || !year) { skip(S.pricing, row, "a new Proposed row needs SO # and Year (or the Proposal ID of a Draft / Sent proposal)"); continue; }
+          if (!agreement || price === null) { skip(S.pricing, row, "a new Proposed row needs Agreement and Price"); continue; }
+          const cust = custBySo.get(so);
+          const open = cust ? proposals.filter((x) => x.customerId === cust.id && x.year === year && EDITABLE_PROPOSAL.includes(x.status)) : [];
+          if (open.length === 1) {
+            p = open[0]!;
+          } else if (open.length > 1) {
+            skip(S.pricing, row, `${so} has ${open.length} open ${year} proposals — put the Proposal ID on this row`); continue;
+          } else {
+            if (cust && (lines.some((l) => l.customerId === cust.id && l.year === year && l.agreement === agreement && l.status === "ACTIVE")
+              || proposals.some((x) => x.customerId === cust.id && x.year === year && x.status === "SIGNED" && x.lines.some((l) => l.agreement === agreement)))) {
+              skip(S.pricing, row, `${so} already has a signed ${year} ${AGREEMENT_LABELS[agreement]}`); continue;
+            }
+            const key = `${so}|${year}`;
+            const g = newProps.get(key) ?? { so, year, lines: [], rows: [] };
+            if (g.lines.some((l) => l.agreement === agreement)) { skip(S.pricing, row, `${so} ${year}: ${AGREEMENT_LABELS[agreement]} is listed twice`); continue; }
+            g.lines.push({ agreement, price });
+            g.rows.push(row.line);
+            newProps.set(key, g);
+            continue;
+          }
+        }
         const cname = custById.get(p.customerId)?.name ?? "";
         if (!EDITABLE_PROPOSAL.includes(p.status)) { skip(S.pricing, row, `${cname} ${p.year} proposal is ${PROPOSAL_STATUS_LABELS[p.status].toLowerCase()} — locked`); continue; }
         if (!agreement || price === null) { skip(S.pricing, row, "a new Proposed row needs Agreement and Price"); continue; }
@@ -1133,10 +1162,43 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
   }
 
   // ── Proposals ──
+  const planNewProposal = (
+    g: { so: string; year: number; lines: { agreement: SaAgreement; price: number }[]; rows: number[] },
+    o: { status: SaProposalStatus; endDate: string | null; notes: string | null; sent: string | null; signed: string | null; closed: string | null; reason: string | null },
+  ) => {
+    const path = statusPath("DRAFT", o.status)!;
+    const name = custBySo.get(g.so)?.name ?? g.so;
+    const total = g.lines.reduce((a, l) => a + Math.round(l.price), 0);
+    counts(S.pricing).created += g.lines.length;
+    plan(
+      S.proposals, "created",
+      `new ${name} ${g.year} proposal (${PROPOSAL_STATUS_LABELS[o.status]}, ${g.lines.length} agreements, $${total.toLocaleString("en-US")}; Pricing rows ${g.rows.join(", ")})`,
+      async () => {
+        const id = await createProposalFromLines(scope, await resolveSo(g.so), { year: g.year, lines: g.lines, endDate: o.endDate, notes: o.notes });
+        await moveProposal(scope, id, path, o);
+      },
+    );
+  };
   const xRows = readSheet(wb, S.proposals);
   if (xRows) for (const row of xRows) {
     const id = t(row.get("ID"));
-    if (!id) { skip(S.proposals, row, "new proposals are started in the app (row ignored)"); continue; }
+    if (!id) {
+      // A new proposal: SO # + Year here, its agreements on Pricing (Status Proposed, same SO # + Year, no Proposal ID).
+      const so = (t(row.get("SO #")) ?? "").toUpperCase();
+      const year = intCell(row.get("Year"));
+      if (!soKnown(so) || !year) { skip(S.proposals, row, "a new proposal needs a known SO # and a Year"); continue; }
+      const g = newProps.get(`${so}|${year}`);
+      if (!g) { skip(S.proposals, row, `new ${so} ${year} proposal: add its agreements on Pricing first (Status Proposed, same SO # and Year)`); continue; }
+      const statusLabel = t(row.get("Status"));
+      const target = statusLabel ? (parseProposalStatus(statusLabel) as SaProposalStatus | null) : "DRAFT";
+      if (!target) { skip(S.proposals, row, `new ${so} ${year} proposal: unknown Status "${statusLabel}"`); continue; }
+      newProps.delete(`${so}|${year}`);
+      planNewProposal(g, {
+        status: target, endDate: dateCell(row.get("End date")), notes: t(row.get("Notes")),
+        sent: dateCell(row.get("Sent date")), signed: dateCell(row.get("Signed date")), closed: dateCell(row.get("Closed date")), reason: t(row.get("Decline reason")),
+      });
+      continue;
+    }
     const db = propById.get(id);
     if (!db) { skip(S.proposals, row, `unknown ID ${id}`); continue; }
     const label = `${custById.get(db.customerId)?.name ?? ""} ${db.year} proposal`;
@@ -1163,39 +1225,12 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
         const fr = await prisma.saProposal.findUniqueOrThrow({ where: { id } });
         await updateProposalHeader(scope, id, { endDate, notes }, fr.version);
       }
-      for (const action of path) {
-        const fr = await prisma.saProposal.findUniqueOrThrow({ where: { id } });
-        await transitionProposal(scope, id, action, { expectedVersion: fr.version, reason: reason ?? undefined });
-      }
-      // Keep the dates the workbook gives (the transition stamps today).
-      const fr = await prisma.saProposal.findUniqueOrThrow({ where: { id } });
-      const want = {
-        sentDate: sent ?? ymd(fr.sentDate),
-        signedDate: fr.status === "SIGNED" ? signed ?? ymd(fr.signedDate) : ymd(fr.signedDate),
-        closedDate: fr.status === "DECLINED" || fr.status === "WITHDRAWN" ? closed ?? ymd(fr.closedDate) : ymd(fr.closedDate),
-        declineReason: reason ?? fr.declineReason,
-      };
-      const before = { sentDate: ymd(fr.sentDate), signedDate: ymd(fr.signedDate), closedDate: ymd(fr.closedDate), declineReason: fr.declineReason };
-      const names = { sentDate: "sent date", signedDate: "signed date", closedDate: "closed date", declineReason: "decline reason" } as const;
-      const changes = (Object.keys(names) as (keyof typeof names)[])
-        .filter((k) => !same(want[k], before[k]))
-        .map((k) => ({ field: `${fr.year} proposal ${names[k]}`, oldValue: before[k], newValue: want[k] }));
-      if (changes.length) {
-        await prisma.$transaction(async (tx) => {
-          await tx.saProposal.update({
-            where: { id },
-            data: {
-              sentDate: d8(want.sentDate), signedDate: d8(want.signedDate), closedDate: d8(want.closedDate),
-              declineReason: want.declineReason, version: { increment: 1 },
-            },
-          });
-          if (fr.status === "SIGNED" && want.signedDate) {
-            await tx.saContractLine.updateMany({ where: { proposalId: id }, data: { signedDate: d8(want.signedDate) } });
-          }
-          await history(tx, scope, fr.customerId, changes);
-        });
-      }
+      await moveProposal(scope, id, path, { sent, signed, closed, reason });
     });
+  }
+  // Proposed Pricing rows for a new SO # + Year without a Proposals row → a Draft.
+  for (const g of newProps.values()) {
+    planNewProposal(g, { status: "DRAFT", endDate: null, notes: null, sent: null, signed: null, closed: null, reason: null });
   }
 
   if (apply) {
@@ -1212,6 +1247,43 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     );
   }
   return summary;
+}
+
+/** Run a proposal's status moves, then keep the dates / reason the workbook gives (a transition stamps today). */
+async function moveProposal(
+  scope: TenantScope,
+  id: string,
+  path: ProposalAction[],
+  d: { sent: string | null; signed: string | null; closed: string | null; reason: string | null },
+) {
+  const { sent, signed, closed, reason } = d;
+  for (const action of path) {
+    const fr = await prisma.saProposal.findUniqueOrThrow({ where: { id } });
+    await transitionProposal(scope, id, action, { expectedVersion: fr.version, reason: reason ?? undefined });
+  }
+  const fr = await prisma.saProposal.findUniqueOrThrow({ where: { id } });
+  const want = {
+    sentDate: sent ?? ymd(fr.sentDate),
+    signedDate: fr.status === "SIGNED" ? signed ?? ymd(fr.signedDate) : ymd(fr.signedDate),
+    closedDate: fr.status === "DECLINED" || fr.status === "WITHDRAWN" ? closed ?? ymd(fr.closedDate) : ymd(fr.closedDate),
+    declineReason: reason ?? fr.declineReason,
+  };
+  const before = { sentDate: ymd(fr.sentDate), signedDate: ymd(fr.signedDate), closedDate: ymd(fr.closedDate), declineReason: fr.declineReason };
+  const names = { sentDate: "sent date", signedDate: "signed date", closedDate: "closed date", declineReason: "decline reason" } as const;
+  const changes = (Object.keys(names) as (keyof typeof names)[])
+    .filter((k) => !same(want[k], before[k]))
+    .map((k) => ({ field: `${fr.year} proposal ${names[k]}`, oldValue: before[k], newValue: want[k] }));
+  if (!changes.length) return;
+  await prisma.$transaction(async (tx) => {
+    await tx.saProposal.update({
+      where: { id },
+      data: { sentDate: d8(want.sentDate), signedDate: d8(want.signedDate), closedDate: d8(want.closedDate), declineReason: want.declineReason, version: { increment: 1 } },
+    });
+    if (fr.status === "SIGNED" && want.signedDate) {
+      await tx.saContractLine.updateMany({ where: { proposalId: id }, data: { signedDate: d8(want.signedDate) } });
+    }
+    await history(tx, scope, fr.customerId, changes);
+  });
 }
 
 /** Settings sheet → one version-checked updateSettings() when anything differs from the app. */
