@@ -7,6 +7,7 @@ import {
   backupSizeError,
   formatMb,
 } from "@/lib/services/full-backup-format";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -110,12 +111,19 @@ export async function POST(req: Request) {
     if (f.size > 0) fileText = await f.text();
   }
 
-  const r = await restoreFromUpload(scope, {
-    mode: form.get("mode"),
-    confirm: form.get("confirm"),
-    password: form.get("password"),
-    fileText,
-  });
+  let r: Awaited<ReturnType<typeof restoreFromUpload>>;
+  try {
+    r = await restoreFromUpload(scope, {
+      mode: form.get("mode"),
+      confirm: form.get("confirm"),
+      password: form.get("password"),
+      fileText,
+    });
+  } catch (e) {
+    // restoreFromUpload answers its own failures; this is a last-resort guard.
+    logError("restore route", e);
+    return json(500, { error: "The restore failed — reload the page to see the current data. (Details are in the server log.)" });
+  }
   if (!r.ok) return json(r.status, { error: r.error });
 
   revalidatePath("/", "layout");

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
+import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 
 export const metadata: Metadata = {
   title: { default: "Team Planner", template: "%s · Team Planner" },
@@ -16,7 +17,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="min-h-screen bg-background antialiased">{children}</body>
+      <body className="min-h-screen bg-background antialiased">
+        {/* One confirm/alert/prompt dialog for the whole app (useConfirm). */}
+        <ConfirmProvider>{children}</ConfirmProvider>
+      </body>
     </html>
   );
 }

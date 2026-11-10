@@ -5,6 +5,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "@/lib/services/audit";
 import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
 import { assertFreshWrite, versionGuard, StaleSaveError } from "@/lib/db/optimistic";
+import { logError } from "@/lib/log";
 import type { TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
 
 export type { TechTaskState, TaskOrigin, NoteKind };
@@ -393,8 +394,9 @@ export interface UpdateTechTaskInput {
   /**
    * Optimistic lock: the `version` the caller loaded. When given and the row
    * has moved on, the save is rejected with StaleSaveError (nothing written).
-   * Omit only for single-field quick actions (e.g. a Kanban drag) where
-   * last-write-wins is acceptable; those still bump the version.
+   * The dashboard list, Kanban board and ticket always send it. Omitting it
+   * (last-write-wins) is left for callers without a loaded version, e.g.
+   * setTechTaskState; those writes still bump the version.
    */
   expectedVersion?: number;
 }
@@ -436,8 +438,8 @@ async function recordChange(scope: TenantScope, taskId: string, body: string) {
         body: body.slice(0, 500),
       },
     });
-  } catch {
-    /* history must never break the mutation */
+  } catch (e) {
+    logError("tech-tasks recordChange", e); // history must never break the mutation
   }
 }
 

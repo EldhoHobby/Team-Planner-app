@@ -2,6 +2,7 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import type { User } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
+import { logError } from "@/lib/log";
 import { generateToken, hashToken } from "./tokens";
 
 const COOKIE_NAME = "tp_session";
@@ -61,7 +62,9 @@ const resolveSessionActor = cache(async (token: string): Promise<SessionActor | 
   if (!session) return null;
 
   if (session.expiresAt.getTime() < Date.now()) {
-    await prisma.session.delete({ where: { id: session.id } }).catch(() => {});
+    await prisma.session
+      .delete({ where: { id: session.id } })
+      .catch((e: unknown) => logError("session: delete expired session", e));
     return null;
   }
 
@@ -81,7 +84,7 @@ const resolveSessionActor = cache(async (token: string): Promise<SessionActor | 
     // impersonation silently instead of locking anyone out.
     await prisma.session
       .update({ where: { id: session.id }, data: { actingAsUserId: null } })
-      .catch(() => {});
+      .catch((e: unknown) => logError("session: drop stale View as", e));
   }
   return { user: session.user, realUser: session.user, impersonating: false };
 });

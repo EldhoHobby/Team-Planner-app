@@ -12,6 +12,7 @@ import { generateToken } from "@/lib/auth/tokens";
 import { uniqueUsername } from "@/lib/auth/username";
 import { normalizeUsername, isValidUsername } from "@/lib/users";
 import { callerIsOwner, looksLikeEmail } from "@/lib/services/people";
+import { logError } from "@/lib/log";
 import {
   ymd,
   sheetRows,
@@ -448,7 +449,8 @@ async function importPeople(scope: TenantScope, rows: Record<string, string>[], 
         }
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.people} row ${line}`, e);
       err(line, "could not save");
     }
   }
@@ -537,7 +539,8 @@ async function importTechTasks(scope: TenantScope, rows: Record<string, string>[
         }
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.techTasks} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.techTasks} row ${line}: could not save`);
     }
   }
@@ -569,7 +572,8 @@ async function importTimeOff(scope: TenantScope, rows: Record<string, string>[],
         if (apply) await prisma.technicianTimeOff.create({ data: { orgId: scope.ctx.orgId, ...data } });
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.timeOff} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.timeOff} row ${line}: could not save`);
     }
   }
@@ -609,7 +613,8 @@ async function importTeams(scope: TenantScope, rows: Record<string, string>[], a
         }
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.teams} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.teams} row ${line}: name may already exist`);
     }
   }
@@ -640,7 +645,8 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
         if (apply) await prisma.project.create({ data: { orgId: scope.ctx.orgId, teamId, name, description, archived } });
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.projects} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: could not save`);
     }
   }
@@ -765,6 +771,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
         res.created++;
       }
     } catch (e) {
+      logError(`data-io import ${SHEET.jobs} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: ${e instanceof Error ? e.message : "could not save"}`);
     }
   }
@@ -798,7 +805,8 @@ async function importHolidays(scope: TenantScope, rows: Record<string, string>[]
           res.created++;
         }
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.holidays} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: could not save`);
     }
   }

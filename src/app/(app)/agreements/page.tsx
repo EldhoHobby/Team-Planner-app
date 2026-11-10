@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { ArrowRight, StickyNote } from "lucide-react";
 import { requireAuth } from "@/lib/auth/guard";
+import { PageHeader } from "@/components/ui/page-header";
+import { fmtEastern } from "@/lib/tz";
 import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
 import { getDashboard } from "@/lib/services/agreements/dashboard";
@@ -117,9 +119,18 @@ export default async function AgreementsDashboard() {
   const { scope } = await requireScope();
   await recordPageView(scope, "Service agreements");
   const [d, canEdit] = await Promise.all([getDashboard(scope), canEditAgreements(scope)]);
+  const header = (
+    <PageHeader
+      className="mb-0 print:hidden"
+      title="Dashboard"
+      description="Renewals, proposals and contract history by customer."
+    />
+  );
 
   if (d.empty) {
     return (
+      <div className="space-y-6">
+      {header}
       <div className="rounded-lg border bg-card p-8 text-center">
         <h2 className="text-lg font-semibold">No service agreements yet</h2>
         <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
@@ -130,12 +141,14 @@ export default async function AgreementsDashboard() {
           <Link href="/agreements/settings#workbook" className="rounded-md border px-4 py-2 text-sm font-medium">Monthly workbook</Link>
         </div>
       </div>
+      </div>
     );
   }
 
   const k = d.kpis;
   return (
     <div className="space-y-6">
+      {header}
       <section className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7" aria-label="Key figures">
         <Kpi label="Active customers" value={String(k.activeCustomers)} href="/agreements/customers?status=ACTIVE" />
         <Kpi label="Pending" value={String(k.pending)} sub="customers" href="/agreements/customers?status=PENDING" />
@@ -219,7 +232,7 @@ export default async function AgreementsDashboard() {
                     <span className="text-muted-foreground"> · {h.field}: </span>
                     <span>{h.newValue ?? "—"}</span>
                     <p className="text-xs text-muted-foreground">
-                      {h.actor} · {new Date(h.at).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" })}
+                      {h.actor} · {fmtEastern(h.at, { dateStyle: "medium", timeStyle: "short" })}
                     </p>
                   </li>
                 ))}

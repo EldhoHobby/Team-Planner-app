@@ -1,7 +1,7 @@
 "use client";
 
 import { fmtEastern } from "@/lib/tz";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, Inbox, History, Copy, AlertTriangle, MessageSquarePlus, ChevronDown, ChevronRight } from "lucide-react";
 import {
@@ -18,8 +18,11 @@ import {
   deleteJobCommentAction,
 } from "../tasks/actions";
 import type { JobNoteRow } from "@/lib/services/field-service";
-import type { AuditEntry, JobRow, JobStatus, TechnicianOption } from "./types";
+import type { AuditEntry, JobRow, JobStatus, JobType, TechnicianOption } from "./types";
 import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { SaveStatus, useSaveStatus, type SaveState } from "@/components/ui/save-status";
+import { FormMessage } from "@/components/ui/form-message";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,6 +44,58 @@ const JOB_TYPE_LABELS: Record<string, string> = {
   ANNUAL_MAINTENANCE: "Annual Maintenance",
   EMERGENCY_SUPPORT: "Emergency Support",
 };
+
+// Same limits as UpdateJobSchema in ../tasks/actions.ts.
+const MAX = { title: 200, soNumber: 60, customerName: 160, description: 4000, hardwareTarget: 120 } as const;
+
+type JobForm = {
+  title: string;
+  soNumber: string;
+  customerName: string;
+  description: string;
+  jobType: JobType | "";
+  hardwareTarget: string;
+  technicianId: string;
+  jobStatus: JobStatus;
+  startDate: string;
+  // Kept as a STRING so the field can be emptied while typing (backspace);
+  // committed to the server on blur / Enter, and only when it is a valid day count.
+  durationDays: string;
+  tentative: boolean;
+};
+
+// Header indicator while an error is showing (the error itself is shown once, in the body).
+const IDLE_SAVE: SaveState = { status: "idle" };
+
+const EMPTY_FORM: JobForm = {
+  title: "",
+  soNumber: "",
+  customerName: "",
+  description: "",
+  jobType: "",
+  hardwareTarget: "",
+  technicianId: "",
+  jobStatus: "UNCONFIRMED",
+  startDate: "",
+  durationDays: "1",
+  tentative: false,
+};
+
+function formFromJob(job: JobRow): JobForm {
+  return {
+    title: job.title,
+    soNumber: job.soNumber ?? "",
+    customerName: job.customerName ?? "",
+    description: job.description ?? "",
+    jobType: job.jobType ?? "",
+    hardwareTarget: job.hardwareTarget ?? "",
+    technicianId: job.technicianId ?? "",
+    jobStatus: job.jobStatus,
+    startDate: job.startDate ?? "",
+    durationDays: String(job.durationDays ?? 1),
+    tentative: job.tentative,
+  };
+}
 
 export function JobEditor({
   job,
@@ -69,6 +124,12 @@ export function JobEditor({
   isAdmin: boolean;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
+  // Field autosaves: "Saving… / Saved ✓" in the header; a rejected save shows
+  // its error in the alert area (once) and is cleared by the next save.
+  const save = useSaveStatus();
+  // Only the one-shot actions (delete, duplicate, comments, the reason) use the
+  // transition — field saves never disable the form.
   const [pending, startTransition] = useTransition();
   const [history, setHistory] = useState<AuditEntry[] | null>(null);
   // Comment thread (reason-for-change + discussion), merged with the change
@@ -77,10 +138,8 @@ export function JobEditor({
   const [comment, setComment] = useState("");
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState("");
-  // Notes panel starts collapsed. `dirty` tracks whether this editing session
-  // actually saved anything — closing then asks for an optional reason.
+  // Notes panel starts collapsed.
   const [notesOpen, setNotesOpen] = useState(false);
-  const [dirty, setDirty] = useState(false);
   const [askReason, setAskReason] = useState(false);
   const [reason, setReason] = useState("");
   const [noteError, setNoteError] = useState<string | null>(null);
@@ -92,51 +151,38 @@ export function JobEditor({
   // early return) so hook order stays stable if the editor ever renders
   // without a job — a conditional useState would break the rules of hooks.
   const [closeError, setCloseError] = useState<string | null>(null);
-  // Last rejected save (validation, duplicate SO + title, server error…). Shown
-  // in the alert area; cleared by the next successful save or another job.
-  const [saveError, setSaveError] = useState<string | null>(null);
+  // True while a close waits for in-flight field saves to finish.
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
 
   // Controlled form state so edits stay consistent (the inputs reflect each other
   // immediately). Reset whenever a different job is opened.
-  const [form, setForm] = useState({
-    title: "",
-    soNumber: "",
-    customerName: "",
-    description: "",
-    jobType: "" as any,
-    hardwareTarget: "",
-    technicianId: "",
-    jobStatus: "UNCONFIRMED" as JobStatus,
-    startDate: "",
-    // Kept as a STRING so the field can be emptied while typing (backspace);
-    // committed to the server only when it parses to a valid day count.
-    durationDays: "1",
-    tentative: false,
-  });
+  const [form, setForm] = useState<JobForm>(EMPTY_FORM);
+  // Latest form for code that runs after an await (closures would be stale).
+  const formRef = useRef(form);
+  formRef.current = form;
+  // Whether this editing session actually saved anything — closing then asks
+  // for an optional reason. A ref: it is read right after awaiting saves.
+  const dirtyRef = useRef(false);
+  // Field saves still in flight; closing waits for them. Each resolves to
+  // true (saved) or false (rejected — the error is on screen).
+  const inflight = useRef(new Set<Promise<boolean>>());
+  // Duration last sent to the server (so blur after Enter doesn't save twice).
+  const lastDuration = useRef<number | null>(null);
+
   useEffect(() => {
     if (job) {
-      setForm({
-        title: job.title,
-        soNumber: job.soNumber ?? "",
-        customerName: job.customerName ?? "",
-        description: job.description ?? "",
-        jobType: job.jobType ?? "",
-        hardwareTarget: job.hardwareTarget ?? "",
-        technicianId: job.technicianId ?? "",
-        jobStatus: job.jobStatus,
-        startDate: job.startDate ?? "",
-        durationDays: String(job.durationDays ?? 1),
-        tentative: job.tentative,
-      });
+      setForm(formFromJob(job));
       setComment("");
       setEditingNoteId(null);
       setNotesOpen(false);
-      setDirty(false);
+      dirtyRef.current = false;
+      lastDuration.current = null;
       setAskReason(false);
       setReason("");
       setNoteError(null);
-      setSaveError(null);
       setCloseError(null);
+      save.reset();
       // Clear the PREVIOUS job's thread/history immediately (otherwise its
       // comments stay on screen — with live Edit/Delete — under the new job,
       // e.g. after Duplicate swaps the editor over), and ignore responses that
@@ -160,46 +206,73 @@ export function JobEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id]);
 
+  // Re-sync the fields the SERVER derives or other screens change (status after
+  // a date is set / "Move to backlog", dates, tentative, person, duration) when
+  // the refreshed job differs from the previous one — unless that field is
+  // being edited right now (focused).
+  const prevJob = useRef<JobRow | null>(null);
+  useEffect(() => {
+    const prev = prevJob.current;
+    prevJob.current = job;
+    if (!job || !prev || prev.id !== job.id) return; // a new job is reset above
+    const editing = (id: string) => document.activeElement?.id === id;
+    const patch: Partial<JobForm> = {};
+    if (prev.jobStatus !== job.jobStatus && !editing("ed-status")) patch.jobStatus = job.jobStatus;
+    if (prev.startDate !== job.startDate && !editing("ed-start")) patch.startDate = job.startDate ?? "";
+    if (prev.tentative !== job.tentative && !editing("ed-tentative")) patch.tentative = job.tentative;
+    if (prev.technicianId !== job.technicianId && !editing("ed-tech")) patch.technicianId = job.technicianId ?? "";
+    if (prev.durationDays !== job.durationDays) {
+      lastDuration.current = null;
+      if (!editing("ed-days")) patch.durationDays = String(job.durationDays ?? 1);
+    }
+    if (Object.keys(patch).length) setForm((f) => ({ ...f, ...patch }));
+  }, [job]);
+
   if (!job) return null;
 
   // Every field save funnels through here, so it's where we mark the session
   // dirty (drives the "why did you change this?" prompt on close). A rejected
   // save shows its error, puts the field back to the saved value (`revert`) and
   // does NOT count as a change.
-  const run = (fn: () => Promise<{ error?: string }>, revert?: () => void) =>
-    startTransition(async () => {
+  const run = (fn: () => Promise<{ error?: string }>, revert?: () => void): Promise<boolean> => {
+    const p = (async () => {
       let res: { error?: string };
       try {
-        res = await fn();
+        res = await save.run(fn);
       } catch {
-        res = { error: "Could not save the change — check your connection and try again." };
+        // SaveStatus already shows "Couldn't save — check your connection…".
+        res = { error: "thrown" };
       }
       if (res?.error) {
-        setSaveError(res.error);
         revert?.();
         router.refresh();
-        return;
+        return false;
       }
-      setSaveError(null);
-      setDirty(true);
+      dirtyRef.current = true;
       router.refresh();
-    });
+      return true;
+    })();
+    inflight.current.add(p);
+    void p.finally(() => inflight.current.delete(p));
+    return p;
+  };
 
   // Delete asks first (it also removes the whole comment thread) and only
   // closes the editor once the server confirmed the delete.
-  const removeJob = () => {
+  const removeJob = async () => {
     const name = [job.soNumber, job.customerName, job.title].filter(Boolean).join(" · ");
     const n = thread.length;
-    if (
-      !window.confirm(
-        `Delete “${name}” and its ${n} note${n === 1 ? "" : "s"}? This cannot be undone.`,
-      )
-    )
-      return;
+    const ok = await confirm({
+      title: `Delete job “${name}”?`,
+      message: `The job and its ${n} note${n === 1 ? "" : "s"} will be permanently deleted. This cannot be undone.`,
+      confirmLabel: "Delete job",
+      tone: "danger",
+    });
+    if (!ok) return;
     startTransition(async () => {
       const res = await deleteJobAction({ jobId: job.id });
       if (res.error) {
-        setSaveError(res.error);
+        save.fail(res.error);
         return;
       }
       router.refresh();
@@ -209,7 +282,7 @@ export function JobEditor({
 
   const closeNow = () => {
     setAskReason(false);
-    setDirty(false);
+    dirtyRef.current = false;
     onClose();
   };
   const saveReasonAndClose = () => {
@@ -285,7 +358,7 @@ Changed: ${changed.join("; ")}`;
     startTransition(async () => {
       const res = await duplicateJobAction({ jobId: job.id });
       if (res.error) {
-        setSaveError(res.error);
+        save.fail(res.error);
         return;
       }
       router.refresh();
@@ -294,10 +367,10 @@ Changed: ${changed.join("; ")}`;
 
   // Hard-block closing while the title is a duplicate: still the auto "(copy)"
   // name, or an SO number + title that matches another job. No bypass — the
-  // user must give it a unique title first.
+  // user must give it a unique title first. Reads refs: it runs after awaits.
   const closeGuarded = () => {
-    const title = form.title.trim();
-    const so = form.soNumber.trim();
+    const title = formRef.current.title.trim();
+    const so = formRef.current.soNumber.trim();
     const stillCopy = /\(copy(\s+\d+)?\)\s*$/i.test(title);
     const collides = allJobs.some(
       (j) =>
@@ -314,12 +387,80 @@ Changed: ${changed.join("; ")}`;
       return; // stay open
     }
     // Something was actually changed this session → ask for an optional reason.
-    if (dirty) {
+    if (dirtyRef.current) {
       setAskReason(true);
       return;
     }
     onClose();
   };
+
+  // Every way out (X, Escape, backdrop, Done): blur the focused field so its
+  // pending edit saves, wait for in-flight saves, then run the guarded close.
+  // A rejected save keeps the editor open with its error showing.
+  const requestClose = async () => {
+    if (closingRef.current || askReason) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+    closingRef.current = true;
+    setClosing(true);
+    try {
+      if (inflight.current.size) {
+        const results = await Promise.all([...inflight.current]);
+        if (results.some((ok) => !ok)) return;
+      }
+      if (comment.trim() || editingNoteId) {
+        const discard = await confirm({
+          title: "Discard your comment?",
+          message: "The comment you were writing has not been added to this job.",
+          confirmLabel: "Discard",
+          cancelLabel: "Keep editing",
+          tone: "danger",
+        });
+        if (!discard) return;
+      }
+      closeGuarded();
+    } finally {
+      closingRef.current = false;
+      setClosing(false);
+    }
+  };
+
+  // Duration: saved on blur or Enter (not per keystroke — typing "10" must not
+  // save 1 first). Empty / invalid input puts the saved value back. 0 = days TBD.
+  const savedDuration = job.durationDays ?? 1;
+  const commitDuration = (raw: string) => {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isInteger(n) || n < 0 || n > 60) {
+      setForm((f) => ({ ...f, durationDays: String(lastDuration.current ?? savedDuration) }));
+      return;
+    }
+    if (n === (lastDuration.current ?? savedDuration)) return;
+    lastDuration.current = n;
+    void run(
+      () => rescheduleJobAction({ jobId: job.id, durationDays: n }),
+      () => {
+        lastDuration.current = null;
+        setForm((f) => ({ ...f, durationDays: String(job.durationDays ?? 1) }));
+      },
+    );
+  };
+
+  // The Person list shows active people; a job still held by someone who is
+  // no longer active keeps them as an "(inactive)" choice instead of
+  // misleadingly showing "Unassigned".
+  const activePeople = technicians.filter((t) => t.active);
+  const inactiveHolder =
+    form.technicianId && !activePeople.some((t) => t.id === form.technicianId)
+      ? {
+          id: form.technicianId,
+          name:
+            technicians.find((t) => t.id === form.technicianId)?.name ??
+            (job.technicianId === form.technicianId ? job.technicianName : null) ??
+            "Unknown person",
+        }
+      : null;
+
+  const saveError = save.state.status === "error" ? save.state.error : null;
 
   return (
     <>
@@ -327,7 +468,8 @@ Changed: ${changed.join("; ")}`;
       open={!!job}
       // While the reason dialog is up it owns Escape / backdrop clicks — the
       // editor underneath must not also react (it would re-open the prompt).
-      onClose={() => { if (!askReason) closeGuarded(); }}
+      onClose={() => { if (!askReason) void requestClose(); }}
+      canClose={() => !closingRef.current && !pending}
       title={job.title}
       titleBadge={
         conflict ? (
@@ -338,35 +480,41 @@ Changed: ${changed.join("; ")}`;
       }
       description={[job.soNumber, job.customerName].filter(Boolean).join(" · ") || undefined}
       headerActions={
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={pending}
-          title="Copy this job into the backlog and open the copy to edit"
-          onClick={duplicate}
-        >
-          <Copy className="mr-1.5 h-4 w-4" /> Duplicate
-        </Button>
+        <>
+          {/* Progress only — a save error is shown once, in the alert area below. */}
+          <SaveStatus state={saveError ? IDLE_SAVE : save.state} />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            title="Copy this job into the backlog and open the copy to edit"
+            onClick={duplicate}
+          >
+            <Copy className="mr-1.5 h-4 w-4" /> Duplicate
+          </Button>
+        </>
       }
     >
       <div className="space-y-4">
-        {closeError ? (
-          <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {closeError}
-          </p>
-        ) : null}
-        {saveError ? (
-          <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {saveError}
-          </p>
-        ) : null}
+        <FormMessage
+          tone="error"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2"
+        >
+          {closeError}
+        </FormMessage>
+        <FormMessage
+          tone="error"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2"
+        >
+          {saveError}
+        </FormMessage>
         <div className="space-y-2">
           <Label htmlFor="ed-title">Title</Label>
           <Input
             id="ed-title"
             value={form.title}
-            disabled={pending}
+            maxLength={MAX.title}
             onChange={(e) => {
               setCloseError(null); // renaming clears the block
               setForm((f) => ({ ...f, title: e.target.value }));
@@ -376,7 +524,7 @@ Changed: ${changed.join("; ")}`;
               // A job needs a title — emptying the field puts the saved one back.
               if (!v) setForm((f) => ({ ...f, title: job.title }));
               else if (v !== job.title)
-                run(
+                void run(
                   () => updateJobAction({ jobId: job.id, title: v }),
                   () => setForm((f) => ({ ...f, title: job.title })),
                 );
@@ -390,12 +538,12 @@ Changed: ${changed.join("; ")}`;
             <Input
               id="ed-so"
               value={form.soNumber}
-              disabled={pending}
+              maxLength={MAX.soNumber}
               onChange={(e) => setForm((f) => ({ ...f, soNumber: e.target.value }))}
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v !== (job.soNumber ?? ""))
-                  run(
+                  void run(
                     () => updateJobAction({ jobId: job.id, soNumber: v || null }),
                     () => setForm((f) => ({ ...f, soNumber: job.soNumber ?? "" })),
                   );
@@ -407,12 +555,12 @@ Changed: ${changed.join("; ")}`;
             <Input
               id="ed-customer"
               value={form.customerName}
-              disabled={pending}
+              maxLength={MAX.customerName}
               onChange={(e) => setForm((f) => ({ ...f, customerName: e.target.value }))}
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v !== (job.customerName ?? ""))
-                  run(
+                  void run(
                     () => updateJobAction({ jobId: job.id, customerName: v || null }),
                     () => setForm((f) => ({ ...f, customerName: job.customerName ?? "" })),
                   );
@@ -426,14 +574,14 @@ Changed: ${changed.join("; ")}`;
           <textarea
             id="ed-desc"
             rows={3}
+            maxLength={MAX.description}
             className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             value={form.description}
-            disabled={pending}
             onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
             onBlur={(e) => {
               const v = e.target.value.trim();
               if (v !== (job.description ?? ""))
-                run(
+                void run(
                   () => updateJobAction({ jobId: job.id, description: v || null }),
                   () => setForm((f) => ({ ...f, description: job.description ?? "" })),
                 );
@@ -448,11 +596,10 @@ Changed: ${changed.join("; ")}`;
               id="ed-type"
               className={selectClass}
               value={form.jobType}
-              disabled={pending}
               onChange={(e) => {
-                const v = e.target.value as any;
+                const v = e.target.value as JobType | "";
                 setForm((f) => ({ ...f, jobType: v }));
-                run(
+                void run(
                   () => updateJobAction({ jobId: job.id, jobType: v || null }),
                   () => setForm((f) => ({ ...f, jobType: job.jobType ?? "" })),
                 );
@@ -471,12 +618,12 @@ Changed: ${changed.join("; ")}`;
             <Input
               id="ed-hardware"
               value={form.hardwareTarget}
-              disabled={pending}
+              maxLength={MAX.hardwareTarget}
               onChange={(e) => setForm((f) => ({ ...f, hardwareTarget: e.target.value }))}
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v !== (job.hardwareTarget ?? ""))
-                  run(
+                  void run(
                     () => updateJobAction({ jobId: job.id, hardwareTarget: v || null }),
                     () => setForm((f) => ({ ...f, hardwareTarget: job.hardwareTarget ?? "" })),
                   );
@@ -487,25 +634,27 @@ Changed: ${changed.join("; ")}`;
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
-            <Label htmlFor="ed-tech">Technician</Label>
+            <Label htmlFor="ed-tech">Person</Label>
             <select
               id="ed-tech"
               className={selectClass}
               value={form.technicianId}
-              disabled={pending}
               onChange={(e) => {
                 const v = e.target.value;
                 setForm((f) => ({ ...f, technicianId: v }));
-                run(
+                void run(
                   () => rescheduleJobAction({ jobId: job.id, technicianId: v || null }),
                   () => setForm((f) => ({ ...f, technicianId: job.technicianId ?? "" })),
                 );
               }}
             >
               <option value="">Unassigned</option>
-              {technicians.filter((t) => t.active).map((t) => (
+              {activePeople.map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
+              {inactiveHolder ? (
+                <option value={inactiveHolder.id}>{inactiveHolder.name} (inactive)</option>
+              ) : null}
             </select>
           </div>
           <div className="space-y-2">
@@ -514,11 +663,10 @@ Changed: ${changed.join("; ")}`;
               id="ed-status"
               className={selectClass}
               value={form.jobStatus}
-              disabled={pending}
               onChange={(e) => {
                 const v = e.target.value as JobStatus;
                 setForm((f) => ({ ...f, jobStatus: v }));
-                run(
+                void run(
                   () => setJobStatusAction({ jobId: job.id, jobStatus: v }),
                   () => setForm((f) => ({ ...f, jobStatus: job.jobStatus })),
                 );
@@ -532,14 +680,15 @@ Changed: ${changed.join("; ")}`;
           <div className="space-y-2">
             <Label htmlFor="ed-start">Start date</Label>
             <DatePicker
+              id="ed-start"
               value={form.startDate}
               onChange={(v) => {
                 const clearTentative = !v && form.tentative;
                 setForm((f) => ({ ...f, startDate: v, tentative: v ? f.tentative : false }));
                 const revertDate = () =>
                   setForm((f) => ({ ...f, startDate: job.startDate ?? "", tentative: job.tentative }));
-                run(() => rescheduleJobAction({ jobId: job.id, startDate: v || null }), revertDate);
-                if (clearTentative) run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
+                void run(() => rescheduleJobAction({ jobId: job.id, startDate: v || null }), revertDate);
+                if (clearTentative) void run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
               }}
             />
           </div>
@@ -550,43 +699,35 @@ Changed: ${changed.join("; ")}`;
               type="number"
               min={0}
               max={60}
+              step={1}
               value={form.durationDays}
-              disabled={pending}
-              onChange={(e) => {
-                // Always accept the raw text (so backspace/clearing works);
-                // only push valid values to the server. 0 = "days TBD".
-                const raw = e.target.value;
-                setForm((f) => ({ ...f, durationDays: raw }));
-                const n = Number(raw);
-                if (raw !== "" && Number.isInteger(n) && n >= 0 && n <= 60) {
-                  run(
-                    () => rescheduleJobAction({ jobId: job.id, durationDays: n }),
-                    () => setForm((f) => ({ ...f, durationDays: String(job.durationDays ?? 1) })),
-                  );
+              aria-describedby="ed-days-hint"
+              // Always accept the raw text (so backspace/clearing works); the
+              // value is saved when the field is left or Enter is pressed.
+              onChange={(e) => setForm((f) => ({ ...f, durationDays: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitDuration(e.currentTarget.value);
                 }
               }}
-              onBlur={() => {
-                // Leaving the field empty/invalid restores the saved value.
-                const n = Number(form.durationDays);
-                if (form.durationDays === "" || !Number.isInteger(n) || n < 0 || n > 60) {
-                  setForm((f) => ({ ...f, durationDays: String(job.durationDays ?? 1) }));
-                }
-              }}
+              onBlur={(e) => commitDuration(e.target.value)}
             />
-            <p className="text-[11px] text-muted-foreground">0 = days TBD</p>
+            <p id="ed-days-hint" className="text-[11px] text-muted-foreground">0 = days TBD</p>
           </div>
         </div>
 
         <label className={`flex items-center gap-2 text-sm ${!form.startDate ? "opacity-50" : ""}`}>
           <input
+            id="ed-tentative"
             type="checkbox"
             className="h-4 w-4 rounded border-input"
             checked={form.tentative}
-            disabled={pending || !form.startDate}
+            disabled={!form.startDate}
             onChange={(e) => {
               const v = e.target.checked;
               setForm((f) => ({ ...f, tentative: v }));
-              run(
+              void run(
                 () => setJobTentativeAction({ jobId: job.id, tentative: v }),
                 () => setForm((f) => ({ ...f, tentative: job.tentative })),
               );
@@ -601,14 +742,14 @@ Changed: ${changed.join("; ")}`;
             type="button"
             variant="outline"
             size="sm"
-            disabled={pending || !job.startDate}
+            disabled={!job.startDate}
             onClick={() => {
               const clearTentative = form.tentative;
               setForm((f) => ({ ...f, startDate: "", tentative: false }));
               const revertDate = () =>
                 setForm((f) => ({ ...f, startDate: job.startDate ?? "", tentative: job.tentative }));
-              run(() => rescheduleJobAction({ jobId: job.id, startDate: null }), revertDate);
-              if (clearTentative) run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
+              void run(() => rescheduleJobAction({ jobId: job.id, startDate: null }), revertDate);
+              if (clearTentative) void run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
             }}
           >
             <Inbox className="mr-1.5 h-4 w-4" /> Move to backlog
@@ -619,7 +760,7 @@ Changed: ${changed.join("; ")}`;
             size="sm"
             disabled={pending}
             className="text-destructive hover:text-destructive"
-            onClick={removeJob}
+            onClick={() => void removeJob()}
           >
             <Trash2 className="mr-1.5 h-4 w-4" /> Delete
           </Button>
@@ -647,10 +788,10 @@ Changed: ${changed.join("; ")}`;
           <div className="mt-3 flex items-start gap-2">
             <textarea
               rows={2}
+              aria-label="New comment"
               className="flex w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               placeholder="Add a comment or the reason for a change…"
               value={comment}
-              disabled={pending}
               onChange={(e) => setComment(e.target.value)}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); addComment(); }
@@ -660,8 +801,8 @@ Changed: ${changed.join("; ")}`;
               <MessageSquarePlus className="mr-1.5 h-4 w-4" /> Add
             </Button>
           </div>
-          {noteError && !askReason ? (
-            <p role="alert" className="mt-1 text-xs text-destructive">{noteError}</p>
+          {!askReason ? (
+            <FormMessage tone="error" className="mt-1 text-xs">{noteError}</FormMessage>
           ) : null}
 
           {(() => {
@@ -704,9 +845,9 @@ Changed: ${changed.join("; ")}`;
                       <div className="rounded-md border bg-muted/30 p-2">
                         <textarea
                           rows={2}
+                          aria-label="Edit comment"
                           className="flex w-full rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           value={editBody}
-                          disabled={pending}
                           onChange={(ev) => setEditBody(ev.target.value)}
                         />
                         <div className="mt-1.5 flex gap-2">
@@ -755,6 +896,13 @@ Changed: ${changed.join("; ")}`;
           </>
           ) : null}
         </div>
+
+        {/* Changes save as you go; Done just closes (same path as X / Escape). */}
+        <div className="flex justify-end border-t pt-3">
+          <Button type="button" size="sm" disabled={closing} onClick={() => void requestClose()}>
+            {closing ? "Saving…" : "Done"}
+          </Button>
+        </div>
       </div>
     </Modal>
 
@@ -767,23 +915,24 @@ Changed: ${changed.join("; ")}`;
         onClose={closeNow}
         title="Why did you change this job?"
         description="Optional — saved as a comment on this job's notes."
-        className="max-w-md"
+        size="sm"
+        canClose={() => !pending}
+        dirty={!!reason.trim()}
+        confirmClose="The reason you typed has not been saved."
       >
         <textarea
           rows={3}
           autoFocus
+          aria-label="Reason for the change"
           className="flex w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           placeholder="e.g. customer pushed the visit a week"
           value={reason}
-          disabled={pending}
           onChange={(e) => setReason(e.target.value)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); saveReasonAndClose(); }
           }}
         />
-        {noteError ? (
-          <p role="alert" className="mt-2 text-sm text-destructive">{noteError}</p>
-        ) : null}
+        <FormMessage tone="error" className="mt-2">{noteError}</FormMessage>
         <div className="mt-3 flex gap-2">
           <Button type="button" size="sm" disabled={pending || !reason.trim()} onClick={saveReasonAndClose}>
             Save &amp; close

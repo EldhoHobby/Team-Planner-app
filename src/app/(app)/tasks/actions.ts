@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireScope } from "@/lib/auth/current-user";
+import { actionError } from "@/lib/log";
 import { createTask, updateTask, deleteTask } from "@/lib/services/tasks";
 import {
   createJob,
@@ -27,28 +28,28 @@ const STATUSES = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"] as const;
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 
 const CreateSchema = z.object({
-  title: z.string().min(1, "Title is required").max(200),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer."),
   projectId: z.string().min(1, "Project is required"),
   status: z.enum(STATUSES).default("TODO"),
   priority: z.enum(PRIORITIES).default("MEDIUM"),
-  description: z.string().max(2000).optional(),
+  description: z.string().max(2000, "Description must be 2000 characters or fewer.").optional(),
   dueDate: z.string().optional(),
-  estimateHrs: z.coerce.number().positive().optional(),
+  estimateHrs: z.coerce.number().positive("Estimate must be more than 0 hours.").optional(),
   assigneeIds: z.array(z.string()).default([]),
-  location: z.string().max(200).optional(),
+  location: z.string().max(200, "Location must be 200 characters or fewer.").optional(),
 });
 
 const UpdateSchema = z.object({
   taskId: z.string().min(1),
-  title: z.string().min(1, "Title is required").max(200),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer."),
   status: z.enum(STATUSES),
   priority: z.enum(PRIORITIES),
   // null = the field was emptied in the form → cleared in the DB.
-  description: z.string().max(2000).nullable(),
+  description: z.string().max(2000, "Description must be 2000 characters or fewer.").nullable(),
   dueDate: z.string().optional(),
-  estimateHrs: z.coerce.number().positive().nullable(),
+  estimateHrs: z.coerce.number().positive("Estimate must be more than 0 hours.").nullable(),
   assigneeIds: z.array(z.string()).default([]),
-  location: z.string().max(200).nullable(),
+  location: z.string().max(200, "Location must be 200 characters or fewer.").nullable(),
 });
 
 /** A form text value, or null when blank (so clearing a field clears it). */
@@ -87,8 +88,7 @@ export async function createTaskAction(
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not create the task." };
+    return actionError("createTaskAction", e, "Could not create the task.");
   }
 }
 
@@ -122,8 +122,7 @@ export async function updateTaskAction(
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the task." };
+    return actionError("updateTaskAction", e, "Could not update the task.");
   }
 }
 
@@ -139,8 +138,7 @@ export async function deleteTaskAction(
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the task." };
+    return actionError("deleteTaskAction", e, "Could not delete the task.");
   }
 }
 
@@ -151,16 +149,16 @@ const JOB_STATUSES = ["UNCONFIRMED", "SCHEDULED", "IN_PROGRESS", "COMPLETED"] as
 // NOTE: PRIORITIES is already declared near the top of this file — reuse it.
 
 const CreateJobSchema = z.object({
-  title: z.string().min(1, "Title is required").max(200),
-  soNumber: z.string().max(60).optional(),
-  customerName: z.string().max(160).optional(),
-  description: z.string().max(4000).optional(),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer."),
+  soNumber: z.string().max(60, "SO number must be 60 characters or fewer.").optional(),
+  customerName: z.string().max(160, "Customer must be 160 characters or fewer.").optional(),
+  description: z.string().max(4000, "Scope of work must be 4000 characters or fewer.").optional(),
   jobType: z.enum(JOB_TYPES).optional(),
-  hardwareTarget: z.string().max(120).optional(),
+  hardwareTarget: z.string().max(120, "Hardware / product must be 120 characters or fewer.").optional(),
   technicianId: z.string().optional(),
   startDate: z.string().optional(),
   // 0 = "days TBD" placeholder (schedules as a 1-day block); 1..60 = real length.
-  durationDays: z.coerce.number().int().nonnegative().max(60).optional(),
+  durationDays: z.coerce.number().int("Duration must be a whole number of days.").nonnegative("Duration must be between 0 and 60 days.").max(60, "Duration must be between 0 and 60 days.").optional(),
 });
 
 export async function createJobAction(
@@ -194,8 +192,7 @@ export async function createJobAction(
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not create the job." };
+    return actionError("createJobAction", e, "Could not create the job.");
   }
 }
 
@@ -203,16 +200,16 @@ export async function createJobAction(
 
 const UpdateJobSchema = z.object({
   jobId: z.string().min(1),
-  title: z.string().min(1, "Title is required").max(200).optional(),
-  soNumber: z.string().max(60).optional().nullable(),
-  customerName: z.string().max(160).optional().nullable(),
-  description: z.string().max(4000).optional().nullable(),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer.").optional(),
+  soNumber: z.string().max(60, "SO number must be 60 characters or fewer.").optional().nullable(),
+  customerName: z.string().max(160, "Customer must be 160 characters or fewer.").optional().nullable(),
+  description: z.string().max(4000, "Scope of work must be 4000 characters or fewer.").optional().nullable(),
   jobType: z.enum(JOB_TYPES).optional().nullable(),
-  hardwareTarget: z.string().max(120).optional().nullable(),
+  hardwareTarget: z.string().max(120, "Hardware / product must be 120 characters or fewer.").optional().nullable(),
   priority: z.enum(PRIORITIES).optional(),
   technicianId: z.string().optional().nullable(),
   startDate: z.string().optional().nullable(),
-  durationDays: z.coerce.number().int().nonnegative().max(60).optional().nullable(),
+  durationDays: z.coerce.number().int("Duration must be a whole number of days.").nonnegative("Duration must be between 0 and 60 days.").max(60, "Duration must be between 0 and 60 days.").optional().nullable(),
   jobStatus: z.enum(JOB_STATUSES).optional(),
   tentative: z.boolean().optional(),
 });
@@ -246,8 +243,7 @@ export async function updateJobAction(input: {
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the job." };
+    return actionError("updateJobAction", e, "Could not update the job.");
   }
 }
 
@@ -301,8 +297,7 @@ export async function rescheduleJobAction(input: {
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not reschedule the job." };
+    return actionError("rescheduleJobAction", e, "Could not reschedule the job.");
   }
 }
 
@@ -325,8 +320,7 @@ export async function setJobStatusAction(input: {
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update status." };
+    return actionError("setJobStatusAction", e, "Could not update status.");
   }
 }
 
@@ -340,8 +334,7 @@ export async function setJobTentativeAction(input: {
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the job." };
+    return actionError("setJobTentativeAction", e, "Could not update the job.");
   }
 }
 
@@ -375,8 +368,7 @@ export async function addJobCommentAction(input: {
     revalidatePath("/schedule");
     return { note };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not add the comment." };
+    return actionError("addJobCommentAction", e, "Could not add the comment.");
   }
 }
 
@@ -388,8 +380,7 @@ export async function editJobCommentAction(input: {
   try {
     return { note: await editJobComment(scope, input.noteId, input.body) };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not edit the comment." };
+    return actionError("editJobCommentAction", e, "Could not edit the comment.");
   }
 }
 
@@ -401,8 +392,7 @@ export async function deleteJobCommentAction(input: {
     await deleteJobComment(scope, input.noteId);
     return { ok: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the comment." };
+    return actionError("deleteJobCommentAction", e, "Could not delete the comment.");
   }
 }
 
@@ -414,8 +404,7 @@ export async function duplicateJobAction(input: { jobId: string }): Promise<JobF
     revalidatePath("/schedule");
     return { success: true, jobId: copy.id };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not duplicate the job." };
+    return actionError("duplicateJobAction", e, "Could not duplicate the job.");
   }
 }
 
@@ -426,8 +415,7 @@ export async function deleteJobAction(input: { jobId: string }): Promise<JobForm
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the job." };
+    return actionError("deleteJobAction", e, "Could not delete the job.");
   }
 }
 
@@ -464,8 +452,7 @@ export async function importScheduleXlsxAction(
       message: `Imported ${summary.totalCreated} created, ${summary.totalUpdated} updated, ${r?.skipped ?? 0} skipped.${note}${warn}`,
     };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not read that file — is it the exported .xlsx workbook?" };
+    return actionError("importScheduleXlsxAction", e, "Could not read that file — is it the exported .xlsx workbook?");
   }
 }
 

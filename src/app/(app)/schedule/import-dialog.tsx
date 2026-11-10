@@ -1,7 +1,6 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
-import { useFormStatus } from "react-dom";
+import { startTransition, useActionState, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { importScheduleXlsxAction } from "../tasks/actions";
 import type { ImportState } from "./types";
@@ -9,23 +8,30 @@ import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
-function ImportButton() {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" disabled={pending}>
-      {pending ? "Importing…" : "Import"}
-    </Button>
-  );
-}
+import { FormMessage } from "@/components/ui/form-message";
 
 export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [state, formAction] = useActionState(importScheduleXlsxAction, {} as ImportState);
+  const [state, formAction, pending] = useActionState(importScheduleXlsxAction, {} as ImportState);
   const router = useRouter();
+  const formRef = useRef<HTMLFormElement | null>(null);
+  // A file is chosen but not imported yet → closing asks first.
+  const [hasFile, setHasFile] = useState(false);
 
   useEffect(() => {
-    if (state.message) router.refresh();
-  }, [state.message, router]);
+    if (!state.message) return;
+    router.refresh();
+    // Imported: clear the picker so a second click can't re-import by accident.
+    formRef.current?.reset();
+    setHasFile(false);
+  }, [state, router]);
+
+  // Dispatch by hand (not `<form action>`) so React does not reset the form
+  // when the import is rejected — the chosen file stays for a retry.
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    startTransition(() => formAction(fd));
+  };
 
   return (
     <Modal
@@ -33,33 +39,38 @@ export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => 
       onClose={onClose}
       title="Import schedule (Excel)"
       description="Upload the exported .xlsx workbook. Rows with an id are updated; blank-id rows are created (nothing is deleted). Tip: use Export first to get a template with the right columns."
+      canClose={() => !pending}
+      dirty={hasFile}
+      confirmClose="The chosen file has not been imported yet."
     >
-      <form action={formAction} className="space-y-4">
+      <form ref={formRef} onSubmit={submit} className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="file">Excel file (.xlsx)</Label>
+          <Label htmlFor="import-file">Excel file (.xlsx)</Label>
           <Input
-            id="file"
+            id="import-file"
             name="file"
             type="file"
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={(e) => setHasFile(!!e.target.files?.length)}
           />
         </div>
         <p className="text-xs text-muted-foreground">
           Columns on the <span className="font-medium">Jobs</span> sheet: id, soNumber, customer, title, scope,
           jobType, jobStatus, hardware, priority, technician, project, startDate, durationDays, tentative.
-          Title is required; set the technician by name. The end date is computed from startDate + durationDays.
+          Title is required; put the person&apos;s name in the technician column. The end date is computed from
+          startDate + durationDays.
         </p>
 
-        {state.error ? (
-          <p role="alert" className="text-sm text-destructive">{state.error}</p>
-        ) : null}
-        {state.message ? (
-          <p role="status" className="text-sm text-foreground">{state.message}</p>
-        ) : null}
+        <FormMessage tone="error">{state.error}</FormMessage>
+        <FormMessage tone="success">{state.message}</FormMessage>
 
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onClose}>Close</Button>
-          <ImportButton />
+          <Button type="button" variant="outline" disabled={pending} onClick={onClose}>
+            Close
+          </Button>
+          <Button type="submit" disabled={pending}>
+            {pending ? "Importing…" : "Import"}
+          </Button>
         </div>
       </form>
     </Modal>

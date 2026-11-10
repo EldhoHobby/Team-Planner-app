@@ -16,6 +16,7 @@ import {
 } from "@/lib/auth/rate-limit";
 import { writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 import { HOME_PATH } from "@/lib/home";
+import { actionError } from "@/lib/log";
 import type { LoginState } from "./types";
 
 const LoginSchema = z.object({
@@ -40,6 +41,15 @@ export async function signIn(
   _prev: LoginState,
   formData: FormData,
 ): Promise<LoginState> {
+  try {
+    // A successful sign-in ends in redirect(), which actionError re-throws.
+    return await attemptSignIn(formData);
+  } catch (e) {
+    return actionError("auth.signIn", e, "Could not sign in right now. Please try again.");
+  }
+}
+
+async function attemptSignIn(formData: FormData): Promise<LoginState> {
   const ip = await clientIp();
   const ipKey = `login:ip:${ip}`;
 

@@ -7,6 +7,7 @@ import type { ResetState } from "./types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FormMessage } from "@/components/ui/form-message";
 
 const initialState: ResetState = {};
 
@@ -36,11 +37,7 @@ export function ResetForm({ token }: { token: string }) {
         <Input id="confirmPassword" name="confirmPassword" type="password" required minLength={8} autoComplete="new-password" />
       </div>
 
-      {state.error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {state.error}
-        </p>
-      ) : null}
+      <FormMessage>{state.error}</FormMessage>
 
       <SubmitButton />
     </form>

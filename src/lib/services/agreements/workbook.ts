@@ -27,6 +27,7 @@ import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { fmtEastern, todayYmd } from "@/lib/tz";
+import { isExpectedError, logError } from "@/lib/log";
 import {
   AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, OPEN_CUSTOMER_STATUSES, PROPOSAL_STATUS_LABELS, SA_AGREEMENTS, SOFTWARE_LABELS,
   parseAgreement, parseCustomerStatus, parseSoftware,
@@ -1506,7 +1507,10 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
       try {
         await op.run();
       } catch (e) {
-        summary.errors.push(`${op.label} — ${e instanceof Error ? e.message : String(e)}`);
+        // App errors (permission, validation, someone else saved first) are written for people;
+        // anything else is logged and summarised so database details never reach the screen.
+        logError(`agreements workbook import (${op.label})`, e);
+        summary.errors.push(`${op.label} — ${isExpectedError(e) && e instanceof Error ? e.message : "unexpected error (logged on the server)"}`);
       }
     }
     await audit(

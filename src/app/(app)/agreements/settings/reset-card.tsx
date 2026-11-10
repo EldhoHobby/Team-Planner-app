@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { FormMessage } from "@/components/ui/form-message";
 import { resetAgreementsAction } from "../actions";
 
 /** Admin-only: wipe all service-agreement data (customers, agreements, proposals, calls) to start over. */
@@ -56,7 +57,7 @@ export function ResetCard() {
           {pending ? "Deleting…" : "Delete all agreement data"}
         </Button>
       </form>
-      {msg && <p role={msg.error ? "alert" : "status"} className={msg.error ? "text-destructive" : "text-emerald-700 dark:text-emerald-400"}>{msg.text}</p>}
+      {msg && <FormMessage tone={msg.error ? "error" : "success"}>{msg.text}</FormMessage>}
     </section>
   );
 }

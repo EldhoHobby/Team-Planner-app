@@ -4,6 +4,7 @@ import { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { FormMessage } from "@/components/ui/form-message";
 import { cn } from "@/lib/utils";
 import { AGREEMENT_LABELS, SA_AGREEMENTS, type SaAgreement } from "@/lib/agreements/constants";
 import { FIXED_PRICE_AGREEMENTS, POLICY_DEFAULTS, POLICY_PRICE_HINTS } from "@/lib/agreements/pricing";
@@ -185,17 +186,18 @@ export function SettingsForm({ settings, canEdit }: { settings: SettingsRow; can
       </Section>
 
       {msg && (
-        <p role={msg.error ? "alert" : "status"} className={msg.error ? "text-destructive" : "text-emerald-700 dark:text-emerald-400"}>
+        <FormMessage tone={msg.error ? "error" : "success"}>
           {msg.text}
           {msg.stale && (
             <Button size="sm" variant="outline" className="ml-2 h-7" disabled={pending} onClick={reloadLatest}>
               Reload latest
             </Button>
           )}
-        </p>
-      )}      {canEdit && (
+        </FormMessage>
+      )}
+      {canEdit && (
         <div className="flex gap-2 border-t pt-4">
-          <Button disabled={pending} onClick={save}>Save settings</Button>
+          <Button disabled={pending} onClick={save}>{pending ? "Saving…" : "Save settings"}</Button>
           <Button variant="outline" disabled={pending} onClick={resetToPolicy}>Reset to policy values</Button>
         </div>
       )}

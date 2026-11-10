@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { useDraft } from "../use-draft";
 import {
   AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, SA_AGREEMENTS, SOFTWARE_LABELS, fmtMoney, fmtYmd, type SaAgreement,
 } from "@/lib/agreements/constants";
@@ -115,11 +116,16 @@ function Row({ cells, h }: { cells: Cell[]; h?: number }) {
   );
 }
 
+/**
+ * Edit callbacks may return a promise of "saved?" — on false the cell shows the saved value again.
+ * Inputs are never disabled while a save runs, so Tab moves on and typing keeps going.
+ */
+type Commit<T> = (v: T) => Promise<boolean> | void;
+
 export function ProposalSheet({
   d,
   printDate,
   editable = false,
-  pending = false,
   onPrice,
   onEndDate,
   onAdd,
@@ -129,13 +135,13 @@ export function ProposalSheet({
   d: ProposalDetail;
   printDate: string;
   editable?: boolean;
-  pending?: boolean;
-  onPrice?: (line: ProposalDetail["proposal"]["lines"][number], price: number) => void;
-  onEndDate?: (endDate: string | null) => void;
-  /** Add an agreement to the proposal (an empty yellow price cell's "+"). */
-  onAdd?: (agreement: SaAgreement, price: number) => void;
+  onPrice?: (line: ProposalDetail["proposal"]["lines"][number], price: number) => Promise<boolean> | void;
+  onEndDate?: Commit<string | null>;
+  /** Add an agreement (an empty yellow price cell's "+"); the parent asks for the price. `suggested` = its latest signed price. */
+  onAdd?: (agreement: SaAgreement, suggested: number | null) => void;
+  /** The "×" on a price cell; the parent confirms first. */
   onRemove?: (line: ProposalDetail["proposal"]["lines"][number]) => void;
-  onNotes?: (notes: string | null) => void;
+  onNotes?: Commit<string | null>;
 }) {
   const c = d.customer;
   const p = d.proposal;
@@ -231,7 +237,7 @@ export function ProposalSheet({
             <Row cells={[
               { v: "End date", b: true, align: "center", edge: true },
               {
-                v: editable && onEndDate ? <EndDateCell value={p.endDate} disabled={pending} onCommit={onEndDate} /> : mmddyy(p.endDate),
+                v: editable && onEndDate ? <EndDateCell value={p.endDate} onCommit={onEndDate} /> : mmddyy(p.endDate),
                 b: true, fill: INPUT, align: "center", edge: true, span: 2, pad0: editable,
               },
               hint("< one end date for the whole proposal", 5),
@@ -248,7 +254,7 @@ export function ProposalSheet({
                 const canEdit = editable && !!base && !!onPrice;
                 return {
                   v: canEdit
-                    ? <EditCell value={change} suffix="%" ariaLabel={`${AGREEMENT_LABELS[a]} increase %`} disabled={pending} onCommit={(v) => onPrice!(l, applyPct(base!, v))} />
+                    ? <EditCell value={change} suffix="%" ariaLabel={`${AGREEMENT_LABELS[a]} increase %`} onCommit={(v) => onPrice!(l, applyPct(base!, v))} />
                     : change === null ? "" : `${change.toFixed(1)}%`,
                   fill: INPUT, align: "center", edge: true, pad0: canEdit,
                 };
@@ -264,14 +270,13 @@ export function ProposalSheet({
                 if (editable && l && onPrice) {
                   v = (
                     <span className="group relative block">
-                      <EditCell value={l.price} prefix="$" ariaLabel={`${AGREEMENT_LABELS[a]} proposed price`} disabled={pending} onCommit={(n) => onPrice(l, n)} />
+                      <EditCell value={l.price} prefix="$" ariaLabel={`${AGREEMENT_LABELS[a]} proposed price`} onCommit={(n) => onPrice(l, n)} />
                       {onRemove && (
                         <button
                           type="button"
                           title={`Remove ${AGREEMENT_LABELS[a]}`}
-                          aria-label={`Remove ${AGREEMENT_LABELS[a]}`}
-                          disabled={pending}
-                          onClick={() => confirm(`Remove ${AGREEMENT_LABELS[a]} from this proposal?`) && onRemove(l)}
+                          aria-label={`Remove ${AGREEMENT_LABELS[a]} from the proposal`}
+                          onClick={() => onRemove(l)}
                           className="absolute -right-1 -top-2 hidden h-4 w-4 items-center justify-center rounded-full border border-neutral-400 bg-white text-[10px] leading-none text-neutral-500 hover:text-red-600 group-hover:flex group-focus-within:flex print:!hidden"
                         >
                           ×
@@ -286,14 +291,10 @@ export function ProposalSheet({
                       <button
                         type="button"
                         title={`Add ${AGREEMENT_LABELS[a]}`}
-                        aria-label={`Add ${AGREEMENT_LABELS[a]}`}
-                        disabled={pending}
+                        aria-label={`Add ${AGREEMENT_LABELS[a]} to the proposal`}
                         onClick={() => {
                           const suggest = Math.round(first?.prices[a] ?? 0);
-                          const raw = prompt(`Price for ${AGREEMENT_LABELS[a]} ($)`, suggest ? String(suggest) : "");
-                          if (raw === null) return;
-                          const n = Number(raw.replace(/[$,\s]/g, ""));
-                          if (Number.isFinite(n) && n >= 0) onAdd(a, n);
+                          onAdd(a, suggest || null);
                         }}
                         className="block w-full text-center text-neutral-500 hover:bg-black/5 hover:text-black print:!hidden"
                       >
@@ -311,7 +312,7 @@ export function ProposalSheet({
 
         {editable && onNotes ? (
           <>
-            <NotesBox value={p.notes} disabled={pending} onCommit={onNotes} />
+            <NotesBox value={p.notes} onCommit={onNotes} />
             {p.notes && <p className="mt-2 hidden whitespace-pre-wrap print:block"><b>Notes: </b>{p.notes}</p>}
           </>
         ) : (
@@ -326,34 +327,33 @@ export function ProposalSheet({
   );
 }
 
-/** Yellow editable cell (Enter / leaving the cell saves, Esc undoes). */
+/** Yellow editable cell (Enter / leaving the cell saves, Esc undoes). Never disabled: Tab keeps working while saving. */
 export function EditCell({
   value,
   prefix,
   suffix,
   ariaLabel,
-  disabled,
   onCommit,
 }: {
   value: number | null;
   prefix?: string;
   suffix?: string;
   ariaLabel: string;
-  disabled?: boolean;
-  onCommit: (v: number) => void;
+  onCommit: Commit<number>;
 }) {
   const show = value === null ? "" : String(Math.round(value * 10) / 10);
-  const [draft, setDraft] = useState(show);
+  const { draft, setDraft, editing, revert, settle } = useDraft(show);
   const [focused, setFocused] = useState(false);
-  useEffect(() => setDraft(show), [show]);
   // Shown like Excel ($11,435 / 4.0%) until you click in; editing shows the plain number.
   let display = draft;
   if (!focused && draft !== "" && Number.isFinite(Number(draft))) {
     display = prefix === "$" ? Number(draft).toLocaleString("en-US") : suffix === "%" ? Number(draft).toFixed(1) : draft;
   }
   const commit = () => {
+    const typed = editing.current;
+    editing.current = false;
     const v = Number(draft.replace(/[$,%\s]/g, ""));
-    if (draft.trim() !== "" && Number.isFinite(v) && String(v) !== show) onCommit(v);
+    if (typed && draft.trim() !== "" && Number.isFinite(v) && String(v) !== show) settle(onCommit(v));
     else setDraft(show);
   };
   return (
@@ -362,14 +362,13 @@ export function EditCell({
       <input
         aria-label={ariaLabel}
         value={display}
-        disabled={disabled}
         inputMode="decimal"
         onFocus={(e) => { setFocused(true); requestAnimationFrame(() => e.target.select()); }}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => { editing.current = true; setDraft(e.target.value); }}
         onBlur={() => { setFocused(false); commit(); }}
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          if (e.key === "Escape") setDraft(show);
+          if (e.key === "Escape") revert();
         }}
         className={cn("w-full min-w-0 bg-transparent text-black tabular-nums outline-none focus:ring-1 focus:ring-blue-500", suffix === "%" ? "text-center" : "text-right")}
       />
@@ -378,10 +377,13 @@ export function EditCell({
   );
 }
 
-function NotesBox({ value, disabled, onCommit }: { value: string | null; disabled?: boolean; onCommit: (v: string | null) => void }) {
-  const [draft, setDraft] = useState(value ?? "");
-  useEffect(() => setDraft(value ?? ""), [value]);
-  const dirty = (draft.trim() || null) !== (value ?? null);
+function NotesBox({ value, onCommit }: { value: string | null; onCommit: Commit<string | null> }) {
+  const { draft, setDraft, editing, settle } = useDraft(value ?? "");
+  // The text last sent, until the refreshed value arrives — so the hint doesn't flash "Unsaved" after leaving the box.
+  const [sent, setSent] = useState<string | null | undefined>(undefined);
+  useEffect(() => setSent(undefined), [value]);
+  const saved = sent !== undefined ? sent : value ?? null;
+  const dirty = (draft.trim() || null) !== saved;
   return (
     <label className="mt-3 block text-[10pt] print:hidden" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
       <span className="flex items-baseline justify-between gap-2">
@@ -391,9 +393,16 @@ function NotesBox({ value, disabled, onCommit }: { value: string | null; disable
       <textarea
         value={draft}
         rows={2}
-        disabled={disabled}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => dirty && onCommit(draft.trim() || null)}
+        onChange={(e) => { editing.current = true; setDraft(e.target.value); }}
+        onBlur={() => {
+          editing.current = false;
+          if (!dirty) return;
+          const next = draft.trim() || null;
+          setSent(next);
+          const r = onCommit(next);
+          if (r) void r.then((ok) => { if (!ok) setSent(undefined); });
+          settle(r);
+        }}
         className="mt-1 w-full p-1.5 text-black"
         style={{ background: INPUT, border: `1px solid ${EDGE}` }}
       />
@@ -401,18 +410,19 @@ function NotesBox({ value, disabled, onCommit }: { value: string | null; disable
   );
 }
 
-function EndDateCell({ value, disabled, onCommit }: { value: string | null; disabled?: boolean; onCommit: (v: string | null) => void }) {
-  const [draft, setDraft] = useState(value ?? "");
-  useEffect(() => setDraft(value ?? ""), [value]);
+function EndDateCell({ value, onCommit }: { value: string | null; onCommit: Commit<string | null> }) {
+  const { draft, setDraft, editing, settle } = useDraft(value ?? "");
   return (
     <>
       <input
         type="date"
         aria-label="Proposal end date"
         value={draft}
-        disabled={disabled}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => (draft || null) !== value && onCommit(draft || null)}
+        onChange={(e) => { editing.current = true; setDraft(e.target.value); }}
+        onBlur={() => {
+          editing.current = false;
+          if ((draft || null) !== value) settle(onCommit(draft || null));
+        }}
         className="w-full bg-transparent text-center font-bold text-black [color-scheme:light] print:!hidden"
       />
       <span className="hidden print:inline">{mmddyy(value)}</span>

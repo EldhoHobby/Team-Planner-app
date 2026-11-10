@@ -3,12 +3,17 @@
 import { useActionState, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Plus, X, Trash2, KeyRound, Archive, RotateCcw, Users2, Pencil } from "lucide-react";
+import { Trash2, KeyRound, Archive, RotateCcw, Users2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
+import { fmtDateOnly } from "@/lib/tz";
+import { useFlash } from "../use-flash";
 import {
   createDepartmentAction,
   renameDepartmentAction,
@@ -81,13 +86,9 @@ function handleOf(p: Person) {
   return p.email ? `${p.username} · ${p.email}` : p.username;
 }
 
-/** Inline failure line for a card (empty when there's nothing to report). */
-function ErrorLine({ error }: { error: string | null | undefined }) {
-  return error ? (
-    <p role="alert" className="text-sm text-destructive">
-      {error}
-    </p>
-  ) : null;
+/** "Nov 10, 2026 – Nov 12, 2026" (one date when start and end are the same day). */
+function fmtRange(start: string, end: string) {
+  return start === end ? fmtDateOnly(start) : `${fmtDateOnly(start)} – ${fmtDateOnly(end)}`;
 }
 
 export function PeopleClient({
@@ -110,15 +111,11 @@ export function PeopleClient({
   const viewerIsOwner = people.some((p) => selfIds.includes(p.id) && p.orgRole === "OWNER");
 
   return (
-    <main className="mx-auto max-w-4xl space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold">People &amp; Departments</h1>
-        <p className="text-sm text-muted-foreground">
-          One list for everyone. Each person signs in with their own username and
-          can be put on the schedule. Group people into departments; department
-          managers see their department&apos;s people on the dashboard.
-        </p>
-      </div>
+    <div className="mx-auto max-w-4xl space-y-6 p-6">
+      <PageHeader
+        title="People"
+        description="One list for everyone. Each person signs in with their own username and can be put on the schedule. Group people into departments; department managers see their department's people on the dashboard."
+      />
 
       <AddPersonCard departments={departments} workGroups={workGroups} />
       <PeopleTable
@@ -134,7 +131,7 @@ export function PeopleClient({
       {/* Always mounted so a "Restored…" note survives restoring the last archived person. */}
       <ArchivedCard people={archived} />
       <TimeOffCard people={active} timeOff={timeOff} byId={byId} />
-    </main>
+    </div>
   );
 }
 
@@ -154,6 +151,15 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
   const [state, formAction] = useActionState(createDepartmentAction, {} as { error?: string; success?: boolean });
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [flash, showFlash, clearFlash] = useFlash();
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (state.success) {
+      formRef.current?.reset();
+      setError(null);
+      showFlash("Department added.");
+    } else if (state.error) clearFlash();
+  }, [state, showFlash, clearFlash]);
 
   const rename = (id: string, input: HTMLInputElement, current: string) => {
     const name = input.value;
@@ -167,9 +173,11 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
       const res = await renameDepartmentAction({ id, name });
       if (res.error) {
         input.value = current; // snap back to the saved name
+        clearFlash();
         setError(res.error);
       } else {
         setError(null);
+        showFlash("Department renamed.");
         router.refresh();
       }
     });
@@ -178,9 +186,12 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
   const reparent = (id: string, parentTeamId: string | null) =>
     startTransition(async () => {
       const res = await setDepartmentParentAction({ id, parentTeamId });
-      if (res.error) setError(res.error);
-      else {
+      if (res.error) {
+        clearFlash();
+        setError(res.error);
+      } else {
         setError(null);
+        showFlash("Department moved.");
         router.refresh();
       }
     });
@@ -206,7 +217,7 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <form action={formAction} className="flex flex-wrap items-end gap-2">
+        <form ref={formRef} action={formAction} className="flex flex-wrap items-end gap-2">
           <div className="flex-1 space-y-1">
             <Label htmlFor="dept-name">New department</Label>
             <Input id="dept-name" name="name" required placeholder="e.g. Engineering" />
@@ -222,8 +233,9 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
           </div>
           <DeptSubmit />
         </form>
-        <ErrorLine error={state?.error} />
-        <ErrorLine error={error} />
+        <FormMessage>{state?.error}</FormMessage>
+        <FormMessage>{error}</FormMessage>
+        <FormMessage tone="success">{flash}</FormMessage>
         {departments.length === 0 ? (
           <p className="text-sm text-muted-foreground">No departments yet.</p>
         ) : (
@@ -283,14 +295,32 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
   const [state, formAction] = useActionState(createWorkGroupAction, {} as { error?: string; success?: boolean });
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [flash, showFlash, clearFlash] = useFlash();
+  const confirm = useConfirm();
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (state.success) {
+      formRef.current?.reset();
+      setError(null);
+      showFlash("Work group added.");
+    } else if (state.error) clearFlash();
+  }, [state, showFlash, clearFlash]);
 
-  const remove = (id: string, name: string) => {
-    if (!window.confirm(`Archive work group "${name}"?`)) return;
+  const remove = async (id: string, name: string) => {
+    const ok = await confirm({
+      title: `Archive the work group "${name}"?`,
+      message: "It is hidden from the work-group lists. The people in it and the jobs that use it are not changed.",
+      confirmLabel: "Archive",
+      tone: "danger",
+    });
+    if (!ok) return;
+    clearFlash();
     startTransition(async () => {
       const res = await archiveWorkGroupAction({ id });
       if (res.error) setError(res.error);
       else {
         setError(null);
+        showFlash(`Work group "${name}" archived.`);
         router.refresh();
       }
     });
@@ -309,7 +339,7 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <form action={formAction} className="flex flex-wrap items-end gap-2">
+        <form ref={formRef} action={formAction} className="flex flex-wrap items-end gap-2">
           <div className="flex-1 space-y-1">
             <Label htmlFor="wg-name">New work group</Label>
             <Input id="wg-name" name="name" required placeholder="e.g. Field Service" />
@@ -324,8 +354,9 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
           </div>
           <WorkGroupSubmit />
         </form>
-        <ErrorLine error={state?.error} />
-        <ErrorLine error={error} />
+        <FormMessage>{state?.error}</FormMessage>
+        <FormMessage>{error}</FormMessage>
+        <FormMessage tone="success">{flash}</FormMessage>
         {workGroups.length === 0 ? (
           <p className="text-sm text-muted-foreground">No work groups yet.</p>
         ) : (
@@ -339,7 +370,7 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
                 </span>
                 <button
                   type="button"
-                  onClick={() => remove(g.id, g.name)}
+                  onClick={() => void remove(g.id, g.name)}
                   className="rounded p-1 text-destructive hover:bg-destructive/10"
                   title="Archive"
                   aria-label={`Archive work group ${g.name}`}
@@ -371,6 +402,7 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
   const [wgIds, setWgIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [handoff, setHandoff] = useState<Handoff | null>(null);
+  const [added, setAdded] = useState<string | null>(null);
 
   const toggleWg = (id: string) =>
     setWgIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -378,6 +410,7 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
   const submit = () =>
     startTransition(async () => {
       setError(null);
+      setAdded(null);
       const res = await createPersonAction({
         name,
         username: username || undefined,
@@ -391,6 +424,11 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
       if (res.error) setError(res.error);
       else {
         setHandoff(res.link ? { link: res.link, username: res.username, expiresInHours: res.expiresInHours } : null);
+        setAdded(
+          res.link
+            ? `${name.trim()} was added. Hand them the set-password link below.`
+            : `${name.trim()} was added.`,
+        );
         setEmail("");
         setUsername("");
         setName("");
@@ -407,7 +445,7 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
             <CardTitle className="text-lg">Add a person</CardTitle>
             <CardDescription>Creates their sign-in and a set-password link to hand off.</CardDescription>
           </div>
-          <Button size="sm" variant="outline" onClick={() => { setOpen((v) => !v); setHandoff(null); setError(null); }}>
+          <Button size="sm" variant="outline" onClick={() => { setOpen((v) => !v); setHandoff(null); setError(null); setAdded(null); }}>
             {open ? "Cancel" : "Add person"}
           </Button>
         </div>
@@ -472,7 +510,8 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
             A unique board colour is generated automatically — admins can change it
             later from the person&apos;s row.
           </p>
-          <ErrorLine error={error} />
+          <FormMessage>{error}</FormMessage>
+          <FormMessage tone="success">{added}</FormMessage>
           <Button onClick={submit} disabled={pending || !name.trim()}>
             {pending ? "Adding…" : "Create person"}
           </Button>
@@ -509,11 +548,21 @@ function PeopleTable({
   const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
   const [editing, setEditing] = useState<Person | null>(null);
   const closeEdit = useCallback(() => setEditing(null), []);
+  const [managersFor, setManagersFor] = useState<Person | null>(null);
+  const [flash, showFlash, clearFlash] = useFlash();
 
-  /** Every row action reports here: show the refusal, or clear the last one on success. */
-  const report = useCallback((who: Person, res: { error?: string }) => {
-    setRowError(res.error ? { id: who.id, message: `${displayName(who)}: ${res.error}` } : null);
-  }, []);
+  /**
+   * Every row action reports here: show the refusal, or clear the last one on
+   * success (with a short success line when `done` says what happened).
+   */
+  const report = useCallback(
+    (who: Person, res: { error?: string }, done?: string) => {
+      setRowError(res.error ? { id: who.id, message: `${displayName(who)}: ${res.error}` } : null);
+      if (res.error) clearFlash();
+      else if (done) showFlash(done);
+    },
+    [showFlash, clearFlash],
+  );
 
   return (
     <Card>
@@ -525,6 +574,11 @@ function PeopleTable({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 p-0">
+        {flash ? (
+          <div className="px-6">
+            <FormMessage tone="success">{flash}</FormMessage>
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <thead>
@@ -546,12 +600,12 @@ function PeopleTable({
                   person={p}
                   departments={departments}
                   workGroups={workGroups}
-                  allPeople={allPeople}
                   isSelf={selfIds.includes(p.id)}
                   viewerIsOwner={viewerIsOwner}
                   error={rowError?.id === p.id ? rowError.message : null}
                   onResult={report}
                   onEdit={setEditing}
+                  onManagers={setManagersFor}
                 />
               ))}
             </tbody>
@@ -566,8 +620,23 @@ function PeopleTable({
           canEditSignIn={editing.orgRole !== "OWNER" || viewerIsOwner}
           onClose={closeEdit}
           onSaved={() => {
+            const who = editing;
             setEditing(null);
-            setRowError(null);
+            if (who) report(who, {}, `Saved changes to ${displayName(who)}.`);
+            router.refresh();
+          }}
+        />
+      ) : null}
+      {managersFor ? (
+        <ManagerModal
+          key={managersFor.id}
+          person={managersFor}
+          allPeople={allPeople}
+          onClose={() => setManagersFor(null)}
+          onSaved={() => {
+            const who = managersFor;
+            setManagersFor(null);
+            if (who) report(who, {}, `Updated the extra managers for ${displayName(who)}.`);
             router.refresh();
           }}
         />
@@ -580,35 +649,35 @@ function PersonRowUI({
   person,
   departments,
   workGroups,
-  allPeople,
   isSelf,
   viewerIsOwner,
   error,
   onResult,
   onEdit,
+  onManagers,
 }: {
   person: Person;
   departments: Dept[];
   workGroups: WorkGroupLite[];
-  allPeople: Person[];
   isSelf: boolean;
   viewerIsOwner: boolean;
   /** The last refusal for THIS person (rendered in a row right under theirs). */
   error: string | null;
-  onResult: (who: Person, res: { error?: string }) => void;
+  onResult: (who: Person, res: { error?: string }, done?: string) => void;
   onEdit: (p: Person) => void;
+  onManagers: (p: Person) => void;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [pending, startTransition] = useTransition();
   const [handoff, setHandoff] = useState<Handoff | null>(null);
-  const [mgrOpen, setMgrOpen] = useState(false);
   const isOwner = person.orgRole === "OWNER";
 
   /** Run an action, report its result to the card, refresh on success (a refusal snaps back). */
-  const run = (action: () => Promise<{ error?: string }>) =>
+  const run = (action: () => Promise<{ error?: string }>, done?: string) =>
     startTransition(async () => {
       const res = await action();
-      onResult(person, res);
+      onResult(person, res, done);
       router.refresh();
     });
 
@@ -680,9 +749,16 @@ function PersonRowUI({
       onResult(person, res);
       if (res.link) setHandoff({ link: res.link, username: res.username, expiresInHours: res.expiresInHours });
     });
-  const doArchive = () => {
-    if (!window.confirm(`Archive ${displayName(person)}? They can't sign in or be scheduled.`)) return;
-    run(() => archivePersonAction({ id: person.id }));
+  const doArchive = async () => {
+    const who = displayName(person);
+    const ok = await confirm({
+      title: `Archive ${who}?`,
+      message: `${who} will no longer be able to sign in and is hidden from the schedule. Their jobs and history are kept. You can restore them later.`,
+      confirmLabel: "Archive",
+      tone: "danger",
+    });
+    if (!ok) return;
+    run(() => archivePersonAction({ id: person.id }), `${who} was archived. Restore them from the Archived list below.`);
   };
 
   const archiveBlocked = isOwner
@@ -798,7 +874,7 @@ function PersonRowUI({
             </button>
             <button
               type="button"
-              onClick={() => setMgrOpen(true)}
+              onClick={() => onManagers(person)}
               title="Extra managers"
               aria-label={`Extra managers for ${displayName(person)}`}
               className={`${ICON_BTN} text-muted-foreground hover:bg-muted`}
@@ -825,7 +901,7 @@ function PersonRowUI({
               type="button"
               onClick={() => {
                 if (archiveBlocked) return;
-                doArchive();
+                void doArchive();
               }}
               aria-disabled={archiveBlocked ? true : undefined}
               aria-describedby={archiveBlocked ? archiveWhyId : undefined}
@@ -842,7 +918,7 @@ function PersonRowUI({
       {error ? (
         <tr className="border-b bg-destructive/5">
           <td colSpan={8} className="px-3 py-2">
-            <ErrorLine error={error} />
+            <FormMessage>{error}</FormMessage>
           </td>
         </tr>
       ) : null}
@@ -852,18 +928,6 @@ function PersonRowUI({
             <HandoffDetails handoff={handoff} forName={displayName(person)} />
           </td>
         </tr>
-      ) : null}
-      {mgrOpen ? (
-        <ManagerModal
-          person={person}
-          allPeople={allPeople}
-          onClose={() => setMgrOpen(false)}
-          onSaved={() => {
-            setMgrOpen(false);
-            onResult(person, {});
-            router.refresh();
-          }}
-        />
       ) : null}
     </>
   );
@@ -887,10 +951,7 @@ function EditPersonModal({
   const [username, setUsername] = useState(person.username);
   const [email, setEmail] = useState(person.email ?? "");
   const [error, setError] = useState<string | null>(null);
-  // While the save is in flight the modal stays open, so a failure is never lost.
-  const close = () => {
-    if (!pending) onClose();
-  };
+  const dirty = name !== (person.name ?? "") || username !== person.username || email !== (person.email ?? "");
 
   const submit = () =>
     startTransition(async () => {
@@ -907,7 +968,16 @@ function EditPersonModal({
   const ownerOnly = "Only the Owner can change the Owner's username or email (both are used to sign in).";
 
   return (
-    <Modal open onClose={close} title={`Edit ${displayName(person)}`} description="Correct the person's name, sign-in username and contact email.">
+    // While the save is in flight the dialog stays open, so a failure is never lost.
+    <Modal
+      open
+      onClose={onClose}
+      title={`Edit ${displayName(person)}`}
+      description="Correct the person's name, sign-in username and contact email."
+      canClose={() => !pending}
+      dirty={dirty}
+      confirmClose={`Your changes to ${displayName(person)} have not been saved.`}
+    >
       <form
         className="space-y-4"
         onSubmit={(e) => {
@@ -930,8 +1000,9 @@ function EditPersonModal({
             required
             autoComplete="off"
             className="font-mono"
+            aria-describedby="edit-person-username-hint"
           />
-          <p className="text-xs text-muted-foreground">
+          <p id="edit-person-username-hint" className="text-xs text-muted-foreground">
             {canEditSignIn
               ? "What they type to sign in: 3–32 characters, a–z, 0–9, dots, dashes, underscores. Changing it doesn't sign them out — just tell them the new one."
               : ownerOnly}
@@ -949,9 +1020,9 @@ function EditPersonModal({
             placeholder="person@company.com"
           />
         </div>
-        <ErrorLine error={error} />
+        <FormMessage>{error}</FormMessage>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={close} disabled={pending}>
+          <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
           <Button type="submit" disabled={pending || !name.trim() || (canEditSignIn && !username.trim())}>
@@ -963,7 +1034,22 @@ function EditPersonModal({
   );
 }
 
-function ManagerModal({ person, allPeople, onClose, onSaved }: { person: Person; allPeople: Person[]; onClose: () => void; onSaved: () => void }) {
+function sameIds(a: string[], b: string[]) {
+  return a.length === b.length && a.every((x) => b.includes(x));
+}
+
+/** Extra managers (ManagerLink) for one person — anyone besides their department manager. */
+function ManagerModal({
+  person,
+  allPeople,
+  onClose,
+  onSaved,
+}: {
+  person: Person;
+  allPeople: Person[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const [pending, startTransition] = useTransition();
   const [selected, setSelected] = useState<string[]>(person.managerIds);
   const [error, setError] = useState<string | null>(null);
@@ -973,57 +1059,50 @@ function ManagerModal({ person, allPeople, onClose, onSaved }: { person: Person;
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const save = () =>
     startTransition(async () => {
+      setError(null);
       const res = await setManagerLinksAction({ memberId: person.id, managerIds: selected });
       if (res.error) setError(res.error);
       else onSaved();
     });
 
-  // Escape closes, like the shared Modal.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const headingId = `mgr-modal-title-${person.id}`;
-
   return (
-    <tr>
-      <td colSpan={8}>
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={headingId}
-            className="w-full max-w-sm rounded-xl border bg-background shadow-lg"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b px-4 py-3">
-              <h3 id={headingId} className="text-sm font-semibold">Extra managers for {displayName(person)}</h3>
-              <button type="button" onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
-            </div>
-            <div className="max-h-72 space-y-1 overflow-y-auto p-4">
-              <p className="mb-2 text-xs text-muted-foreground">
-                Their department manager already sees them. Add anyone else who should
-                see them on the dashboard.
-              </p>
-              {candidates.map((c) => (
-                <label key={c.id} className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted">
-                  <input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} className="h-4 w-4 accent-primary" />
-                  {displayName(c)}
-                </label>
-              ))}
-            </div>
-            <div className="space-y-2 border-t p-3">
-              <ErrorLine error={error} />
-              <Button onClick={save} disabled={pending} className="w-full">{pending ? "Saving…" : "Save"}</Button>
-            </div>
-          </div>
+    <Modal
+      open
+      onClose={onClose}
+      size="sm"
+      title={`Extra managers for ${displayName(person)}`}
+      description="Their department manager already sees them. Add anyone else who should see them on the dashboard."
+      canClose={() => !pending}
+      dirty={!sameIds(selected, person.managerIds)}
+      confirmClose={`Your changes to ${displayName(person)}'s extra managers have not been saved.`}
+    >
+      <fieldset className="max-h-72 space-y-1 overflow-y-auto" disabled={pending}>
+        <legend className="sr-only">Extra managers</legend>
+        {candidates.length === 0 ? <p className="text-sm text-muted-foreground">There is no one else to pick yet.</p> : null}
+        {candidates.map((c) => (
+          <label key={c.id} className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted">
+            <input
+              type="checkbox"
+              checked={selected.includes(c.id)}
+              onChange={() => toggle(c.id)}
+              className="h-4 w-4 accent-primary"
+            />
+            {displayName(c)}
+          </label>
+        ))}
+      </fieldset>
+      <div className="mt-4 space-y-2">
+        <FormMessage>{error}</FormMessage>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={save} disabled={pending}>
+            {pending ? "Saving…" : "Save"}
+          </Button>
         </div>
-      </td>
-    </tr>
+      </div>
+    </Modal>
   );
 }
 
@@ -1032,8 +1111,10 @@ function ArchivedCard({ people }: { people: Person[] }) {
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [flash, showFlash, clearFlash] = useFlash();
   const restore = (p: Person) =>
     startTransition(async () => {
+      clearFlash();
       const res = await restorePersonAction({ id: p.id });
       if (res.error) {
         setError(`${displayName(p)}: ${res.error}`);
@@ -1041,16 +1122,17 @@ function ArchivedCard({ people }: { people: Person[] }) {
       } else {
         setError(null);
         // Restore keeps `schedulable` as it was; people archived by older versions
-        // came back off the schedule, so say so.
-        setNote(
-          p.schedulable
-            ? null
-            : `Restored. ${displayName(p)} is not on the schedule — tick "On schedule" to add them.`,
-        );
+        // came back off the schedule, so say so (this note stays until the next restore).
+        if (p.schedulable) {
+          setNote(null);
+          showFlash(`${displayName(p)} was restored and can sign in again.`);
+        } else {
+          setNote(`${displayName(p)} was restored but is not on the schedule — tick "On schedule" in their row to add them.`);
+        }
         router.refresh();
       }
     });
-  if (people.length === 0 && !note && !error) return null;
+  if (people.length === 0 && !note && !error && !flash) return null;
   return (
     <Card>
       <CardHeader>
@@ -1058,12 +1140,9 @@ function ArchivedCard({ people }: { people: Person[] }) {
         <CardDescription>Hidden from the board and can&apos;t sign in. Restore to reactivate.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        <ErrorLine error={error} />
-        {note ? (
-          <p role="status" className="text-sm text-muted-foreground">
-            {note}
-          </p>
-        ) : null}
+        <FormMessage>{error}</FormMessage>
+        <FormMessage tone="success">{flash}</FormMessage>
+        <FormMessage tone="success">{note}</FormMessage>
         {people.length === 0 ? <p className="text-sm text-muted-foreground">No archived people.</p> : null}
         <ul className="divide-y">
           {people.map((p) => (
@@ -1102,18 +1181,35 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
   const [state, formAction] = useActionState(addTimeOffAction, {} as { error?: string; success?: boolean });
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [flash, showFlash, clearFlash] = useFlash();
+  const confirm = useConfirm();
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (state.success) {
+      formRef.current?.reset();
+      setError(null);
+      showFlash("Time off added.");
+    } else if (state.error) clearFlash();
+  }, [state, showFlash, clearFlash]);
   const nameOf = (t: TimeOff) => {
     const p = byId.get(t.technicianId);
     return p ? displayName(p) : "—";
   };
-  // TODO(shared confirm dialog): replace window.confirm when the shared dialog lands.
-  const remove = (t: TimeOff) => {
-    if (!window.confirm(`Remove time off for ${nameOf(t)} (${t.startDate} → ${t.endDate})?`)) return;
+  const remove = async (t: TimeOff) => {
+    const ok = await confirm({
+      title: `Remove time off for ${nameOf(t)}?`,
+      message: `${fmtRange(t.startDate, t.endDate)}${t.reason ? ` · ${t.reason}` : ""}. They become available on the schedule again for these days.`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (!ok) return;
+    clearFlash();
     startTransition(async () => {
       const res = await deleteTimeOffAction({ id: t.id });
       if (res.error) setError(res.error);
       else {
         setError(null);
+        showFlash(`Removed the time off for ${nameOf(t)}.`);
         router.refresh();
       }
     });
@@ -1126,7 +1222,7 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
         <CardDescription>Blocks the person on the schedule board.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <form action={formAction} className="flex flex-wrap items-end gap-2">
+        <form ref={formRef} action={formAction} className="flex flex-wrap items-end gap-2">
           <div className="space-y-1">
             <Label htmlFor="to-person">Person</Label>
             <select id="to-person" name="technicianId" required className={`${SELECT} w-40`}>
@@ -1148,8 +1244,9 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
           </div>
           <TimeOffSubmit />
         </form>
-        <ErrorLine error={state?.error} />
-        <ErrorLine error={error} />
+        <FormMessage>{state?.error}</FormMessage>
+        <FormMessage>{error}</FormMessage>
+        <FormMessage tone="success">{flash}</FormMessage>
         {timeOff.length === 0 ? (
           <p className="text-sm text-muted-foreground">No time off scheduled.</p>
         ) : (
@@ -1158,14 +1255,14 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
               <li key={t.id} className="flex items-center justify-between py-2 text-sm">
                 <span>
                   <span className="font-medium">{nameOf(t)}</span>
-                  <span className="ml-2 text-muted-foreground">{t.startDate} → {t.endDate}{t.reason ? ` · ${t.reason}` : ""}</span>
+                  <span className="ml-2 text-muted-foreground">{fmtRange(t.startDate, t.endDate)}{t.reason ? ` · ${t.reason}` : ""}</span>
                 </span>
                 <button
                   type="button"
-                  onClick={() => remove(t)}
+                  onClick={() => void remove(t)}
                   className="rounded p-1 text-destructive hover:bg-destructive/10"
                   title="Remove"
-                  aria-label={`Remove time off for ${nameOf(t)}, ${t.startDate} to ${t.endDate}`}
+                  aria-label={`Remove time off for ${nameOf(t)}, ${fmtRange(t.startDate, t.endDate)}`}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>

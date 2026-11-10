@@ -3,7 +3,7 @@
 import { AlertTriangle } from "lucide-react";
 import { startOfWeekSunday, addDays, toUtcMidnight, MS_PER_DAY } from "@/lib/scheduling/calc";
 import { dotStyle } from "@/lib/scheduling/colors";
-import { fmtEastern } from "@/lib/tz";
+import { fmtDateOnly, fmtEastern } from "@/lib/tz";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 
 // Purpose-built PRINT layout for the schedule (hidden on screen; the
@@ -127,8 +127,7 @@ export function PrintSheet({
 function JobSummary({ jobs, firstDayYmd, conflicts }: { jobs: JobRow[]; firstDayYmd: string; conflicts: Set<string> }) {
   if (!jobs.length) return null;
 
-  const fmtD = (s: string) =>
-    parseYmd(s).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+  const fmtD = (s: string) => fmtDateOnly(s, { month: "short", day: "numeric" });
   // "(x days)" segment. ONLY an explicit 0 is the "days TBD" placeholder; a
   // null/blank duration follows the app-wide default of 1 day.
   const daysLabel = (d: number | null | undefined) =>
@@ -166,7 +165,7 @@ function JobSummary({ jobs, firstDayYmd, conflicts }: { jobs: JobRow[]; firstDay
     // the space left under the calendar, the browser moves it to a fresh page.
     <div className="mt-2 break-inside-avoid">
       <p className="mb-0.5 border-b border-black text-[11px] font-bold">
-        JOB SUMMARY — {nScheduled} scheduled, {nTentative} tentative scheduled, {nNone} nonscheduled
+        JOB SUMMARY — {nScheduled} scheduled, {nTentative} tentative, {nNone} unscheduled
       </p>
       <div className="columns-2 gap-4">
         {ordered.map(([so, list]) => {
@@ -194,7 +193,7 @@ function JobSummary({ jobs, firstDayYmd, conflicts }: { jobs: JobRow[]; firstDay
                   <span className="font-semibold">{j.title}</span>
                   <span className="text-neutral-600">
                     {j.technicianName ? ` — ${j.technicianName}` : " — Unassigned"}
-                    {j.tentative ? " (tent.)" : ""}
+                    {j.tentative ? " (tentative)" : ""}
                   </span>
                   {conflicts.has(j.id) ? (
                     <AlertTriangle className="ml-1 inline h-2.5 w-2.5 align-middle text-red-600" aria-label="Conflict" />
@@ -246,7 +245,7 @@ function WeekGrid({
               ) : null}
               <span className="font-semibold">{j.title}</span>
               {j.soNumber ? <span className="text-neutral-600"> {j.soNumber}</span> : null}
-              {j.tentative ? <span className="text-neutral-500"> (tent.)</span> : null}
+              {j.tentative ? <span className="text-neutral-500"> (tentative)</span> : null}
               {j.durationDays === 0 ? (
                 <span className="text-neutral-500"> TBD</span>
               ) : (j.durationDays ?? 1) > 1 ? (
@@ -267,7 +266,7 @@ function WeekGrid({
     <table className="w-full table-fixed border-collapse">
       <thead>
         <tr>
-          <th className="w-[9%] border border-neutral-400 bg-neutral-200 p-0.5 text-left text-[9px]">Technician</th>
+          <th className="w-[9%] border border-neutral-400 bg-neutral-200 p-0.5 text-left text-[9px]">Person</th>
           {weekDays.map((d, i) => {
             const holiday = holidays.get(ymd(d));
             return (
@@ -418,7 +417,7 @@ function MonthGrid({
                   {job.soNumber ? `${job.soNumber} · ` : ""}
                   <span className="font-bold">{job.title}</span>
                   {` — ${job.technicianId ? techName.get(job.technicianId) ?? "?" : "Unassigned"}`}
-                  {job.tentative ? " (tent.)" : ""}
+                  {job.tentative ? " (tentative)" : ""}
                   {job.durationDays === 0 ? " · TBD" : ""}
                   {endsAfter ? " ▸" : ""}
                 </div>

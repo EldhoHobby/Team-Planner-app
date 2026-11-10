@@ -4,12 +4,15 @@ import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
 import { cn } from "@/lib/utils";
 import { fmtDate, fmtMoney } from "@/lib/agreements/constants";
 import type { PipelineCard, PipelineColumn } from "@/lib/services/agreements/dashboard";
 import { createProposalAction, proposalTransitionAction } from "../actions";
 import { CloseProposalDialog } from "../close-proposal-dialog";
 import { CustomerStatusBadge } from "../badges";
+import { SIGN_TITLE, signMessage } from "../sign-message";
 
 const COLUMNS: { id: PipelineColumn; title: string; hint: string }[] = [
   { id: "DUE", title: "Due", hint: "Ending soon or expired, no proposal" },
@@ -42,6 +45,7 @@ function daysSince(from: string | null, today: string): number | null {
 
 export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]; canEdit: boolean; today: string }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
   const [q, setQ] = useState("");
   const [dragKey, setDragKey] = useState<string | null>(null);
@@ -61,10 +65,17 @@ export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]
   const drag = cards.find((c) => c.key === dragKey) ?? null;
   const canDrop = (to: PipelineColumn) => !!drag && canEdit && (MOVES[drag.column] ?? []).includes(to);
 
-  const move = (card: PipelineCard, to: PipelineColumn) => {
+  const move = async (card: PipelineCard, to: PipelineColumn) => {
     setError(null);
     if (to === "CLOSED") return setClosing(card);
-    if (to === "SIGNED" && !confirm(`Mark ${card.name}'s ${card.year} proposal (${fmtMoney(card.value)}) as signed today?`)) return;
+    if (to === "SIGNED") {
+      const ok = await confirm({
+        title: SIGN_TITLE,
+        message: signMessage({ customer: card.name, year: card.year, total: card.value, agreements: card.agreements }),
+        confirmLabel: "Mark signed",
+      });
+      if (!ok) return;
+    }
     setMoved((m) => ({ ...m, [card.key]: to }));
     start(async () => {
       const r =
@@ -88,13 +99,15 @@ export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name or SO #" className="w-64" />
-        <p className="text-xs text-muted-foreground">
-          {canEdit ? "Use the button on a card for its next step, or drag it to another column (drag to Declined to close it)." : "View only."}
-        </p>
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or SO #" className="w-64" aria-label="Filter by customer or SO #" />
+        {canEdit && (
+          <p className="text-xs text-muted-foreground">
+            Use the button on a card for its next step, or drag it to another column (drag to Declined / withdrawn to close it).
+          </p>
+        )}
         {pending && <span className="text-xs text-muted-foreground">Saving…</span>}
       </div>
-      {error && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+      <FormMessage tone="error" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2">{error}</FormMessage>
 
       <div className="grid auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-3 overflow-x-auto pb-2">
         {COLUMNS.map((col) => {

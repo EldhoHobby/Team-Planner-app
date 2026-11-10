@@ -1,8 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireScope } from "@/lib/auth/current-user";
 import { ingestOnce, emailIngestEnabled, type IngestResult } from "@/lib/email/ingest";
+import { writeAudit } from "@/lib/services/audit";
+import { actionError } from "@/lib/log";
 
 export type CheckMailState = { result?: IngestResult; error?: string };
 
@@ -18,11 +20,19 @@ export async function checkMailNowAction(): Promise<CheckMailState> {
       };
     }
     const result = await ingestOnce();
+    // Same audit entry as the POST /api/email-ingest trigger.
+    await writeAudit(scope, {
+      entity: "email",
+      entityId: "inbox",
+      action: "check-now",
+      summary: `Triggered "Check mail now": ${result.processed} processed, ${result.created} task(s) created${
+        result.errors.length ? `, ${result.errors.length} error(s)` : ""
+      }.`,
+    });
     revalidatePath("/settings/email");
     revalidatePath("/dashboard");
     return { result };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Mail check failed." };
+    return actionError("checkMailNow", e, "The mail check failed. Please try again.");
   }
 }

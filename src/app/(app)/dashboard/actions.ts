@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireScope } from "@/lib/auth/current-user";
 import {
   createTechTask,
   updateTechTask,
@@ -14,9 +14,10 @@ import {
 } from "@/lib/services/tech-tasks";
 import type { TechTaskState, NoteRow } from "@/lib/services/tech-tasks";
 import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
+import { actionError } from "@/lib/log";
 
 type State = { error?: string; success?: boolean };
-/** `stale`: someone else saved first — the UI should reload, not retry blindly. */
+/** `stale`: someone else saved first — nothing was written; the UI shows the latest values. */
 type UpdateState = State & { stale?: boolean; version?: number };
 type ThreadState = { error?: string; notes?: NoteRow[] };
 type NoteState = { error?: string; note?: NoteRow };
@@ -40,8 +41,7 @@ export async function createTechTaskAction(input: {
     revalidatePath("/dashboard");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not create the task." };
+    return actionError("createTechTask", e, "Could not create the task. Please try again.");
   }
 }
 
@@ -72,8 +72,7 @@ export async function updateTechTaskAction(input: {
       revalidatePath("/dashboard");
       return { error: e.message, stale: true };
     }
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the task." };
+    return actionError("updateTechTask", e, "Could not update the task. Please try again.");
   }
 }
 
@@ -84,8 +83,7 @@ export async function setTechTaskStateAction(input: { id: string; state: TechTas
     revalidatePath("/dashboard");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the task." };
+    return actionError("setTechTaskState", e, "Could not update the task. Please try again.");
   }
 }
 
@@ -96,8 +94,7 @@ export async function getTaskThreadAction(input: { taskId: string }): Promise<Th
   try {
     return { notes: await getTaskThread(scope, input.taskId) };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not load the discussion." };
+    return actionError("getTaskThread", e, "Could not load the discussion.");
   }
 }
 
@@ -108,8 +105,7 @@ export async function addCommentAction(input: { taskId: string; body: string }):
     revalidatePath("/dashboard"); // refreshes the 💬 counts
     return { note };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not post the comment." };
+    return actionError("addTaskComment", e, "Could not post the comment. Please try again.");
   }
 }
 
@@ -118,8 +114,7 @@ export async function editCommentAction(input: { noteId: string; body: string })
   try {
     return { note: await editTaskComment(scope, input.noteId, input.body) };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not edit the comment." };
+    return actionError("editTaskComment", e, "Could not edit the comment. Please try again.");
   }
 }
 
@@ -130,8 +125,7 @@ export async function deleteCommentAction(input: { noteId: string }): Promise<St
     revalidatePath("/dashboard");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the comment." };
+    return actionError("deleteTaskComment", e, "Could not delete the comment. Please try again.");
   }
 }
 
@@ -142,7 +136,6 @@ export async function deleteTechTaskAction(input: { id: string }): Promise<State
     revalidatePath("/dashboard");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the task." };
+    return actionError("deleteTechTask", e, "Could not delete the task. Please try again.");
   }
 }

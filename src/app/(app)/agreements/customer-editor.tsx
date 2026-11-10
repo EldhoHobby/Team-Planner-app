@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { FormMessage } from "@/components/ui/form-message";
 import { cn } from "@/lib/utils";
 import {
   CUSTOMER_STATUSES, CUSTOMER_STATUS_LABELS, SOFTWARES, SOFTWARE_LABELS, type SaCustomerStatus, type SaSoftware,
@@ -14,12 +15,8 @@ import { saveCustomerAction } from "./actions";
 
 const SELECT = "h-9 w-full rounded-md border bg-background px-2 text-sm";
 
-/** Add or edit a customer. A new customer opens on its page after saving. */
-export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail["customer"] | null; onClose: () => void }) {
-  const router = useRouter();
-  const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [f, setF] = useState({
+function initialForm(customer: CustomerDetail["customer"] | null) {
+  return {
     name: customer?.name ?? "",
     soNumber: customer?.soNumber ?? "",
     soConfirmed: customer?.soConfirmed ?? true,
@@ -33,7 +30,18 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
     lastServerSo: customer?.lastServerSo ?? "",
     qwebLicenses: customer?.qwebLicenses?.toString() ?? "",
     notes: customer?.notes ?? "",
-  });
+  };
+}
+
+/** Add or edit a customer. A new customer opens on its page after saving. */
+export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail["customer"] | null; onClose: () => void }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [f, setF] = useState(() => initialForm(customer));
+  // The form as it opened — anything different is unsaved typing worth asking about before closing.
+  const [initial] = useState(() => initialForm(customer));
+  const dirty = (Object.keys(f) as (keyof typeof f)[]).some((k) => f[k] !== initial[k]);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((p) => ({ ...p, [k]: e.target.value }));
 
   const save = () =>
@@ -71,7 +79,15 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
   );
 
   return (
-    <Modal open onClose={onClose} title={customer ? `Edit ${customer.name}` : "Add customer"} className="max-w-2xl">
+    <Modal
+      open
+      onClose={onClose}
+      title={customer ? `Edit ${customer.name}` : "Add customer"}
+      size="lg"
+      canClose={() => !pending}
+      dirty={dirty}
+      confirmClose={customer ? "Your changes to this customer have not been saved." : "This customer has not been added yet."}
+    >
       <div className="grid grid-cols-2 gap-3">
         {text("name", "Customer name", "col-span-2")}
         <div className="space-y-1">
@@ -106,10 +122,10 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
           <textarea value={f.notes} onChange={set("notes")} rows={3} className="w-full rounded-md border bg-background p-2 text-sm" />
         </label>
       </div>
-      {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
+      <FormMessage tone="error" className="mt-3">{error}</FormMessage>
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button disabled={pending} onClick={save}>{customer ? "Save" : "Add customer"}</Button>
+        <Button variant="outline" disabled={pending} onClick={onClose}>Cancel</Button>
+        <Button disabled={pending} onClick={save}>{pending ? "Saving…" : customer ? "Save" : "Add customer"}</Button>
       </div>
     </Modal>
   );

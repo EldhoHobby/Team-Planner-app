@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { History, Search } from "lucide-react";
 import { fmtEastern } from "@/lib/tz";
+import { PageHeader } from "@/components/ui/page-header";
 
 type Row = {
   id: string;
@@ -87,20 +88,22 @@ export function ActivityClient({
 
   return (
     <div className="mx-auto w-full max-w-3xl p-5">
-      <div className="mb-1 flex items-center gap-2">
-        <History className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">My activity</h1>
-      </div>
-      <p className="mb-4 text-sm text-muted-foreground">
-        Everything you&apos;ve done in the last {retentionDays} days (most recent first).{" "}
-        {showPages ? "Including the pages you opened." : "Page views are hidden."}{" "}
-        <Link
-          href={showPages ? "/activity" : "/activity?pages=1"}
-          className="font-medium text-foreground underline underline-offset-2"
-        >
-          {showPages ? "Hide page views" : "Show page views"}
-        </Link>
-      </p>
+      <PageHeader
+        icon={<History className="h-5 w-5 text-muted-foreground" />}
+        title="Activity"
+        description={
+          <>
+            Everything you&apos;ve done in the last {retentionDays} days (most recent first).{" "}
+            {showPages ? "Including the pages you opened." : "Page views are hidden."}{" "}
+            <Link
+              href={showPages ? "/activity" : "/activity?pages=1"}
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              {showPages ? "Hide page views" : "Show page views"}
+            </Link>
+          </>
+        }
+      />
 
       <div className="relative mb-4">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

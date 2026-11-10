@@ -2,8 +2,10 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Download, Upload } from "lucide-react";
+import { Download, Loader2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
 import { fmtEastern } from "@/lib/tz";
 import { importWorkbookAction } from "../actions";
 import { WORKBOOK_MAX_BYTES, type WorkbookImportSummary } from "../types";
@@ -11,20 +13,63 @@ import { WORKBOOK_MAX_BYTES, type WorkbookImportSummary } from "../types";
 /** Editors: download the monthly workbook, and bring an edited copy back (preview → apply). */
 export function WorkbookCard() {
   const router = useRouter();
+  const confirm = useConfirm();
   const fileRef = useRef<HTMLInputElement>(null);
   const [pending, start] = useTransition();
   const [summary, setSummary] = useState<WorkbookImportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
-  const run = (apply: boolean) =>
-    start(async () => {
-      setError(null);
-      const file = fileRef.current?.files?.[0];
-      if (!file) return setError("Choose the exported workbook first.");
-      if (file.size > WORKBOOK_MAX_BYTES) {
-        return setError(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB — the most the app can take in one upload is 9.5 MB.`);
+  // Download with fetch → blob, so a failure shows here instead of opening a plain-text error page.
+  const exportWorkbook = async () => {
+    setExportError(null);
+    setExporting(true);
+    try {
+      const res = await fetch("/api/agreements/export", { cache: "no-store" });
+      if (!res.ok) {
+        const text = (await res.text().catch(() => "")).trim();
+        setExportError(text && text.length < 300 ? text : "Couldn't build the workbook — please try again.");
+        return;
       }
-      if (apply && !confirm("Apply the workbook's changes to the live data? Rows that changed in the app since the export are skipped.")) return;
+      // A sign-in page (session ended → redirected) comes back as HTML with status 200.
+      if ((res.headers.get("Content-Type") ?? "").includes("text/html")) {
+        setExportError("Your session has ended — reload the page and sign in again.");
+        return;
+      }
+      const blob = await res.blob();
+      const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "Service agreements.xlsm";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch {
+      setExportError("Couldn't download the workbook — check your connection and try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const run = async (apply: boolean) => {
+    setError(null);
+    const file = fileRef.current?.files?.[0];
+    if (!file) return setError("Choose the exported workbook first.");
+    if (file.size > WORKBOOK_MAX_BYTES) {
+      return setError(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB — the most the app can take in one upload is 9.5 MB.`);
+    }
+    if (apply) {
+      const ok = await confirm({
+        title: "Apply the workbook's changes?",
+        message: "The changes listed in the preview are written to the live data. Rows that changed in the app since the export are skipped.",
+        confirmLabel: "Apply changes",
+      });
+      if (!ok) return;
+    }
+    start(async () => {
       const fd = new FormData();
       fd.set("file", file);
       fd.set("apply", String(apply));
@@ -33,6 +78,7 @@ export function WorkbookCard() {
       else setSummary(r.summary ?? null);
       if (apply) router.refresh();
     });
+  };
 
   const total = summary ? Object.values(summary.sheets).reduce((a, c) => a + c.created + c.updated + c.deleted, 0) : 0;
   const failed = summary?.errors.length ?? 0;
@@ -53,19 +99,22 @@ export function WorkbookCard() {
       <div>
         <h2 className="font-semibold">Monthly workbook</h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          One Excel file with every view — Dashboard, Pipeline, Customers, Agreements, Proposals, Calls &amp; repairs, the last
-          31 days of Activity — plus a sheet for each Active, Pending and Expired – still waiting customer. It&apos;s a
+          One Excel file with every view — Dashboard, Pipeline, Customers, Pricing (every customer&apos;s agreements and proposed
+          prices, by year), Proposals, Calls (calls &amp; repairs), the last 31 days of Activity — plus a sheet for each Active,
+          Pending and Expired – still waiting customer. It&apos;s a
           macro-enabled file (.xlsm) that works like the Central workbook: click Enable Content when Excel asks (if Excel
           says macros are blocked, right-click the file → Properties → Unblock). Edit it and bring the file back here to
           update the app.
         </p>
       </div>
 
-      <Button asChild>
-        <a href="/api/agreements/export" download>
-          <Download className="h-4 w-4" /> Export workbook
-        </a>
-      </Button>
+      <div className="space-y-1">
+        <Button disabled={exporting} onClick={exportWorkbook}>
+          {exporting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Download className="h-4 w-4" aria-hidden />}
+          {exporting ? "Building workbook…" : "Export workbook"}
+        </Button>
+        <FormMessage tone="error">{exportError}</FormMessage>
+      </div>
 
       <div className="space-y-2 border-t pt-3">
         <p className="text-xs font-medium">Bring changes back</p>
@@ -85,7 +134,7 @@ export function WorkbookCard() {
       </div>
 
       {pending && <p className="text-xs text-muted-foreground">Reading the workbook…</p>}
-      {error && <p role="alert" className="text-destructive">{error}</p>}
+      <FormMessage tone="error">{error}</FormMessage>
       {summary && (
         <div className="space-y-2 rounded-md bg-muted/50 p-3">
           <p className={failed ? "font-medium text-destructive" : "font-medium"}>

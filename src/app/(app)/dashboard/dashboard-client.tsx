@@ -10,13 +10,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
-import { daysFromToday, fmtEastern } from "@/lib/tz";
-import {
-  createTechTaskAction,
-  updateTechTaskAction,
-  setTechTaskStateAction,
-  deleteTechTaskAction,
-} from "./actions";
+import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
+import { daysFromToday, fmtDateOnly, fmtEastern } from "@/lib/tz";
+import { createTechTaskAction, updateTechTaskAction, deleteTechTaskAction } from "./actions";
 import type {
   DashboardData,
   JobRow,
@@ -69,14 +68,48 @@ const CELL_INPUT =
   "w-full rounded border border-transparent bg-transparent px-1.5 py-1 text-sm hover:border-input focus:border-input focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  // Fixed locale + UTC: stored dates are UTC-midnight date-only values.
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  });
+  // Stored dates are UTC-midnight date-only values.
+  return iso ? fmtDateOnly(iso) : "—";
+}
+
+/** Body of the "Delete task?" confirm — comments and history go with the task. */
+export function deleteTaskMessage(commentCount: number): string {
+  const what =
+    commentCount > 0
+      ? `its ${commentCount} comment${commentCount === 1 ? "" : "s"} and its change history`
+      : "its change history";
+  return `This also deletes ${what}. This cannot be undone.`;
+}
+
+/** Shown when a list / board edit lost a race (the row then shows the latest values). */
+export function staleMessage(title: string): string {
+  return `Someone else changed "${title}" just now, so your change wasn't saved. The latest values are shown — try again.`;
+}
+
+type TaskPatch = Omit<Parameters<typeof updateTechTaskAction>[0], "id" | "expectedVersion">;
+type TaskSaveResult = Awaited<ReturnType<typeof updateTechTaskAction>>;
+
+/**
+ * Serial, version-checked saves for one task row: each save sends the version
+ * the previous one returned (or the latest from the server), so two quick
+ * edits never race, and an edit made on an out-of-date row is refused (stale)
+ * instead of silently overwriting someone else's change.
+ */
+function useTaskSaver(task: TechTaskRow) {
+  const versionRef = useRef(task.version);
+  useEffect(() => {
+    if (task.version > versionRef.current) versionRef.current = task.version;
+  }, [task.version]);
+  const queueRef = useRef<Promise<unknown>>(Promise.resolve());
+  return (patch: TaskPatch): Promise<TaskSaveResult> => {
+    const run = queueRef.current.then(async () => {
+      const r = await updateTechTaskAction({ id: task.id, ...patch, expectedVersion: versionRef.current });
+      if (r.version && r.version > versionRef.current) versionRef.current = r.version;
+      return r;
+    });
+    queueRef.current = run.catch(() => undefined);
+    return run.catch((): TaskSaveResult => ({ error: "Couldn't save — check your connection and try again." }));
+  };
 }
 
 export type DueStatus = "overdue" | "soon" | "none";
@@ -137,15 +170,20 @@ function SortHeader({
   const next = () =>
     onSort(active ? (sort.dir === 1 ? { key: k, dir: -1 } : { key: null, dir: 1 }) : { key: k, dir: 1 });
   return (
-    <th className={`px-2 py-1.5 text-left ${className}`}>
+    <th
+      scope="col"
+      aria-sort={active ? (sort.dir === 1 ? "ascending" : "descending") : "none"}
+      className={`px-2 py-1.5 text-left ${className}`}
+    >
       <button
+        type="button"
         onClick={next}
         className={`inline-flex items-center gap-0.5 hover:text-foreground ${active ? "font-semibold text-foreground" : ""}`}
         title={`${fullLabel ? `${fullLabel} — sort` : "Sort"} (click again to reverse; third click resets)`}
         aria-label={fullLabel ? `Sort by ${fullLabel}` : undefined}
       >
         {label}
-        {active ? (sort.dir === 1 ? "▲" : "▼") : null}
+        {active ? <span aria-hidden>{sort.dir === 1 ? "▲" : "▼"}</span> : null}
       </button>
     </th>
   );
@@ -173,6 +211,7 @@ export function DashboardClient({
   isAdmin: boolean;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [showDone, setShowDone] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createOwner, setCreateOwner] = useState(currentUserId);
@@ -214,6 +253,42 @@ export function DashboardClient({
     }
   }
 
+  // Reassigning from the ticket to someone outside this dashboard makes the
+  // task vanish from `data`. Keep showing the last copy while we say where it
+  // went ("Reassigned to <name>"), then close — never close silently.
+  const [heldTicketId, setHeldTicketId] = useState<string | null>(null);
+  const ticketSnapshot = useRef<{ task: TechTaskRow; owner: string } | null>(null);
+  if (ticketTask) ticketSnapshot.current = { task: ticketTask, owner: ticketOwner };
+  const shownTicket = ticketTask
+    ? { task: ticketTask, owner: ticketOwner }
+    : ticketId && heldTicketId === ticketId && ticketSnapshot.current?.task.id === ticketId
+      ? ticketSnapshot.current
+      : null;
+  // Gone for any other reason (deleted / moved elsewhere): just close it.
+  const ticketVisible = shownTicket !== null;
+  useEffect(() => {
+    if (ticketId && !ticketVisible) setTicketId(null);
+  }, [ticketId, ticketVisible]);
+
+  const visibleOwnerIds = new Set(data.groups.map((g) => g.owner.id));
+  const handleReassign = async (newOwnerId: string, newOwnerName: string, save: () => Promise<boolean>) => {
+    const id = ticketId;
+    setHeldTicketId(id);
+    try {
+      const ok = await save();
+      if (ok && !visibleOwnerIds.has(newOwnerId)) {
+        await confirm({
+          title: `Reassigned to ${newOwnerName}`,
+          message: `${newOwnerName} has this task now, so it is no longer on your dashboard.`,
+          alert: true,
+        });
+        setTicketId((cur) => (cur === id ? null : cur));
+      }
+    } finally {
+      setHeldTicketId(null);
+    }
+  };
+
   const hasTeam = data.groups.length > 1;
 
   // Due summary across everyone's open tasks. The chips toggle a filter that
@@ -225,35 +300,41 @@ export function DashboardClient({
   const toggleDue = (kind: "overdue" | "soon") => setDueFilter((f) => (f === kind ? null : kind));
 
   return (
-    <main className="mx-auto max-w-5xl space-y-6 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            Open tasks{hasTeam ? " for you and your team" : ""} — change priority, target date and state
-            right in the list; click a task to edit its details and discuss it.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
+    <div className="mx-auto max-w-5xl space-y-6 p-4">
+      <PageHeader
+        className="mb-0"
+        title="Dashboard"
+        description={
+          <>
+            Open tasks{hasTeam ? " for you and the people you manage" : ""} — change priority, target date and
+            state right in the list; click a task to edit its details and discuss it.
+          </>
+        }
+        actions={
+          <>
           {/* List | Board toggle */}
-          <div className="flex overflow-hidden rounded-md border">
+          <div className="flex overflow-hidden rounded-md border" role="group" aria-label="View">
             <button
+              type="button"
+              aria-pressed={view === "list"}
               onClick={() => switchView("list")}
               className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${
                 view === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
               }`}
               title="List view"
             >
-              <List className="h-3.5 w-3.5" /> List
+              <List className="h-3.5 w-3.5" aria-hidden /> List
             </button>
             <button
+              type="button"
+              aria-pressed={view === "board"}
               onClick={() => switchView("board")}
               className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${
                 view === "board" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
               }`}
               title="Board view"
             >
-              <LayoutGrid className="h-3.5 w-3.5" /> Board
+              <LayoutGrid className="h-3.5 w-3.5" aria-hidden /> Board
             </button>
           </div>
           {overdueCount > 0 || dueFilter === "overdue" ? (
@@ -311,8 +392,9 @@ export function DashboardClient({
             <Plus className="mr-1.5 h-4 w-4" />
             New task
           </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {dueFilter ? (
         <p role="status" className="text-xs text-muted-foreground">
@@ -345,6 +427,7 @@ export function DashboardClient({
       </div>
 
       {createOpen ? (
+        // Mounted only while open, so every "New task" starts empty.
         <CreateModal
           // Anyone may create a task for any active person in the org.
           owners={data.people}
@@ -358,17 +441,18 @@ export function DashboardClient({
         />
       ) : null}
 
-      {ticketTask ? (
+      {shownTicket ? (
         <TaskTicket
-          task={ticketTask}
-          ownerName={ticketOwner}
+          task={shownTicket.task}
+          ownerName={shownTicket.owner}
           people={data.people}
           currentUserId={currentUserId}
           isAdmin={isAdmin}
           onClose={() => setTicketId(null)}
+          onReassign={handleReassign}
         />
       ) : null}
-    </main>
+    </div>
   );
 }
 
@@ -520,33 +604,47 @@ function OwnerSection({
 }
 
 function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: () => void; onOpen: () => void }) {
-  const [pending, startTransition] = useTransition();
+  const confirm = useConfirm();
+  const saveTask = useTaskSaver(task);
+  const [busy, setBusy] = useState(0);
   const taskTarget = task.targetDate ? task.targetDate.slice(0, 10) : "";
   const [priority, setPriority] = useState(String(task.priority));
   const [target, setTarget] = useState(taskTarget);
   const [error, setError] = useState<string | null>(null);
+  const uid = useId();
+
+  // Latest props, for reverts that land after a refresh.
+  const latest = useRef(task);
+  latest.current = task;
 
   // Re-sync with the server when the task changes elsewhere (the ticket, the
-  // board, another person) — but never while the user is typing in the cell.
+  // board, another person) — but never while the user is typing in the cell
+  // or a date pick is still being saved.
   const priorityFocused = useRef(false);
+  const targetPending = useRef(0);
   useEffect(() => {
     if (!priorityFocused.current) setPriority(String(task.priority));
   }, [task.priority]);
   useEffect(() => {
-    setTarget(taskTarget);
+    if (targetPending.current === 0) setTarget(taskTarget);
   }, [taskTarget]);
 
-  const save = (patch: Parameters<typeof updateTechTaskAction>[0], revert?: () => void) =>
-    startTransition(async () => {
-      const res = await updateTechTaskAction(patch);
+  const save = async (patch: TaskPatch, revert?: () => void) => {
+    setBusy((n) => n + 1);
+    try {
+      const res = await saveTask(patch);
       if (res.error) {
-        setError(res.error);
+        setError(res.stale ? staleMessage(latest.current.title) : res.error);
         revert?.();
       } else {
         setError(null);
       }
       refresh();
-    });
+      return res;
+    } finally {
+      setBusy((n) => n - 1);
+    }
+  };
 
   const commitPriority = () => {
     priorityFocused.current = false;
@@ -555,25 +653,44 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
       setPriority(String(task.priority));
       return;
     }
-    if (n !== task.priority) save({ id: task.id, priority: n }, () => setPriority(String(task.priority)));
+    if (n !== task.priority) void save({ priority: n }, () => setPriority(String(latest.current.priority)));
   };
-  const commitTarget = (v: string) => {
+  // Date picks go through the row's save queue, so a second pick waits for
+  // the first (and uses its new version) instead of racing it.
+  const commitTarget = async (v: string) => {
     setTarget(v);
-    save({ id: task.id, targetDate: v || null }, () => setTarget(taskTarget));
+    targetPending.current += 1;
+    try {
+      await save({ targetDate: v || null }, () => {
+        if (targetPending.current === 1) {
+          const t = latest.current.targetDate;
+          setTarget(t ? t.slice(0, 10) : "");
+        }
+      });
+    } finally {
+      targetPending.current -= 1;
+    }
   };
-  const changeState = (state: TechTaskState) =>
-    startTransition(async () => {
-      const res = await setTechTaskStateAction({ id: task.id, state });
-      setError(res.error ?? null);
-      refresh();
+  const changeState = (state: TechTaskState) => void save({ state });
+  const remove = async () => {
+    const ok = await confirm({
+      title: `Delete "${task.title}"?`,
+      message: deleteTaskMessage(task.commentCount),
+      confirmLabel: "Delete task",
+      tone: "danger",
     });
-  const remove = () =>
-    startTransition(async () => {
-      if (!confirm(`Delete "${task.title}"?`)) return;
+    if (!ok) return;
+    setBusy((n) => n + 1);
+    try {
       const res = await deleteTechTaskAction({ id: task.id });
       setError(res.error ?? null);
       refresh();
-    });
+    } catch {
+      setError("Couldn't delete — check your connection and try again.");
+    } finally {
+      setBusy((n) => n - 1);
+    }
+  };
 
   const due = dueStatus(task.targetDate, task.state);
   const barClass =
@@ -581,7 +698,8 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
 
   return (
     <tr
-      className={`group border-b align-top last:border-0 hover:bg-muted/20 ${STATE_ROW_TINT[task.state]} ${pending ? "opacity-60" : ""}`}
+      className={`group border-b align-top last:border-0 hover:bg-muted/20 ${STATE_ROW_TINT[task.state]} ${busy > 0 ? "opacity-60" : ""}`}
+      aria-busy={busy > 0 || undefined}
     >
       <td className={`px-1 py-1.5 ${barClass}`}>
         <input
@@ -596,7 +714,7 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
           onKeyDown={editKeys(() => setPriority(String(task.priority)))}
           // Spinner arrows hidden so up to 3 digits stay fully visible.
           className={`${CELL_INPUT} min-w-14 text-center tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
-          aria-label="Priority (1 = highest)"
+          aria-label={`Priority of "${task.title}" (1 = highest)`}
           title="Priority (1 = highest)"
         />
       </td>
@@ -617,10 +735,11 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
             <button
               type="button"
               onClick={onOpen}
-              title={`${task.commentCount} comment(s) — open the discussion`}
+              title={`${task.commentCount} comment${task.commentCount === 1 ? "" : "s"} — open the discussion`}
+              aria-label={`${task.commentCount} comment${task.commentCount === 1 ? "" : "s"} — open the discussion`}
               className="inline-flex items-center gap-0.5 rounded-full bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-300"
             >
-              <MessageSquare className="h-2.5 w-2.5" /> {task.commentCount}
+              <MessageSquare className="h-2.5 w-2.5" aria-hidden /> {task.commentCount}
             </button>
           ) : null}
         </div>
@@ -629,21 +748,26 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
             {task.notes}
           </p>
         ) : null}
-        {error ? (
-          <p role="alert" className="px-1.5 pt-0.5 text-xs text-destructive">
-            {error}
-          </p>
-        ) : null}
+        <FormMessage tone="error" className="px-1.5 pt-0.5 text-xs">
+          {error}
+        </FormMessage>
       </td>
       <td className="px-1 py-1.5">
-        <DatePicker value={target} onChange={commitTarget} placeholder="Set date" className="h-8 text-xs" />
+        <DatePicker
+          id={`${uid}-target`}
+          aria-label={`Target date of "${task.title}"`}
+          value={target}
+          onChange={(v) => void commitTarget(v)}
+          placeholder="Set date"
+          className="h-8 text-xs"
+        />
         {due === "overdue" ? (
           <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/50 dark:text-red-300">
-            <AlertTriangle className="h-3 w-3" /> Overdue
+            <AlertTriangle className="h-3 w-3" aria-hidden /> Overdue
           </span>
         ) : due === "soon" ? (
           <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
-            <CalendarClock className="h-3 w-3" /> Due soon
+            <CalendarClock className="h-3 w-3" aria-hidden /> Due soon
           </span>
         ) : null}
       </td>
@@ -653,7 +777,7 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
           value={task.state}
           onChange={(e) => changeState(e.target.value as TechTaskState)}
           className={`h-7 w-full cursor-pointer rounded-full border-0 px-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${STATE_COLORS[task.state]}`}
-          aria-label="State"
+          aria-label={`State of "${task.title}"`}
         >
           {STATES.map((s) => (
             <option key={s} value={s}>
@@ -663,14 +787,18 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
         </select>
       </td>
       <td className="px-1 py-1.5 text-center">
-        <button
-          onClick={remove}
-          className="rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100"
-          title="Delete task"
-          aria-label={`Delete task "${task.title}"`}
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
+        {/* Hover-revealed — but also visible on keyboard focus and on touch screens. */}
+        <span className="opacity-0 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+          <button
+            type="button"
+            onClick={() => void remove()}
+            className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            title="Delete task"
+            aria-label={`Delete task "${task.title}"`}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+          </button>
+        </span>
       </td>
     </tr>
   );
@@ -717,10 +845,11 @@ function CompletedWeeks({
 function CompletedRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: () => void; onOpen: () => void }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const saveTask = useTaskSaver(task);
   const reopen = () =>
     startTransition(async () => {
-      const res = await setTechTaskStateAction({ id: task.id, state: "TODO" });
-      setError(res.error ?? null);
+      const res = await saveTask({ state: "TODO" });
+      setError(res.stale ? staleMessage(task.title) : (res.error ?? null));
       refresh();
     });
 
@@ -840,7 +969,7 @@ function JobPoolSection({ pool }: { pool: JobRow[] }) {
           ) : (
             <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
           )}
-          Other jobs — unassigned or other technicians
+          Other jobs — unassigned or assigned to other people
           <span className="text-xs font-normal text-muted-foreground">{pool.length}</span>
         </h2>
         <p className="pl-5 text-xs text-muted-foreground">
@@ -887,21 +1016,26 @@ function CreateModal({
   const me = owners.find((o) => o.id === currentUserId);
   const ordered = me ? [me, ...owners.filter((o) => o.id !== currentUserId)] : owners;
 
-  // Escape / backdrop click: never silently discard what was typed.
+  // Escape / backdrop / X / Cancel: never silently discard what was typed.
+  const confirm = useConfirm();
   const dirty = Boolean(title.trim() || notes.trim() || location.trim() || targetDate);
-  const requestClose = () => {
-    if (dirty && !confirm("Discard this new task?")) return;
+  const DISCARD_TEXT = "What you typed for this new task will be lost.";
+  const cancel = async () => {
+    if (pending) return;
+    if (
+      dirty &&
+      !(await confirm({
+        title: "Discard your changes?",
+        message: DISCARD_TEXT,
+        confirmLabel: "Discard",
+        cancelLabel: "Keep editing",
+        tone: "danger",
+      }))
+    ) {
+      return;
+    }
     onClose();
   };
-  const requestCloseRef = useRef(requestClose);
-  requestCloseRef.current = requestClose;
-  useEffect(() => {
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") requestCloseRef.current();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   const save = (e: FormEvent) => {
     e.preventDefault();
@@ -923,21 +1057,17 @@ function CreateModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={requestClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={fid("heading")}
-        className="w-full max-w-lg rounded-xl border bg-background shadow-lg"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b px-5 py-3">
-          <h2 id={fid("heading")} className="text-base font-semibold">New task</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <form onSubmit={save} className="space-y-4 p-5">
+    <Modal
+      open
+      onClose={onClose}
+      title="New task"
+      size="md"
+      canClose={() => !pending}
+      dirty={dirty}
+      confirmClose={DISCARD_TEXT}
+    >
+        {/* A real <form>: Enter in a field creates the task. */}
+        <form onSubmit={save} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor={fid("owner")}>For</Label>
             <select id={fid("owner")} className={SELECT_CLASS} value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
@@ -974,9 +1104,8 @@ function CreateModal({
               </select>
             </div>
             <div className="space-y-2">
-              {/* DatePicker renders a button, not a labelable input. */}
-              <Label>Target date</Label>
-              <DatePicker value={targetDate} onChange={setTargetDate} placeholder="Optional" />
+              <Label htmlFor={fid("target")}>Target date</Label>
+              <DatePicker id={fid("target")} value={targetDate} onChange={setTargetDate} placeholder="Optional" />
             </div>
           </div>
           <div className="space-y-2">
@@ -996,21 +1125,16 @@ function CreateModal({
               placeholder="What's this task about?"
             />
           </div>
-          {error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          ) : null}
+          <FormMessage tone="error">{error}</FormMessage>
           <div className="flex items-center gap-2">
             <Button type="submit" disabled={pending || !title.trim()} className="flex-1">
-              {pending ? "Saving…" : "Create task"}
+              {pending ? "Creating…" : "Create task"}
             </Button>
-            <Button variant="outline" onClick={onClose} type="button">
+            <Button variant="outline" onClick={() => void cancel()} type="button" disabled={pending}>
               Cancel
             </Button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }

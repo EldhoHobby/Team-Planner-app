@@ -173,6 +173,8 @@ export interface PipelineCard {
   status: SaProposalStatus | null;
   year: number | null;
   value: number;
+  /** How many agreements `value` covers. */
+  agreements: number;
   /** End date of the current term (DUE) or of the proposal. */
   endDate: string | null;
   daysToEnd: number | null;
@@ -192,7 +194,7 @@ export async function getPipeline(scope: TenantScope) {
       cards.push({
         key: `due-${r.id}`, column: "DUE", customerId: r.id, name: r.name, soNumber: r.soNumber,
         proposalId: null, proposalVersion: null, status: null, year: r.renewal.currentYear === null ? null : r.renewal.currentYear + 1,
-        value: r.renewal.annualValue, endDate: r.renewal.nextEndDate, daysToEnd: r.renewal.daysToEnd,
+        value: r.renewal.annualValue, agreements: r.renewal.currentLines.length, endDate: r.renewal.nextEndDate, daysToEnd: r.renewal.daysToEnd,
         dateLabel: r.renewal.state === "EXPIRED" ? "Expired" : null, customerStatus: r.status,
       });
     }
@@ -208,7 +210,7 @@ export async function getPipeline(scope: TenantScope) {
       if (!column) continue;
       cards.push({
         key: p.id, column, customerId: r.id, name: r.name, soNumber: r.soNumber, proposalId: p.id,
-        proposalVersion: versions.get(p.id) ?? null, status: p.status, year: p.year, value: p.total,
+        proposalVersion: versions.get(p.id) ?? null, status: p.status, year: p.year, value: p.total, agreements: p.agreements.length,
         endDate: p.endDate, daysToEnd: null, dateLabel, customerStatus: r.status,
       });
     }

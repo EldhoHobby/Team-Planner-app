@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import { CheckCircle2 } from "lucide-react";
@@ -13,6 +13,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FormMessage } from "@/components/ui/form-message";
+import { useFlash } from "../use-flash";
 import {
   Card,
   CardContent,
@@ -40,6 +42,12 @@ export function AccountClient({
 }) {
   const [state, formAction] = useActionState(changePasswordAction, initialPassword);
   const [nameState, nameAction] = useActionState(updateDisplayNameAction, initialName);
+  // A short "Name saved." after each successful save (each submit returns a new state).
+  const [nameSaved, showNameSaved, hideNameSaved] = useFlash();
+  useEffect(() => {
+    if (nameState.success) showNameSaved("Name saved.");
+    else hideNameSaved();
+  }, [nameState, showNameSaved, hideNameSaved]);
 
   return (
     <div className="space-y-6">
@@ -67,15 +75,8 @@ export function AccountClient({
               <SubmitButton idle="Save name" busy="Saving…" />
             </div>
             <div id="name-status">
-              {nameState.error ? (
-                <p role="alert" className="text-sm font-medium text-destructive">
-                  {nameState.error}
-                </p>
-              ) : nameState.success ? (
-                <p role="status" className="text-sm text-green-700 dark:text-green-400">
-                  Name saved.
-                </p>
-              ) : null}
+              <FormMessage>{nameState.error}</FormMessage>
+              <FormMessage tone="success">{nameSaved}</FormMessage>
             </div>
           </form>
           <div className="space-y-1">
@@ -93,7 +94,7 @@ export function AccountClient({
 
       <Card>
         <CardHeader>
-          <CardTitle>Change Password</CardTitle>
+          <CardTitle>Change password</CardTitle>
           <CardDescription>
             Ensure your account is using a long, random password to stay secure.
           </CardDescription>
@@ -154,11 +155,7 @@ export function AccountClient({
                 />
               </div>
 
-              {state.error && (
-                <p role="alert" className="text-sm font-medium text-destructive">
-                  {state.error}
-                </p>
-              )}
+              <FormMessage>{state.error}</FormMessage>
 
               <div className="flex justify-end pt-2">
                 <SubmitButton idle="Update password" busy="Updating…" />

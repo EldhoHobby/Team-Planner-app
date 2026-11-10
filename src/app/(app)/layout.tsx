@@ -46,11 +46,24 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     // print:* variants let the shell expand for multi-page printing — the
     // h-screen + overflow-hidden scroll box otherwise clips output to one page.
     <div className="flex h-screen overflow-hidden bg-background print:block print:h-auto print:overflow-visible">
+      {/* First focusable element: keyboard users jump past the sidebar. */}
+      <a
+        href="#main-content"
+        className="sr-only z-[100] rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow focus:not-sr-only focus:fixed focus:left-2 focus:top-2 print:hidden"
+      >
+        Skip to content
+      </a>
       <ThemeSync theme={user.theme ?? null} />
       <NavSidebar user={{ email: user.email ?? user.username, name: user.name }} isAdmin={isAdmin} viewAs={viewAs} />
       <div className="flex flex-1 flex-col overflow-hidden print:block print:overflow-visible">
         {actor.impersonating ? <ViewAsBanner targetLabel={displayHandle(user)} /> : null}
-        <div className="flex-1 overflow-y-auto print:overflow-visible">{children}</div>
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="flex-1 overflow-y-auto focus:outline-none print:overflow-visible"
+        >
+          {children}
+        </main>
       </div>
     </div>
   );

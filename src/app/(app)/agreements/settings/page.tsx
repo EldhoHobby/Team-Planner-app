@@ -3,6 +3,7 @@ import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
 import { canEditAgreements, getSettings } from "@/lib/services/agreements/common";
 import { SA_EDITOR_GROUP } from "@/lib/agreements/constants";
+import { PageHeader } from "@/components/ui/page-header";
 import { SettingsForm } from "./settings-form";
 import { ResetCard } from "./reset-card";
 import { WorkbookCard } from "./workbook-card";
@@ -16,6 +17,12 @@ export default async function AgreementSettingsPage() {
   await recordPageView(scope, "Service agreement settings");
   const [settings, canEdit] = await Promise.all([getSettings(scope), canEditAgreements(scope)]);
   return (
+    <div>
+    <PageHeader
+      className="print:hidden"
+      title="Settings"
+      description="Pricing rules for new proposals, the monthly workbook, and who can edit."
+    />
     <div className="grid gap-6 lg:grid-cols-5">
       <div className="lg:col-span-3">
         <SettingsForm settings={settings} canEdit={canEdit} />
@@ -33,6 +40,7 @@ export default async function AgreementSettingsPage() {
         {canEdit && <WorkbookCard />}
         {scope.ctx.isOrgAdmin && <ResetCard />}
       </div>
+    </div>
     </div>
   );
 }

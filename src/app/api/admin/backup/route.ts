@@ -1,6 +1,7 @@
 import { todayYmd } from "@/lib/tz";
 import { requireScope } from "@/lib/auth/current-user";
 import { buildFullBackup, isOrgOwner } from "@/lib/services/full-backup";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -21,15 +22,14 @@ export async function GET() {
   try {
     ({ scope } = await requireScope());
   } catch {
-    return plain(401, "Sign in to download a backup.");
+    return plain(401, "Your session has ended — sign in again.");
   }
   // The file holds every password hash (the Owner's too) — Owner only
   // (effective or real user, so it also works while the Owner uses "View as").
-  if (!(await isOrgOwner(scope))) {
-    return plain(403, "Only the Owner can download a full backup (it contains every login's password hash).");
-  }
-
   try {
+    if (!(await isOrgOwner(scope))) {
+      return plain(403, "Only the Owner can download a full backup (it contains every login's password hash).");
+    }
     const backup = await buildFullBackup(scope);
     const date = todayYmd();
     return new Response(JSON.stringify(backup, null, 1), {
@@ -40,7 +40,7 @@ export async function GET() {
       },
     });
   } catch (e) {
-    console.error("[full backup] download failed:", e);
+    logError("full backup download", e);
     return plain(500, "The backup could not be created — please try again. (Details are in the server log.)");
   }
 }

@@ -4,6 +4,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import type { JobType, JobStatus, TaskKind } from "@prisma/client";
 import { endFromDuration, inclusiveDayCount, toUtcMidnight } from "@/lib/scheduling/calc";
 import { writeAudit } from "@/lib/services/audit";
+import { logError } from "@/lib/log";
 
 export type { JobType, JobStatus };
 
@@ -663,7 +664,8 @@ export async function importJobsCsv(
         jobStatus,
       });
       result.created++;
-    } catch {
+    } catch (e) {
+      logError(`importJobsCsv row ${i + 1}`, e);
       result.skipped++;
       result.errors.push(`Row ${i + 1}: could not import`);
     }

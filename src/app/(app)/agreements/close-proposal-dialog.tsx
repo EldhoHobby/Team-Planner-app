@@ -15,7 +15,8 @@ export function CloseProposalDialog({
   onDone,
 }: {
   proposalId: string;
-  version: number;
+  /** The proposal's version — or a getter, read when the user confirms (edits saved meanwhile bump it). */
+  version: number | (() => number);
   customerName: string;
   year: number;
   onClose: () => void;
@@ -28,12 +29,20 @@ export function CloseProposalDialog({
 
   const submit = () =>
     start(async () => {
-      const r = await proposalTransitionAction({ id: proposalId, version, action: kind, reason, markNotRenewed: kind === "decline" && markNotRenewed });
+      const r = await proposalTransitionAction({ id: proposalId, version: typeof version === "function" ? version() : version, action: kind, reason, markNotRenewed: kind === "decline" && markNotRenewed });
       onDone(r.error);
     });
 
   return (
-    <Modal open onClose={onClose} title={`Close ${customerName}'s ${year} proposal`} className="max-w-md">
+    <Modal
+      open
+      onClose={onClose}
+      title={`Close ${customerName}'s ${year} proposal`}
+      size="sm"
+      canClose={() => !pending}
+      dirty={reason.trim() !== "" || markNotRenewed}
+      confirmClose="The reason you typed will be lost."
+    >
       <div className="space-y-3 text-sm">
         <fieldset className="space-y-1">
           <label className="flex items-center gap-2">
@@ -59,9 +68,9 @@ export function CloseProposalDialog({
           </label>
         )}
         <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="outline" disabled={pending} onClick={onClose}>Cancel</Button>
           <Button variant={kind === "decline" ? "destructive" : "default"} disabled={pending} onClick={submit}>
-            {kind === "decline" ? "Mark declined" : "Withdraw"}
+            {pending ? "Saving…" : kind === "decline" ? "Mark declined" : "Withdraw"}
           </Button>
         </div>
       </div>

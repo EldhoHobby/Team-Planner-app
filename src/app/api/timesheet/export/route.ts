@@ -2,6 +2,7 @@ import { requireScope } from "@/lib/auth/current-user";
 import { generateTimesheetXlsx, weekEndingFor, currentWeekEnding } from "@/lib/services/timesheets";
 import { writeAudit } from "@/lib/services/audit";
 import { ForbiddenError } from "@/lib/auth/current-user";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +38,7 @@ export async function GET(req: Request) {
       },
     });
   } catch (e) {
-    console.error("[timesheet export] failed:", e);
+    logError("timesheet export", e);
     // ForbiddenError carries a user-facing reason (e.g. the template is missing
     // on the host); anything else gets a short generic message.
     const msg = e instanceof ForbiddenError ? e.message : "Could not generate the timesheet. Please try again.";

@@ -1,14 +1,8 @@
 import type { Metadata } from "next";
 import { prisma } from "@/lib/db/client";
 import { hashToken } from "@/lib/auth/tokens";
+import { AuthCard } from "@/app/(auth)/auth-card";
 import { AcceptForm } from "./accept-form";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Accept invitation" };
@@ -28,37 +22,21 @@ export default async function AcceptInvitePage({
   const valid =
     invite && invite.status === "PENDING" && invite.expiresAt > new Date();
 
+  if (!valid) {
+    return (
+      <AuthCard
+        title="Invitation unavailable"
+        description="This invitation link is invalid, already used, or expired. Ask an admin to send a new one."
+      />
+    );
+  }
+
   return (
-    <main className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-sm">
-        {valid ? (
-          <>
-            <CardHeader>
-              <CardTitle className="text-xl">
-                Join {invite.org.name}
-              </CardTitle>
-              <CardDescription>
-                You&apos;ve been invited as {invite.orgRole.toLowerCase()}
-                {invite.team ? ` on ${invite.team.name}` : ""}. Set a password to
-                finish.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <AcceptForm token={token} email={invite.email} />
-            </CardContent>
-          </>
-        ) : (
-          <>
-            <CardHeader>
-              <CardTitle className="text-xl">Invitation unavailable</CardTitle>
-              <CardDescription>
-                This invite link is invalid, already used, or expired. Ask an
-                admin to send a new one.
-              </CardDescription>
-            </CardHeader>
-          </>
-        )}
-      </Card>
-    </main>
+    <AuthCard
+      title={`Join ${invite.org.name}`}
+      description={`You've been invited as ${invite.orgRole.toLowerCase()}${invite.team ? ` in the ${invite.team.name} department` : ""}. Set a password to finish.`}
+    >
+      <AcceptForm token={token} email={invite.email} />
+    </AuthCard>
   );
 }

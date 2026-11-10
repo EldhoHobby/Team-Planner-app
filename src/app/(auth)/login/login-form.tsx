@@ -7,6 +7,7 @@ import type { LoginState } from "./types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FormMessage } from "@/components/ui/form-message";
 
 const initialState: LoginState = {};
 
@@ -43,11 +44,7 @@ export function LoginForm() {
         <Input id="password" name="password" type="password" required autoComplete="current-password" />
       </div>
 
-      {state.error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {state.error}
-        </p>
-      ) : null}
+      <FormMessage>{state.error}</FormMessage>
 
       <SubmitButton />
 

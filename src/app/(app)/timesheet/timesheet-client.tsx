@@ -5,8 +5,11 @@ import { useRouter } from "next/navigation";
 import { Save, Download, ChevronLeft, ChevronRight, CalendarClock, Lock } from "lucide-react";
 import { saveTimesheetAction, setEmpNoAction } from "./actions";
 import type { DirectRow, IndirectRow, TimesheetData, WeekSummary } from "./types";
-import { todayUtcMs } from "@/lib/tz";
+import { fmtDateOnly, todayUtcMs } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 
 const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 type DayKey = (typeof DAY_KEYS)[number];
@@ -19,8 +22,9 @@ function ymdToDate(s: string): Date {
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
+/** Column-header day, e.g. "Nov 9" (UTC-midnight date). */
 function fmtMD(d: Date): string {
-  return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  return fmtDateOnly(d, { month: "short", day: "numeric" });
 }
 function todayWeekEnding(): string {
   // Eastern "today": the UTC date would jump to next week on Saturday evenings.
@@ -114,6 +118,7 @@ export function TimesheetClient({
   soLookup: { code: string; description: string }[];
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
 
   const [direct, setDirect] = useState<DirectRow[]>(data.direct);
@@ -201,12 +206,24 @@ export function TimesheetClient({
   };
 
   // Moving to another week drops unsaved edits, so ask first.
-  const goToWeek = (weekEnding: string) => {
+  const goToWeek = async (weekEnding: string) => {
     if (weekEnding === data.weekEnding) return;
-    if (dirty && !confirm("You have unsaved changes on this week. Leave without saving?")) return;
+    if (
+      dirty &&
+      !(await confirm({
+        title: "Leave this week without saving?",
+        message: `Your changes to the week ending ${fmtDateOnly(data.weekEnding)} have not been saved.`,
+        confirmLabel: "Leave without saving",
+        cancelLabel: "Stay",
+        tone: "danger",
+      }))
+    ) {
+      return;
+    }
     router.push(`/timesheet?week=${weekEnding}`);
   };
-  const goWeek = (deltaWeeks: number) => goToWeek(ymd(new Date(we.getTime() + deltaWeeks * 7 * MS_DAY)));
+  const goWeek = (deltaWeeks: number) => void goToWeek(ymd(new Date(we.getTime() + deltaWeeks * 7 * MS_DAY)));
+  const weekLabel = fmtDateOnly(data.weekEnding);
 
   /** Save what is on screen; true on success. */
   const persist = async (): Promise<boolean> => {
@@ -266,6 +283,11 @@ export function TimesheetClient({
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
+      <PageHeader
+        className="mb-0"
+        title="Timesheet"
+        description={`Week ending ${weekLabel} — enter your hours, save, then generate the Excel file.`}
+      />
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4 rounded-md border p-4">
         <div className="flex items-center gap-4">
@@ -289,7 +311,7 @@ export function TimesheetClient({
         <div className="flex items-center gap-2 text-sm">
           <div className="text-right">
             <div className="text-muted-foreground">WEEK ENDING</div>
-            <div className="font-semibold">{fmtMD(we)}/{we.getUTCFullYear()}</div>
+            <div className="font-semibold">{weekLabel}</div>
           </div>
           <div className="flex items-center gap-1">
             <button type="button" aria-label="Previous week" className="rounded border p-1.5 hover:bg-muted" onClick={() => goWeek(-1)}>
@@ -299,20 +321,20 @@ export function TimesheetClient({
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
-          <Button variant="outline" size="sm" onClick={() => goToWeek(todayWeekEnding())}>
+          <Button variant="outline" size="sm" onClick={() => void goToWeek(todayWeekEnding())}>
             <CalendarClock className="mr-1.5 h-4 w-4" /> This week
           </Button>
           {weeks.length > 0 ? (
             <select
               className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
               value={data.weekEnding}
-              onChange={(e) => goToWeek(e.target.value)}
+              onChange={(e) => void goToWeek(e.target.value)}
               aria-label="Jump to a saved week"
             >
-              <option value={data.weekEnding}>Week ending {data.weekEnding}</option>
+              <option value={data.weekEnding}>Week ending {weekLabel}</option>
               {weeks.filter((w) => w.weekEnding !== data.weekEnding).map((w) => (
                 <option key={w.weekEnding} value={w.weekEnding}>
-                  {w.weekEnding} · {fmtHours(w.totalHours) || "0"}h
+                  Week ending {fmtDateOnly(w.weekEnding)} · {fmtHours(w.totalHours) || "0"} h
                 </option>
               ))}
             </select>
@@ -324,7 +346,7 @@ export function TimesheetClient({
         <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
           <Lock className="h-4 w-4 shrink-0" />
           <span>
-            Read-only: the week ending {fmtMD(we)}/{we.getUTCFullYear()} is over, and only the current week and
+            Read-only: the week ending {weekLabel} is over, and only the current week and
             future weeks can be edited. Use “This week” to open the current week.
           </span>
         </div>
@@ -457,11 +479,11 @@ export function TimesheetClient({
           <Download className="mr-1.5 h-4 w-4" /> {exporting ? "Generating…" : "Generate Excel"}
         </Button>
         {msg?.kind === "error" ? (
-          <span role="alert" className="text-sm text-destructive">{msg.text}</span>
+          <FormMessage tone="error">{msg.text}</FormMessage>
         ) : msg ? (
-          <span role="status" className="text-sm text-muted-foreground">{msg.text}</span>
+          <FormMessage tone="success">{msg.text}</FormMessage>
         ) : dirty && editable ? (
-          <span className="text-sm text-muted-foreground">Unsaved changes</span>
+          <FormMessage tone="info" icon={false}>Unsaved changes</FormMessage>
         ) : null}
       </div>
     </div>

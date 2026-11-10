@@ -6,8 +6,11 @@ import { ScrollText, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 import { clearAuditLogAction } from "./actions";
 import { fmtEastern } from "@/lib/tz";
+import { useFlash } from "../use-flash";
 
 const REFRESH_MS = 10_000;
 
@@ -75,6 +78,7 @@ export function AuditClient({
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, startClearing] = useTransition();
   const [clearError, setClearError] = useState<string | null>(null);
+  const [cleared, showCleared, hideCleared] = useFlash();
 
   // Live view: re-run the server query every few seconds while the tab is
   // visible, so new events appear without a manual reload. Filters are in the
@@ -94,8 +98,10 @@ export function AuditClient({
   const clearLog = () =>
     startClearing(async () => {
       setClearError(null);
+      hideCleared();
       const res = await clearAuditLogAction();
       if (res.error) setClearError(res.error);
+      else showCleared(`Audit log cleared (${res.cleared ?? 0} ${res.cleared === 1 ? "entry" : "entries"} deleted).`);
       setConfirmClear(false);
       router.refresh();
     });
@@ -118,42 +124,40 @@ export function AuditClient({
   const hasFilters = Object.values(filters).some(Boolean);
 
   return (
-    <main className="mx-auto max-w-5xl space-y-6 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-semibold">
-            <ScrollText className="h-6 w-6 text-muted-foreground" /> Audit trail
+    <div className="mx-auto max-w-5xl space-y-6 p-6">
+      <PageHeader
+        className="mb-0"
+        icon={<ScrollText className="h-5 w-5 text-muted-foreground" />}
+        title={
+          <>
+            Audit
             <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:bg-green-900/50 dark:text-green-300">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" /> Live
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" aria-hidden /> Live
             </span>
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Everything done in the app over the last {retentionDays} days — sign-ins, changes, imports and exports.
-            Updates automatically; older entries are deleted after {retentionDays} days.
-          </p>
-        </div>
-        {confirmClear ? (
-          <div className="flex items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 dark:border-red-800 dark:bg-red-950">
-            <span className="text-sm text-red-800 dark:text-red-200">Delete the entire history?</span>
-            <Button variant="destructive" size="sm" onClick={clearLog} disabled={clearing}>
-              {clearing ? "Clearing…" : "Yes, clear it"}
+          </>
+        }
+        description={`Everything done in the app over the last ${retentionDays} days — sign-ins, changes, imports and exports. Updates automatically; older entries are deleted after ${retentionDays} days.`}
+        actions={
+          confirmClear ? (
+            <div className="flex items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 dark:border-red-800 dark:bg-red-950">
+              <span className="text-sm text-red-800 dark:text-red-200">Delete the entire history?</span>
+              <Button variant="destructive" size="sm" onClick={clearLog} disabled={clearing}>
+                {clearing ? "Clearing…" : "Yes, clear it"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmClear(false)} disabled={clearing}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => setConfirmClear(true)}>
+              <Trash2 className="mr-1.5 h-4 w-4" /> Clear log
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmClear(false)} disabled={clearing}>
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <Button variant="outline" size="sm" onClick={() => setConfirmClear(true)}>
-            <Trash2 className="mr-1.5 h-4 w-4" /> Clear log
-          </Button>
-        )}
-      </div>
+          )
+        }
+      />
 
-      {clearError ? (
-        <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
-          {clearError}
-        </p>
-      ) : null}
+      <FormMessage>{clearError}</FormMessage>
+      <FormMessage tone="success">{cleared}</FormMessage>
 
       {/* Statistics over the retention window */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -274,7 +278,7 @@ export function AuditClient({
           )}
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }
 

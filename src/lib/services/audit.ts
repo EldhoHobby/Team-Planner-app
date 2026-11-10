@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
+import { logError } from "@/lib/log";
 
 // Lightweight change-history trail. Captures what / when / who for each mutation.
 // Best-effort: an audit failure must never break the underlying operation.
@@ -66,8 +67,9 @@ export async function writeAudit(
         summary,
       },
     });
-  } catch {
-    /* never let logging break the mutation */
+  } catch (e) {
+    /* never let logging break the mutation — but leave a trace */
+    logError("writeAudit", e);
   }
 }
 
@@ -111,8 +113,9 @@ export async function writeAuthAudit(
         summary: entry.summary.slice(0, 500),
       },
     });
-  } catch {
-    /* never let logging break auth */
+  } catch (e) {
+    /* never let logging break auth — but leave a trace */
+    logError("writeAuthAudit", e);
   }
 }
 
@@ -129,7 +132,8 @@ export async function resolveAuthOrgId(userId?: string | null): Promise<string |
     }
     const org = await prisma.organization.findFirst({ select: { id: true } });
     return org?.id ?? null;
-  } catch {
+  } catch (e) {
+    logError("resolveAuthOrgId", e);
     return null;
   }
 }
@@ -177,6 +181,6 @@ export async function pruneAuditLog(): Promise<void> {
     await prisma.auditLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
   } catch (e) {
     // Never throws — the next run retries — but leave a trace for the admin.
-    console.error("[audit] could not prune the audit log:", e);
+    logError("pruneAuditLog", e);
   }
 }

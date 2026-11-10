@@ -2,14 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireScope } from "@/lib/auth/current-user";
+import { actionError } from "@/lib/log";
 import { createProject, archiveProject } from "@/lib/services/projects";
 import type { CreateProjectState } from "./types";
 
 const CreateSchema = z.object({
-  name: z.string().min(1, "Name is required").max(80, "Name too long"),
+  name: z.string().min(1, "Name is required").max(80, "Name must be 80 characters or fewer."),
   teamId: z.string().min(1, "Department is required"),
-  description: z.string().max(500, "Description too long").optional(),
+  description: z.string().max(500, "Description must be 500 characters or fewer.").optional(),
 });
 
 export async function createProjectAction(
@@ -31,8 +32,7 @@ export async function createProjectAction(
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not create the project." };
+    return actionError("createProjectAction", e, "Could not create the project.");
   }
 }
 
@@ -48,7 +48,6 @@ export async function archiveProjectAction(input: {
     revalidatePath("/tasks");
     return {};
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not archive the project." };
+    return actionError("archiveProjectAction", e, "Could not archive the project.");
   }
 }

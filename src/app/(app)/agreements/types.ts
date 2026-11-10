@@ -12,6 +12,10 @@ export interface ActionResult {
   /** Someone else saved first — reload instead of retrying. */
   stale?: boolean;
   id?: string;
+  /** Proposal edits: the proposal's version after this save (send it with the next save). */
+  proposalVersion?: number;
+  /** Price edits: the line's version after this save. */
+  lineVersion?: number;
 }
 
 export interface BulkRow {

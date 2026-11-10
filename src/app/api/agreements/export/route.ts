@@ -1,5 +1,11 @@
 import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { logError } from "@/lib/log";
 import { buildAgreementsWorkbook, workbookFileName } from "@/lib/services/agreements/workbook";
+
+/** Short plain-text error the Settings card shows as is (it downloads with fetch). */
+function failure(message: string, status: number) {
+  return new Response(message, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+}
 
 export const dynamic = "force-dynamic";
 
@@ -10,8 +16,10 @@ export async function GET() {
   let scope;
   try {
     ({ scope } = await requireScope());
-  } catch {
-    return new Response("Unauthorized", { status: 401 });
+  } catch (e) {
+    if (e instanceof ForbiddenError) return failure("You don't have access to the service agreements.", 403);
+    logError("agreements.export (session)", e);
+    return failure("Your session has ended — sign in again.", 401);
   }
   try {
     const data = await buildAgreementsWorkbook(scope);
@@ -22,8 +30,8 @@ export async function GET() {
       },
     });
   } catch (e) {
-    if (e instanceof ForbiddenError) return new Response(e.message, { status: 403 });
-    console.error("[agreements export]", e);
-    return new Response("Could not build the workbook.", { status: 500 });
+    if (e instanceof ForbiddenError) return failure(e.message, 403);
+    logError("agreements.export", e);
+    return failure("Couldn't build the workbook — please try again. If it keeps failing, tell an admin (the cause is in the server log).", 500);
   }
 }

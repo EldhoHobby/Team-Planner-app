@@ -1,75 +1,126 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
-import { X } from "lucide-react";
-import { cn } from "@/lib/utils";
+/**
+ * Modal — the app's standard dialog window, built on the native <dialog>
+ * (`showModal()`): focus is trapped inside, the page behind is inert and its
+ * scroll is locked, focus returns to the opener on close.
+ *
+ * The parent owns `open`; the Modal never closes itself — Escape, a backdrop
+ * click and the X button call `onClose` (after the optional guards below).
+ *
+ * @example Basic
+ *   <Modal open={open} onClose={() => setOpen(false)} title="New job" size="md">
+ *     <form …>…</form>
+ *   </Modal>
+ *
+ * @example Guarded editor (no close mid-save; ask before discarding edits)
+ *   <Modal
+ *     open={!!job}
+ *     onClose={close}
+ *     title="Edit job"
+ *     size="xl"
+ *     canClose={() => !saving}            // Escape / backdrop / X do nothing while false
+ *     dirty={hasUnsavedChanges}
+ *     confirmClose="Your edits to this job have not been saved."
+ *   >…</Modal>
+ *
+ * Focus on open: the element with React `autoFocus` or `data-autofocus`, else
+ * the first focusable control in the body, else the dialog. Children mount
+ * only while open (state inside them resets each time it opens).
+ * Escape inside a nested popover (e.g. DatePicker) closes only the popover —
+ * any child that calls `preventDefault()` / `stopPropagation()` on an Escape
+ * keydown keeps the Modal open.
+ * Guards apply to Escape / backdrop / X only; your own Cancel / Save buttons
+ * call your handlers directly.
+ */
 
-export function Modal({
-  open,
+import { useState, type ReactNode } from "react";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DialogShell, type DialogSize } from "@/components/ui/dialog-shell";
+
+export type ModalSize = DialogSize;
+
+export interface ModalProps {
+  open: boolean;
+  /** Called when the user asks to close (and the guards allow it). Set `open` false here. */
+  onClose: () => void;
+  /** Heading text — also the dialog's accessible name. */
+  title: string;
+  /** Muted text under the title — also the accessible description. */
+  description?: ReactNode;
+  children: ReactNode;
+  /** Extra classes for the dialog box. A `max-w-*` here overrides `size`. */
+  className?: string;
+  /** sm = max-w-md · md = max-w-lg (default) · lg = max-w-2xl · xl = max-w-3xl */
+  size?: ModalSize;
+  /** Optional controls rendered in the header, just left of the close button. */
+  headerActions?: ReactNode;
+  /** Optional element rendered inline right after the title (e.g. a status badge). */
+  titleBadge?: ReactNode;
+  /** False (or a function returning false) → Escape / backdrop / X do nothing, e.g. while a save is in flight. Default true. */
+  canClose?: boolean | (() => boolean);
+  /** Whether the content has unsaved changes. Only used with `confirmClose`. */
+  dirty?: boolean;
+  /** When set and `dirty` is true, closing first asks "Discard your changes?" with this text as the message. */
+  confirmClose?: string;
+}
+
+export function Modal(props: ModalProps) {
+  if (!props.open) return null;
+  return <OpenModal {...props} />;
+}
+
+function OpenModal({
   onClose,
   title,
   description,
   children,
   className,
+  size,
   headerActions,
   titleBadge,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  description?: string;
-  children: ReactNode;
-  className?: string;
-  /** Optional controls rendered in the header, just left of the close button. */
-  headerActions?: ReactNode;
-  /** Optional element rendered inline right after the title (e.g. a status badge). */
-  titleBadge?: ReactNode;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  canClose = true,
+  dirty = false,
+  confirmClose,
+}: ModalProps) {
+  const [askingDiscard, setAskingDiscard] = useState(false);
 
-  if (!open) return null;
+  const requestClose = () => {
+    const allowed = typeof canClose === "function" ? canClose() : canClose;
+    if (!allowed) return;
+    if (confirmClose !== undefined && dirty) {
+      setAskingDiscard(true);
+      return;
+    }
+    onClose();
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/40" aria-hidden onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={cn(
-          "relative z-10 max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border bg-card p-6 shadow-lg",
-          className,
-        )}
+    <>
+      <DialogShell
+        title={title}
+        description={description}
+        className={className}
+        size={size}
+        headerActions={headerActions}
+        titleBadge={titleBadge}
+        onRequestClose={requestClose}
       >
-        <div className="mb-4 flex items-start justify-between gap-4">
-          <div>
-            <h2 className="flex items-center gap-2 text-lg font-semibold">
-              {title}
-              {titleBadge}
-            </h2>
-            {description ? (
-              <p className="text-sm text-muted-foreground">{description}</p>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {headerActions}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
         {children}
-      </div>
-    </div>
+      </DialogShell>
+      <ConfirmDialog
+        open={askingDiscard}
+        title="Discard your changes?"
+        message={confirmClose || "Your changes have not been saved."}
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        tone="danger"
+        onConfirm={() => {
+          setAskingDiscard(false);
+          onClose();
+        }}
+        onCancel={() => setAskingDiscard(false)}
+      />
+    </>
   );
 }

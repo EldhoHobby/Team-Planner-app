@@ -25,6 +25,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 import {
   Card,
   CardContent,
@@ -39,19 +41,23 @@ type RestoreMode = "full" | "agreements";
  * One restore mode's dialog + request state. The upload goes to the route
  * handler POST /api/admin/restore (fetch + FormData), NOT a server action, so
  * the server-action body limit stays small. While a restore is running the
- * dialog can't be closed (its result would otherwise never be seen); the last
- * result is also shown on the card.
+ * dialog can't be closed (`canClose` — its result would otherwise never be
+ * seen); the last result is also shown on the card.
  */
 function useRestore(mode: RestoreMode) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<RestoreResult | null>(null);
+  /** The dialog holds a picked file / typed text (asks before discarding). */
+  const [dirty, setDirty] = useState(false);
   const pendingRef = useRef(false);
 
   const close = useCallback(() => {
-    if (!pendingRef.current) setOpen(false);
+    setOpen(false);
+    setDirty(false);
   }, []);
+  const canClose = useCallback(() => !pendingRef.current, []);
 
   const submit = useCallback(
     async (fd: FormData) => {
@@ -95,6 +101,7 @@ function useRestore(mode: RestoreMode) {
       setResult(r);
       if (r.ok) {
         setOpen(false);
+        setDirty(false);
         // If the admin's own account was replaced, their session is gone — the
         // refresh lands on the login page, where the backup's credentials work.
         router.refresh();
@@ -103,28 +110,70 @@ function useRestore(mode: RestoreMode) {
     [mode, router],
   );
 
-  return { open, setOpen, close, pending, result, setResult, submit };
+  return { open, setOpen, close, canClose, dirty, setDirty, pending, result, setResult, submit };
 }
 
 function RestoreResultLine({ result }: { result: RestoreResult | null }) {
   if (!result) return null;
-  if (!result.ok) {
-    return (
-      <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <span>Last restore failed: {result.message}</span>
-      </p>
-    );
-  }
+  if (!result.ok) return <FormMessage>Last restore failed: {result.message}</FormMessage>;
   return (
-    <p role="status" className="flex items-start gap-2 text-sm text-green-600">
-      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-      <span>
-        {result.message}
-        {result.selfReplaced ? " Your account was replaced — sign in with the credentials from the backup." : ""}
-      </span>
-    </p>
+    <FormMessage tone="success">
+      {result.message}
+      {result.selfReplaced ? " Your account was replaced — sign in with the username and password from the backup." : ""}
+    </FormMessage>
   );
+}
+
+/**
+ * Download a file from one of our GET routes without leaving the page: fetch →
+ * blob → a temporary link. On failure the route's short plain-text message (or
+ * a generic one) is shown inline instead of the tab navigating to a bare error
+ * page.
+ */
+function useDownload(url: string, fallbackName: string) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = useCallback(async () => {
+    setPending(true);
+    setError(null);
+    try {
+      const res = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+      const type = res.headers.get("Content-Type") ?? "";
+      if (!res.ok || res.redirected || type.includes("text/html")) {
+        let text = "";
+        try {
+          text = (await res.text()).trim();
+        } catch {
+          text = "";
+        }
+        const readable = text && text.length <= 300 && !text.startsWith("<") ? text : "";
+        setError(
+          readable ||
+            (res.status === 401 || res.redirected
+              ? "Your session has ended — sign in again."
+              : `The download failed (HTTP ${res.status}). Please try again.`),
+        );
+        return;
+      }
+      const blob = await res.blob();
+      const match = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "");
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = match?.[1] ?? fallbackName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 10_000);
+    } catch {
+      setError("Could not reach the server — check your connection and try again.");
+    } finally {
+      setPending(false);
+    }
+  }, [url, fallbackName]);
+
+  return { pending, error, run };
 }
 
 function OwnerOnlyNote({ children }: { children: ReactNode }) {
@@ -150,8 +199,12 @@ export function DataClient({
   const [state, setState] = useState<DataIoState>({});
   const [pending, start] = useTransition();
 
+  const exportDl = useDownload("/api/admin/export", "team-planner-export.xlsx");
+  const backupDl = useDownload("/api/admin/backup", "team-planner-full-backup.json");
+
   // Danger zone: reset all planning data to fresh (Owner only).
   const [resetOpen, setResetOpen] = useState(false);
+  const [resetDirty, setResetDirty] = useState(false);
   const [resetState, resetAction, resetting] = useActionState(
     resetDatabaseAction,
     {} as ResetState,
@@ -159,6 +212,7 @@ export function DataClient({
   useEffect(() => {
     if (resetState.done) {
       setResetOpen(false);
+      setResetDirty(false);
       router.refresh();
     }
   }, [resetState.done, router]);
@@ -187,32 +241,42 @@ export function DataClient({
   const summary = state.summary;
 
   return (
-    <main className="mx-auto max-w-2xl space-y-6 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Data export / import</h1>
-        <p className="text-sm text-muted-foreground">
-          Download everything as one Excel workbook (a sheet per table), edit it,
-          and re-import. Rows with an <code>id</code> are updated; blank-id rows
-          are created; nothing is ever deleted.
-        </p>
-      </div>
+    <div className="mx-auto max-w-2xl space-y-6 p-6">
+      <PageHeader
+        title="Data"
+        description={
+          <>
+            Export and import the Excel workbook, download a full backup, or restore one. In the
+            workbook, rows with an <code>id</code> are updated, rows with a blank id are created,
+            and nothing is ever deleted.
+          </>
+        }
+      />
 
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Export</CardTitle>
-          <CardDescription>People, time off, departments, projects, jobs, holidays, and reference sheets.</CardDescription>
+          <CardDescription>
+            One Excel workbook with the People, My Tasks, Time Off, Departments, Projects, Jobs and
+            Holidays sheets, plus the Members and Organization sheets for reference.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Button onClick={() => { window.location.href = "/api/admin/export"; }}>
-            <Download className="mr-1.5 h-4 w-4" /> Download workbook (.xlsx)
+        <CardContent className="space-y-2">
+          <Button onClick={() => void exportDl.run()} disabled={exportDl.pending}>
+            <Download className="mr-1.5 h-4 w-4" />
+            {exportDl.pending ? "Preparing the workbook…" : "Download workbook (.xlsx)"}
           </Button>
+          <FormMessage>{exportDl.error}</FormMessage>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Import</CardTitle>
-          <CardDescription>Preview the changes first, then apply. Members &amp; Organization sheets are ignored.</CardDescription>
+          <CardDescription>
+            Preview the changes first, then apply. The Members and Organization sheets are for
+            reference only and are not imported — change people on the People sheet.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Input
@@ -241,9 +305,7 @@ export function DataClient({
             ) : null}
           </div>
 
-          {state.error ? (
-            <p role="alert" className="text-sm text-destructive">{state.error}</p>
-          ) : null}
+          <FormMessage>{state.error}</FormMessage>
 
           {summary ? (
             <div className="space-y-3 rounded-md border p-3">
@@ -311,7 +373,7 @@ export function DataClient({
           <CardTitle className="text-lg">Full backup — everything in one file</CardTitle>
           <CardDescription>
             A complete snapshot of the app: people <em>including logins</em>, departments,
-            work groups, jobs, tasks, dashboard items, time off, holidays and timesheets.
+            work groups, jobs, tasks, dashboard tasks, time off, holidays and timesheets.
             Restore it on any Team Planner install (e.g. moving to a new machine) — the
             restore <strong>replaces all data</strong> with the file&apos;s contents.
             Treat the file like a database backup: it contains password hashes.
@@ -320,11 +382,9 @@ export function DataClient({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            <Button
-              disabled={!isOwner}
-              onClick={() => { window.location.href = "/api/admin/backup"; }}
-            >
-              <DatabaseBackup className="mr-1.5 h-4 w-4" /> Download full backup (.json)
+            <Button disabled={!isOwner || backupDl.pending} onClick={() => void backupDl.run()}>
+              <DatabaseBackup className="mr-1.5 h-4 w-4" />
+              {backupDl.pending ? "Preparing the backup…" : "Download full backup (.json)"}
             </Button>
             <Button
               variant="outline"
@@ -336,6 +396,7 @@ export function DataClient({
               {full.pending ? "Restoring…" : "Restore everything from backup…"}
             </Button>
           </div>
+          <FormMessage>{backupDl.error}</FormMessage>
           {!isOwner ? (
             <OwnerOnlyNote>
               Only the Owner can download a full backup or restore everything from one: the file
@@ -387,22 +448,22 @@ export function DataClient({
             <Trash2 className="mr-1.5 h-4 w-4" /> Reset to fresh…
           </Button>
           {!isOwner ? <OwnerOnlyNote>Only the Owner can reset all data.</OwnerOnlyNote> : null}
-          {resetState.done ? (
-            <p className="flex items-center gap-2 text-sm text-green-600">
-              <CheckCircle2 className="h-4 w-4" /> All planning data was reset.
-            </p>
-          ) : null}
+          <FormMessage tone="success">{resetState.done ? "All planning data was reset." : null}</FormMessage>
         </CardContent>
       </Card>
 
       <Modal
         open={full.open}
         onClose={full.close}
+        canClose={full.canClose}
+        dirty={full.dirty}
+        confirmClose="The backup file you picked and what you typed will be cleared."
         title="Restore from a full backup?"
-        description="This permanently REPLACES all current data — people (including logins), departments, jobs, tasks, time off, holidays, timesheets and (when the file has them) service agreements — with the contents of the backup file. If your own account isn't in the file, you'll be signed out and must log in with an account from the backup. This cannot be undone."
+        description="This permanently REPLACES all current data — people (including logins), departments, jobs, tasks, time off, holidays, timesheets and (when the file has them) service agreements — with the contents of the backup file. If your own account isn't in the file, you'll be signed out and must sign in with an account from the backup. This cannot be undone."
       >
         <RestoreForm
           mode="full"
+          onDirtyChange={full.setDirty}
           pending={full.pending}
           error={full.result && !full.result.ok ? full.result.message : undefined}
           onSubmit={full.submit}
@@ -414,11 +475,15 @@ export function DataClient({
       <Modal
         open={agreements.open}
         onClose={agreements.close}
+        canClose={agreements.canClose}
+        dirty={agreements.dirty}
+        confirmClose="The backup file you picked and what you typed will be cleared."
         title="Restore service agreements only?"
         description="This permanently REPLACES this app's service-agreement data — customers, agreement lines, proposals, calls & repairs, pricing settings and their change history — with the ones in the backup file. People, jobs, dashboard tasks, timesheets and job/task history are not touched. This cannot be undone; download a full backup first."
       >
         <RestoreForm
           mode="agreements"
+          onDirtyChange={agreements.setDirty}
           current={agreementCounts}
           pending={agreements.pending}
           error={agreements.result && !agreements.result.ok ? agreements.result.message : undefined}
@@ -430,11 +495,17 @@ export function DataClient({
 
       <Modal
         open={resetOpen}
-        onClose={() => setResetOpen(false)}
+        onClose={() => {
+          setResetOpen(false);
+          setResetDirty(false);
+        }}
+        canClose={() => !resetting}
+        dirty={resetDirty}
+        confirmClose="What you typed will be cleared."
         title="Reset everything to fresh?"
         description="This permanently deletes all jobs, projects, departments, time off, holidays, and change history for your organization. People and their logins stay (department links are cleared). This cannot be undone."
       >
-        <form action={resetAction} className="space-y-4">
+        <form action={resetAction} onChange={() => setResetDirty(true)} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="confirm">
               Type <span className="font-mono font-semibold">RESET</span> to confirm
@@ -446,12 +517,18 @@ export function DataClient({
             <Input id="password" name="password" type="password" autoComplete="current-password" />
           </div>
 
-          {resetState.error ? (
-            <p role="alert" className="text-sm text-destructive">{resetState.error}</p>
-          ) : null}
+          <FormMessage>{resetState.error}</FormMessage>
 
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setResetOpen(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={resetting}
+              onClick={() => {
+                setResetOpen(false);
+                setResetDirty(false);
+              }}
+            >
               Cancel
             </Button>
             <Button
@@ -464,7 +541,7 @@ export function DataClient({
           </div>
         </form>
       </Modal>
-    </main>
+    </div>
   );
 }
 
@@ -494,6 +571,7 @@ function RestoreForm({
   onSubmit,
   onFileChanged,
   onCancel,
+  onDirtyChange,
 }: {
   mode: RestoreMode;
   /** Agreements mode: the current counts that will be replaced. */
@@ -503,6 +581,8 @@ function RestoreForm({
   onSubmit: (fd: FormData) => void | Promise<void>;
   onFileChanged: () => void;
   onCancel: () => void;
+  /** Reports whether a file is picked or anything is typed (the dialog asks before discarding). */
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [counts, setCounts] = useState<BackupCounts | null>(null);
@@ -560,6 +640,10 @@ function RestoreForm({
   }
 
   const ready = !!file && !!counts && !fileError && !reading;
+  const dirty = !!file || confirm !== "" || password !== "";
+  useEffect(() => {
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
 
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -583,12 +667,7 @@ function RestoreForm({
             onChange={(e) => void onFile(e.target.files?.[0] ?? null)}
           />
           {reading ? <p className="text-sm text-muted-foreground">Reading the file…</p> : null}
-          {fileError ? (
-            <p role="alert" className="flex items-start gap-1 text-sm text-destructive">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{fileError}</span>
-            </p>
-          ) : null}
+          <FormMessage>{fileError}</FormMessage>
           {counts ? (
             <div className="rounded-md border bg-muted/40 p-3 text-sm">
               <p className="font-medium">
@@ -637,7 +716,7 @@ function RestoreForm({
                   <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5">
                     <li>{counts.people} people</li>
                     <li>{counts.jobsAndTasks} jobs &amp; tasks</li>
-                    <li>{counts.techTasks} dashboard items</li>
+                    <li>{counts.techTasks} dashboard tasks</li>
                     {counts.hasAgreements ? <li>{counts.customers} agreement customers</li> : null}
                   </ul>
                   {!counts.hasAgreements ? (
@@ -675,12 +754,10 @@ function RestoreForm({
       </fieldset>
 
       {pending ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          Restoring — this can take a minute. Keep this page open.
-        </p>
-      ) : error ? (
-        <p role="alert" className="text-sm text-destructive">{error}</p>
-      ) : null}
+        <FormMessage tone="info">Restoring — this can take a minute. Keep this page open.</FormMessage>
+      ) : (
+        <FormMessage>{error}</FormMessage>
+      )}
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" disabled={pending} onClick={onCancel}>

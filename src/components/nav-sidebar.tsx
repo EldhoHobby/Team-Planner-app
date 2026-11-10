@@ -9,6 +9,8 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { ViewAsPicker, type ViewAsPerson } from "@/components/view-as";
 import { VERSION_LABEL } from "@/lib/version";
 
+// Each label is the page's heading (PageHeader title), so the sidebar and the
+// page always use the same name.
 type NavItem = { href: string; label: string; icon: typeof LayoutDashboard };
 
 const WORK_NAV: NavItem[] = [
@@ -44,7 +46,7 @@ function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
           : "text-muted-foreground hover:bg-muted hover:text-foreground",
       )}
     >
-      <Icon className="h-4 w-4 flex-shrink-0" />
+      <Icon className="h-4 w-4 flex-shrink-0" aria-hidden />
       {label}
     </Link>
   );
@@ -70,7 +72,7 @@ export function NavSidebar({
   viewAs,
 }: {
   user: { email: string; name: string | null };
-  /** Effective user's org role — hides admin-only pages (People/Holidays/Data). */
+  /** Effective user's org role — hides admin-only pages (People/Holidays/Data/Email/Audit). */
   isAdmin: boolean;
   /** OWNER-only "view as" picker data; omitted for everyone else. */
   viewAs?: { people: ViewAsPerson[]; currentId: string; selfId: string };
@@ -99,14 +101,15 @@ export function NavSidebar({
         <Link
           href="/settings/account"
           aria-current={onAccount ? "page" : undefined}
-          title="Account settings"
+          title="Account — your name, sign-in details and password"
           className={cn(
             "flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs transition-colors hover:bg-muted hover:text-foreground",
             onAccount ? "font-medium text-foreground" : "text-muted-foreground",
           )}
         >
-          <UserRound className="h-3.5 w-3.5 flex-shrink-0" />
+          <UserRound className="h-3.5 w-3.5 flex-shrink-0" aria-hidden />
           <span className="truncate">{user.name ?? user.email}</span>
+          <span className="sr-only"> — Account</span>
         </Link>
         <ThemeToggle />
         <SignOutButton />

@@ -1,13 +1,19 @@
 "use client";
 
 import { fmtEastern, todayYmd, ymdEastern } from "@/lib/tz";
-import { useState, useTransition, type ReactNode } from "react";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Pencil, Plus } from "lucide-react";
+import { Pencil, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
+import { SaveStatus, useSaveStatus, type SaveStatusController } from "@/components/ui/save-status";
+import type { ActionResult } from "../../types";
+import { useDraft } from "../../use-draft";
 import { cn } from "@/lib/utils";
 import {
   AGREEMENT_LABELS, SA_AGREEMENTS, SOFTWARE_LABELS, fmtDate, fmtMoney, type SaAgreement, type SaLineStatus,
@@ -45,6 +51,8 @@ function pct(n: number | null | undefined) {
 
 export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; canEdit: boolean; tab: CustomerTab }) {
   const router = useRouter();
+  // One save indicator for the page's autosave fields (the Calls & repairs counts).
+  const save = useSaveStatus();
   const [editing, setEditing] = useState(false);
   const c = data.customer;
   const r = data.renewal;
@@ -62,29 +70,29 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
 
   return (
     <div className="space-y-4">
-      <Link href="/agreements/customers" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground print:hidden">
-        <ArrowLeft className="h-4 w-4" /> Customers
-      </Link>
-
-      {/* Header card */}
-      <section className="rounded-lg border bg-card p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-2xl font-semibold tracking-tight">{c.name}</h2>
-              <CustomerStatusBadge status={c.status} />
-              <RenewalBadge state={r.state} />
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>SO # <span className="font-mono text-foreground">{c.soNumber}</span></span>
-              {!c.soConfirmed && <UnconfirmedSo />}
-              {c.state && <span>· {c.state}</span>}
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2 print:hidden">
+      <PageHeader
+        className="mb-0 print:hidden"
+        back={{ href: "/agreements/customers", label: "Customers" }}
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            {c.name}
+            <CustomerStatusBadge status={c.status} />
+            <RenewalBadge state={r.state} />
+          </span>
+        }
+        description={
+          <span className="flex flex-wrap items-center gap-2">
+            <span>SO # <span className="font-mono text-foreground">{c.soNumber}</span></span>
+            {!c.soConfirmed && <UnconfirmedSo />}
+            {c.state && <span>· {c.state}</span>}
+          </span>
+        }
+        actions={
+          <>
+            {canEdit && <SaveStatus state={save.state} className="mr-1" />}
             {canEdit && (
               <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-                <Pencil className="h-3.5 w-3.5" /> Edit details
+                <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit details
               </Button>
             )}
             {open ? (
@@ -94,10 +102,17 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
             ) : canEdit && r.currentYear !== null ? (
               <StartProposalButton customerId={c.id} label={`Start ${r.currentYear + 1} proposal`} />
             ) : null}
-          </div>
-        </div>
+          </>
+        }
+      />
 
-        <dl className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {/* Key figures + customer details */}
+      <section className="rounded-lg border bg-card p-5">
+        {/* The page header is screen-only; a printout still names the customer. */}
+        <p className="mb-4 hidden text-xl font-semibold print:block">
+          {c.name} · SO # {c.soNumber}{c.state ? ` · ${c.state}` : ""}
+        </p>
+        <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Figure label="Annual value" value={r.annualValue ? fmtMoney(r.annualValue) : "—"}
             sub={r.currentYear ? `${r.currentYear} · ${r.currentLines.length} agreement${r.currentLines.length === 1 ? "" : "s"}` : "no signed year"} />
           <Figure label="Next renewal" value={fmtDate(r.nextEndDate) || "—"}
@@ -150,7 +165,7 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
         {tab === "agreements" && <AgreementsTab data={data} canEdit={canEdit} />}
         {tab === "history" && <HistoryTab data={data} />}
         {tab === "proposals" && <ProposalsTab data={data} />}
-        {tab === "calls" && <CallsTab data={data} canEdit={canEdit} />}
+        {tab === "calls" && <CallsTab data={data} canEdit={canEdit} save={save} />}
         {tab === "activity" && <ActivityTab data={data} />}
       </div>
 
@@ -178,7 +193,7 @@ function AgreementsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boole
         </label>
         {canEdit && (
           <Button size="sm" variant="outline" className="ml-auto" onClick={() => setEditing("new")}>
-            <Plus className="h-3.5 w-3.5" /> Add signed line
+            <Plus className="h-3.5 w-3.5" aria-hidden /> Add signed agreement
           </Button>
         )}
       </div>
@@ -232,7 +247,7 @@ function AgreementsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boole
                         <td className="px-3 py-2.5 whitespace-nowrap">{fmtDate(l.invoicedDate) || dash}</td>
                         {canEdit && (
                           <td className="px-3 py-2.5 text-right">
-                            <button type="button" className="text-sm text-primary hover:underline" onClick={() => setEditing(l)}>Edit</button>
+                            <button type="button" className="text-sm text-primary hover:underline" aria-label={`Edit ${l.year} ${AGREEMENT_LABELS[l.agreement]}`} onClick={() => setEditing(l)}>Edit</button>
                           </td>
                         )}
                       </tr>
@@ -268,8 +283,10 @@ function ContractEditor({
   onClose: () => void;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [pending, start] = useTransition();
   const [error, setError] = useState<{ text: string; stale?: boolean } | null>(null);
+  const [touched, setTouched] = useState(false);
   const [year, setYear] = useState(String(line?.year ?? defaultYear));
   const [agreement, setAgreement] = useState<SaAgreement>(line?.agreement ?? "SCADA_SOFTWARE");
   const [price, setPrice] = useState(line ? String(line.price) : "");
@@ -296,13 +313,14 @@ function ContractEditor({
     setNotes(latest.notes ?? "");
     setVersion(latest.version);
     setError(null);
+    setTouched(false);
     router.refresh();
   };
 
   const save = () =>
     start(async () => {
       const p = Number(price.replace(/[$,\s]/g, ""));
-      if (!price.trim() || !Number.isFinite(p)) return setError({ text: "Enter a price." });
+      if (!price.trim() || !Number.isFinite(p) || p < 0) return setError({ text: "Enter a price of zero or more, in dollars." });
       const data = { price: p, status, endDate: endDate || null, signedDate: signedDate || null, checked, invoicedDate: invoicedDate || null, notes: notes || null };
       const r = line
         ? await saveContractLineAction({ id: line.id, version, customerId, data })
@@ -316,9 +334,16 @@ function ContractEditor({
       onClose();
     });
 
-  const remove = () =>
+  const remove = async () => {
+    if (!line) return;
+    const ok = await confirm({
+      title: `Delete the ${line.year} ${AGREEMENT_LABELS[line.agreement]} agreement?`,
+      message: `${fmtMoney(line.price)} comes off this customer's signed agreements. The deletion is recorded in the Activity tab.`,
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
     start(async () => {
-      if (!line || !confirm(`Delete ${line.year} ${AGREEMENT_LABELS[line.agreement]}? This is recorded in the activity log.`)) return;
       const r = await deleteContractLineAction({ id: line.id, version: version ?? line.version });
       if (r.error) {
         setError({ text: r.error, stale: r.stale });
@@ -328,6 +353,7 @@ function ContractEditor({
       router.refresh();
       onClose();
     });
+  };
 
   const field = "space-y-1 text-xs";
   const lbl = "block text-muted-foreground";
@@ -335,11 +361,14 @@ function ContractEditor({
     <Modal
       open
       onClose={onClose}
-      title={line ? `${line.year} ${AGREEMENT_LABELS[line.agreement]}` : "Add a signed agreement line"}
+      title={line ? `${line.year} ${AGREEMENT_LABELS[line.agreement]}` : "Add a signed agreement"}
       description={line ? "Signed agreements change only here; every change is logged." : "For history the import didn't have, or a mid-year addition."}
-      className="max-w-lg"
+      size="md"
+      canClose={() => !pending}
+      dirty={touched}
+      confirmClose={line ? "Your changes to this agreement have not been saved." : "This agreement has not been added yet."}
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3" onChange={() => setTouched(true)}>
         {!line && (
           <>
             <label className={field}><span className={lbl}>Year</span><Input value={year} onChange={(e) => setYear(e.target.value)} /></label>
@@ -366,20 +395,20 @@ function ContractEditor({
         <label className={cn(field, "col-span-2")}><span className={lbl}>Notes</span><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
       </div>
       {error && (
-        <p role="alert" className="mt-3 text-sm text-destructive">
+        <FormMessage tone="error" className="mt-3">
           {error.text}
           {error.stale && line && (
             <Button size="sm" variant="outline" className="ml-2 h-7" disabled={pending} onClick={reloadLatest}>
               Reload latest
             </Button>
           )}
-        </p>
+        </FormMessage>
       )}
       <div className="mt-4 flex items-center justify-between">
         {line ? <Button variant="ghost" className="text-destructive" disabled={pending} onClick={remove}>Delete</Button> : <span />}
         <div className="flex gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button disabled={pending} onClick={save}>Save</Button>
+          <Button variant="outline" disabled={pending} onClick={onClose}>Cancel</Button>
+          <Button disabled={pending} onClick={save}>{pending ? "Saving…" : line ? "Save" : "Add agreement"}</Button>
         </div>
       </div>
     </Modal>
@@ -484,24 +513,73 @@ function ProposalsTab({ data }: { data: CustomerDetail }) {
 
 // ─── Calls & repairs ───
 
-function CallsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boolean }) {
+type CallsRow = CustomerDetail["calls"][number];
+
+function CallsTab({ data, canEdit, save }: { data: CustomerDetail; canEdit: boolean; save: SaveStatusController }) {
   const router = useRouter();
-  const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
   const [year, setYear] = useState(todayYmd().slice(0, 4));
   const [calls, setCalls] = useState("0");
   const [repairs, setRepairs] = useState("0");
-  const save = (input: Parameters<typeof saveCallsAction>[0]) =>
-    start(async () => {
-      setError(null);
-      const r = await saveCallsAction(input);
-      if (r.error) setError(r.error);
+
+  // Each row's latest saved counts + version. A save sends BOTH counts, so typing calls and then
+  // tabbing to repairs must send the new calls figure and the version that save left behind —
+  // not the props, which only catch up when the refresh lands. Versions only go up, so a newer
+  // prop (someone else's save) replaces ours.
+  const known = useRef(new Map<string, CallsRow>(data.calls.map((r) => [r.id, r])));
+  useEffect(() => {
+    for (const r of data.calls) {
+      const k = known.current.get(r.id);
+      if (!k || r.version >= k.version) known.current.set(r.id, r);
+    }
+  }, [data.calls]);
+  // Saves run one after another so each one reads what the previous one left.
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const saveCount = (rowId: string, field: "calls" | "repairs", value: number): Promise<boolean> => {
+    const next = queue.current.then(async () => {
+      const k = known.current.get(rowId);
+      if (!k) return false;
+      const input = {
+        customerId: data.customer.id, id: rowId, version: k.version, year: k.year,
+        calls: field === "calls" ? value : k.calls, repairs: field === "repairs" ? value : k.repairs,
+      };
+      let r: ActionResult;
+      try {
+        r = await save.run(() => saveCallsAction(input));
+      } catch {
+        r = { error: "Couldn't save — check your connection and try again." };
+      }
+      if (!r.error) known.current.set(rowId, { ...k, version: k.version + 1, calls: input.calls, repairs: input.repairs });
       router.refresh();
+      return !r.error;
     });
+    queue.current = next;
+    return next;
+  };
+
+  const addYear = async () => {
+    setAddError(null);
+    const y = Number(year), c = Number(calls), rp = Number(repairs);
+    if (!/^\d{4}$/.test(year.trim())) return setAddError("Enter a four-digit year.");
+    if (![c, rp].every((n) => Number.isInteger(n) && n >= 0) || calls.trim() === "" || repairs.trim() === "") {
+      return setAddError("Calls and repairs must be whole numbers.");
+    }
+    setAdding(true);
+    try {
+      const r = await save.run(() => saveCallsAction({ customerId: data.customer.id, year: y, calls: c, repairs: rp }));
+      if (r.error) setAddError(r.error);
+      router.refresh();
+    } catch {
+      setAddError("Couldn't save — check your connection and try again.");
+    } finally {
+      setAdding(false);
+    }
+  };
+
   return (
     <section className="max-w-xl space-y-3">
       <p className="text-sm text-muted-foreground">Entered by hand until the RMA log and CRM ticket modules feed these counts.</p>
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <div className="overflow-hidden rounded-lg border bg-card">
         <table className="w-full text-sm">
           <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
@@ -514,19 +592,11 @@ function CallsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boolean })
                 {(["calls", "repairs"] as const).map((k) => (
                   <td key={k} className="px-3 py-1.5 text-right">
                     {canEdit ? (
-                      <input
-                        key={`${r.id}-${r.version}`}
-                        defaultValue={r[k]}
-                        inputMode="numeric"
-                        aria-label={`${r.year} ${k}`}
-                        disabled={pending}
-                        onBlur={(e) => {
-                          const v = Number(e.target.value);
-                          if (e.target.value.trim() === "" || v === r[k]) return;
-                          save({ customerId: data.customer.id, id: r.id, version: r.version, year: r.year, calls: k === "calls" ? v : r.calls, repairs: k === "repairs" ? v : r.repairs });
-                        }}
-                        onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-                        className="w-20 rounded border bg-background px-2 py-0.5 text-right tabular-nums"
+                      <CountCell
+                        value={r[k]}
+                        ariaLabel={`${r.year} ${k}`}
+                        onInvalid={() => save.fail("Calls and repairs must be whole numbers.")}
+                        onCommit={(v) => saveCount(r.id, k, v)}
                       />
                     ) : (
                       <span className="tabular-nums">{r[k]}</span>
@@ -540,16 +610,56 @@ function CallsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boolean })
         </table>
       </div>
       {canEdit && (
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="space-y-1 text-xs"><span className="block text-muted-foreground">Year</span><Input value={year} onChange={(e) => setYear(e.target.value)} className="w-24" /></label>
-          <label className="space-y-1 text-xs"><span className="block text-muted-foreground">Calls</span><Input value={calls} onChange={(e) => setCalls(e.target.value)} className="w-20" /></label>
-          <label className="space-y-1 text-xs"><span className="block text-muted-foreground">Repairs</span><Input value={repairs} onChange={(e) => setRepairs(e.target.value)} className="w-20" /></label>
-          <Button size="sm" className="h-9" disabled={pending} onClick={() => save({ customerId: data.customer.id, year: Number(year), calls: Number(calls), repairs: Number(repairs) })}>
-            Add year
-          </Button>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="space-y-1 text-xs"><span className="block text-muted-foreground">Year</span><Input value={year} onChange={(e) => setYear(e.target.value)} inputMode="numeric" className="w-24" /></label>
+            <label className="space-y-1 text-xs"><span className="block text-muted-foreground">Calls</span><Input value={calls} onChange={(e) => setCalls(e.target.value)} inputMode="numeric" className="w-20" /></label>
+            <label className="space-y-1 text-xs"><span className="block text-muted-foreground">Repairs</span><Input value={repairs} onChange={(e) => setRepairs(e.target.value)} inputMode="numeric" className="w-20" /></label>
+            <Button size="sm" className="h-9" disabled={adding} onClick={addYear}>
+              {adding ? "Adding…" : "Add year"}
+            </Button>
+          </div>
+          <FormMessage tone="error">{addError}</FormMessage>
         </div>
       )}
     </section>
+  );
+}
+
+/** A calls / repairs count that saves when you leave it (Enter too; Esc undoes). Never disabled while saving. */
+function CountCell({
+  value, ariaLabel, onCommit, onInvalid,
+}: {
+  value: number;
+  ariaLabel: string;
+  onCommit: (v: number) => Promise<boolean>;
+  onInvalid: () => void;
+}) {
+  const { draft, setDraft, editing, revert, settle } = useDraft(String(value));
+  const commit = () => {
+    const typed = editing.current;
+    editing.current = false;
+    const t = draft.trim();
+    if (!typed || t === String(value)) return setDraft(String(value));
+    if (!/^\d+$/.test(t)) {
+      onInvalid();
+      return setDraft(String(value));
+    }
+    settle(onCommit(Number(t)));
+  };
+  return (
+    <input
+      value={draft}
+      inputMode="numeric"
+      aria-label={ariaLabel}
+      onChange={(e) => { editing.current = true; setDraft(e.target.value); }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") revert();
+      }}
+      className="w-20 rounded border bg-background px-2 py-0.5 text-right tabular-nums"
+    />
   );
 }
 
@@ -569,7 +679,7 @@ function ActivityTab({ data }: { data: CustomerDetail }) {
       {days.map(({ day, items }) => (
         <section key={day} className="rounded-lg border bg-card">
           <h3 className="border-b bg-muted/40 px-4 py-2 text-xs font-semibold text-muted-foreground">
-            {fmtEastern(`${day}T12:00:00Z`, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+            {fmtEastern(`${day}T12:00:00Z`, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
           </h3>
           <ol className="divide-y">
             {items.map((h) => (

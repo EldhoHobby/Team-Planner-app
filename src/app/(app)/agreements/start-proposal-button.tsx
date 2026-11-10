@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { FormMessage } from "@/components/ui/form-message";
 import { createProposalAction } from "./actions";
 
 /** Creates a draft proposal from the customer's current agreements and opens it. */
@@ -27,7 +28,7 @@ export function StartProposalButton({ customerId, label = "Start proposal", size
       >
         {pending ? "Creating…" : label}
       </Button>
-      {error && <span role="alert" className="mt-1 max-w-xs text-right text-xs text-destructive">{error}</span>}
+      <FormMessage tone="error" className="mt-1 max-w-xs text-right text-xs">{error}</FormMessage>
     </span>
   );
 }

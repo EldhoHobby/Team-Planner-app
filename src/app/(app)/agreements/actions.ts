@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireScope, ForbiddenError, UnauthorizedError } from "@/lib/auth/current-user";
 import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
+import { actionError } from "@/lib/log";
 import { updateSettings, type SettingsRow } from "@/lib/services/agreements/common";
 import {
   addContractLine, createCustomer, deleteContractLine, saveCalls, updateContractLine, updateCustomer,
@@ -10,7 +11,7 @@ import {
 } from "@/lib/services/agreements/customers";
 import {
   addLine, bulkCreateProposals, createProposal, deleteDraftProposal, removeLine, setLinePrice, transitionProposal, updateProposalHeader,
-  type ProposalAction,
+  type ProposalAction, type ProposalEditVersions,
 } from "@/lib/services/agreements/proposals";
 import { resetAgreements } from "@/lib/services/agreements/import";
 import { checkConfirmPassword } from "@/lib/services/full-backup";
@@ -18,11 +19,16 @@ import { importAgreementsWorkbook } from "@/lib/services/agreements/workbook";
 import type { SaAgreement } from "@/lib/agreements/constants";
 import { WORKBOOK_MAX_BYTES, type ActionResult, type BulkResult, type WorkbookImportResult } from "./types";
 
-function fail(e: unknown, fallback: string): ActionResult {
-  if (e instanceof StaleSaveError) return { error: e.message, stale: true };
-  if (e instanceof ForbiddenError) return { error: e.message };
-  console.error(fallback, e);
-  return { error: fallback };
+type Scope = Awaited<ReturnType<typeof requireScope>>["scope"];
+
+/**
+ * Every catch goes through actionError (logs unexpected errors, maps an ended session, re-throws
+ * Next redirects); a stale save is also flagged so the screen can offer "Reload latest".
+ */
+function fail(context: string, e: unknown, fallback: string): ActionResult {
+  const r: ActionResult = actionError(context, e, fallback);
+  if (e instanceof StaleSaveError) r.stale = true;
+  return r;
 }
 function refresh() {
   revalidatePath("/agreements", "layout");
@@ -32,21 +38,28 @@ function version(v: unknown): number {
   if (n === undefined) throw new ForbiddenError("Missing record version — reload the page.");
   return n;
 }
-async function run(fallback: string, fn: (scope: Awaited<ReturnType<typeof requireScope>>["scope"]) => Promise<string | void>): Promise<ActionResult> {
-  const { scope } = await requireScope();
+/** Runs `fn` with the caller's scope (resolved INSIDE the try, so an ended session comes back as a message). */
+async function run(
+  context: string,
+  fallback: string,
+  fn: (scope: Scope) => Promise<string | void | ProposalEditVersions>,
+): Promise<ActionResult> {
   try {
-    const id = await fn(scope);
+    const { scope } = await requireScope();
+    const out = await fn(scope);
     refresh();
-    return { ok: true, ...(id ? { id } : {}) };
+    if (typeof out === "string") return { ok: true, id: out };
+    if (typeof out === "object" && out !== null) return { ok: true, proposalVersion: out.proposalVersion, ...(out.lineVersion !== undefined ? { lineVersion: out.lineVersion } : {}) };
+    return { ok: true };
   } catch (e) {
-    return fail(e, fallback);
+    return fail(context, e, fallback);
   }
 }
 
 // ─── customers ───
 
 export async function saveCustomerAction(input: { id?: string; version?: number; data: CustomerInput }) {
-  return run("Could not save the customer.", async (scope) => {
+  return run("agreements.saveCustomer", "Couldn't save the customer. Please try again.", async (scope) => {
     if (input.id) {
       await updateCustomer(scope, input.id, input.data, version(input.version));
       return input.id;
@@ -62,7 +75,7 @@ export async function saveContractLineAction(input: {
   create?: { year: number; agreement: SaAgreement };
   data: ContractInput;
 }) {
-  return run("Could not save the agreement line.", async (scope) => {
+  return run("agreements.saveContractLine", "Couldn't save the agreement. Please try again.", async (scope) => {
     const data = { ...input.data, price: Number(input.data.price) };
     if (input.id) await updateContractLine(scope, input.id, data, version(input.version));
     else if (input.create) await addContractLine(scope, input.customerId, { ...data, year: Number(input.create.year), agreement: input.create.agreement });
@@ -70,11 +83,13 @@ export async function saveContractLineAction(input: {
 }
 
 export async function deleteContractLineAction(input: { id: string; version: number }) {
-  return run("Could not delete the agreement line.", (scope) => deleteContractLine(scope, input.id, version(input.version)));
+  return run("agreements.deleteContractLine", "Couldn't delete the agreement. Please try again.", (scope) =>
+    deleteContractLine(scope, input.id, version(input.version)),
+  );
 }
 
 export async function saveCallsAction(input: { customerId: string; id?: string; version?: number; year: number; calls: number; repairs: number }) {
-  return run("Could not save calls / repairs.", (scope) =>
+  return run("agreements.saveCalls", "Couldn't save the calls and repairs. Please try again.", (scope) =>
     saveCalls(scope, input.customerId, {
       id: input.id, version: input.version, year: Number(input.year), calls: Number(input.calls), repairs: Number(input.repairs),
     }),
@@ -84,25 +99,29 @@ export async function saveCallsAction(input: { customerId: string; id?: string; 
 // ─── proposals ───
 
 export async function createProposalAction(input: { customerId: string }) {
-  return run("Could not create the proposal.", (scope) => createProposal(scope, input.customerId));
+  return run("agreements.createProposal", "Couldn't create the proposal. Please try again.", (scope) => createProposal(scope, input.customerId));
 }
 
 export async function updateProposalHeaderAction(input: { id: string; version: number; endDate: string | null; notes: string | null }) {
-  return run("Could not save the proposal.", (scope) =>
+  return run("agreements.updateProposalHeader", "Couldn't save the proposal. Please try again.", (scope) =>
     updateProposalHeader(scope, input.id, { endDate: input.endDate || null, notes: input.notes }, version(input.version)),
   );
 }
 
 export async function setLinePriceAction(input: { lineId: string; version: number; price: number }) {
-  return run("Could not save the price.", (scope) => setLinePrice(scope, input.lineId, Number(input.price), version(input.version)));
+  return run("agreements.setLinePrice", "Couldn't save the price. Please try again.", (scope) =>
+    setLinePrice(scope, input.lineId, Number(input.price), version(input.version)),
+  );
 }
 
 export async function addLineAction(input: { proposalId: string; agreement: SaAgreement; price: number }) {
-  return run("Could not add the agreement.", (scope) => addLine(scope, input.proposalId, input.agreement, Number(input.price)));
+  return run("agreements.addLine", "Couldn't add the agreement. Please try again.", (scope) =>
+    addLine(scope, input.proposalId, input.agreement, Number(input.price)),
+  );
 }
 
 export async function removeLineAction(input: { lineId: string }) {
-  return run("Could not remove the agreement.", (scope) => removeLine(scope, input.lineId));
+  return run("agreements.removeLine", "Couldn't remove the agreement. Please try again.", (scope) => removeLine(scope, input.lineId));
 }
 
 export async function proposalTransitionAction(input: {
@@ -113,7 +132,7 @@ export async function proposalTransitionAction(input: {
   markNotRenewed?: boolean;
   restoreActive?: boolean;
 }) {
-  return run("Could not update the proposal.", (scope) =>
+  return run("agreements.proposalTransition", "Couldn't update the proposal. Please try again.", (scope) =>
     transitionProposal(scope, input.id, input.action, {
       expectedVersion: version(input.version), reason: input.reason, markNotRenewed: !!input.markNotRenewed,
       restoreActive: !!input.restoreActive,
@@ -122,24 +141,26 @@ export async function proposalTransitionAction(input: {
 }
 
 export async function deleteProposalAction(input: { id: string; version: number }) {
-  return run("Could not delete the proposal.", (scope) => deleteDraftProposal(scope, input.id, version(input.version)));
+  return run("agreements.deleteProposal", "Couldn't delete the proposal. Please try again.", (scope) =>
+    deleteDraftProposal(scope, input.id, version(input.version)),
+  );
 }
 
 export async function bulkProposalsAction(input: { month: string; apply: boolean }): Promise<BulkResult> {
-  const { scope } = await requireScope();
   try {
+    const { scope } = await requireScope();
     const rows = await bulkCreateProposals(scope, input.month, !!input.apply);
     if (input.apply) refresh();
     return { ok: true, rows };
   } catch (e) {
-    return fail(e, "Could not create the proposals.");
+    return fail("agreements.bulkProposals", e, "Couldn't create the proposals. Please try again.");
   }
 }
 
 // ─── settings / import ───
 
 export async function saveSettingsAction(input: Omit<SettingsRow, "version"> & { version: number }) {
-  return run("Could not save the settings.", (scope) =>
+  return run("agreements.saveSettings", "Couldn't save the settings. Please try again.", (scope) =>
     updateSettings(scope, {
       tierLowMax: Number(input.tierLowMax),
       tierMidMax: Number(input.tierMidMax),
@@ -160,8 +181,8 @@ export async function saveSettingsAction(input: Omit<SettingsRow, "version"> & {
 }
 
 export async function importWorkbookAction(formData: FormData): Promise<WorkbookImportResult> {
-  const { scope } = await requireScope();
   try {
+    const { scope } = await requireScope();
     const file = formData.get("file");
     if (!(file instanceof File) || file.size === 0) return { error: "Choose the exported workbook first." };
     // Server actions accept at most 10 MB per request (next.config bodySizeLimit), so check below that.
@@ -171,7 +192,7 @@ export async function importWorkbookAction(formData: FormData): Promise<Workbook
     if (apply) refresh();
     return { ok: true, summary };
   } catch (e) {
-    return fail(e, "Could not read that workbook.") as WorkbookImportResult;
+    return fail("agreements.importWorkbook", e, "Couldn't read that workbook. Check it is the exported file and try again.");
   }
 }
 
@@ -183,12 +204,12 @@ export async function importWorkbookAction(formData: FormData): Promise<Workbook
 export async function resetAgreementsAction(input: { confirm: string; password: string }): Promise<ActionResult> {
   if (input.confirm !== "RESET") return { error: "Type RESET (in capitals) to confirm." };
   if (!input.password) return { error: "Enter your password to confirm." };
-  let scope: Awaited<ReturnType<typeof requireScope>>["scope"];
+  let scope: Scope;
   try {
     ({ scope } = await requireScope());
   } catch (e) {
     if (e instanceof UnauthorizedError) return { error: "Your session expired — sign in again." };
-    return fail(e, "Could not reset the service-agreement data.");
+    return fail("agreements.reset", e, "Couldn't reset the service-agreement data.");
   }
   try {
     if (!scope.ctx.isOrgAdmin) throw new ForbiddenError("Only admins can reset the service-agreement data.");
@@ -198,6 +219,6 @@ export async function resetAgreementsAction(input: { confirm: string; password: 
     refresh();
     return { ok: true };
   } catch (e) {
-    return fail(e, "Could not reset the service-agreement data.");
+    return fail("agreements.reset", e, "Couldn't reset the service-agreement data.");
   }
 }

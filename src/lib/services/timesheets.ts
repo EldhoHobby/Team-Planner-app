@@ -8,6 +8,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { toUtcMidnight, addDays } from "@/lib/scheduling/calc";
 import { todayUtcMs } from "@/lib/tz";
 import { writeAudit } from "@/lib/services/audit";
+import { logError } from "@/lib/log";
 
 // The 15 INDIRECT LABOR categories, in the EXACT order of the template rows
 // (C32..C46). The generator maps index → template row, so order is load-bearing.
@@ -288,7 +289,9 @@ export async function getSoLookup(): Promise<SoLookupEntry[]> {
     });
     soLookupCache = { key, entries: out };
     return out;
-  } catch {
+  } catch (e) {
+    // A missing template is expected on fresh installs — only log real parse errors.
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") logError("timesheet SO lookup", e);
     return [];
   }
 }
@@ -366,7 +369,8 @@ export async function generateTimesheetXlsx(
   let raw: Buffer;
   try {
     raw = await readFile(templatePath());
-  } catch {
+  } catch (e) {
+    logError("timesheet template read", e);
     throw new ForbiddenError(
       "Timesheet template not found. Place Time_Sheet_Template.xlsm in the configured template folder on the host.",
     );

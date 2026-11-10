@@ -33,7 +33,7 @@ import {
 } from "@/lib/scheduling/calc";
 import { barStyle, dotStyle, softStyle, hatchStyle } from "@/lib/scheduling/colors";
 import { rescheduleJobAction, setJobStatusAction, duplicateJobAction, addJobCommentAction } from "../tasks/actions";
-import { jobLabel } from "./format";
+import { fmtDay, fmtDayRange, jobLabel } from "./format";
 import {
   ContextMenu,
   ConflictPopover,
@@ -55,7 +55,9 @@ import { NewJobDialog } from "./new-job-dialog";
 import { JobEditor } from "./job-editor";
 import { ImportDialog } from "./import-dialog";
 import { MonthCalendar } from "./month-calendar";
-import { todayYmd } from "@/lib/tz";
+import { fmtDateOnly, todayYmd } from "@/lib/tz";
+import { PageHeader } from "@/components/ui/page-header";
+import { FormMessage } from "@/components/ui/form-message";
 import { Button } from "@/components/ui/button";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -163,7 +165,26 @@ export function ScheduleClient({
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  // Board messages: a server error (red) stays until dismissed or the next
+  // successful change; a "Heads up" note (amber) dismisses itself after ~8 s.
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
+  const noticeSeq = useRef(0);
+  const showNotice = (text: string) => setNotice({ id: ++noticeSeq.current, text });
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice((n) => (n?.id === notice.id ? null : n)), 8000);
+    return () => clearTimeout(t);
+  }, [notice]);
+  // Every server-confirmed board change clears a stale error.
+  const settled = (res: { error?: string } | undefined): boolean => {
+    if (res?.error) {
+      setError(res.error);
+      return false;
+    }
+    setError(null);
+    return true;
+  };
   const [exporting, setExporting] = useState(false);
 
   // Board overlays: undo toast, right-click menu, conflict popover, quick search,
@@ -511,13 +532,13 @@ export function ScheduleClient({
       const e = endFromDuration(s, dur);
       if (effTech && isOffInRange(effTech, s, e)) {
         const t = technicians.find((x) => x.id === effTech);
-        setWarning(`Heads up: ${t?.name ?? "that technician"} has time off during ${ymd(s)}–${ymd(e)}.`);
+        showNotice(`Heads up: ${t?.name ?? "that person"} has time off during ${fmtDayRange(ymd(s), ymd(e))}.`);
       } else {
         // Any holiday within the job's span?
         for (let d = s; d.getTime() <= e.getTime(); d = addDays(d, 1)) {
           const h = holidayOn(d);
           if (h) {
-            setWarning(`Heads up: ${ymd(d)} is a holiday (${h}).`);
+            showNotice(`Heads up: ${fmtDay(ymd(d))} is a holiday (${h}).`);
             break;
           }
         }
@@ -526,7 +547,7 @@ export function ScheduleClient({
 
     const label =
       opts.startDate === null
-        ? `Unscheduled “${jobLabel(job)}”`
+        ? `Moved “${jobLabel(job)}” to the backlog`
         : opts.startDate === undefined
           ? `Reassigned “${jobLabel(job)}”`
           : `Moved “${jobLabel(job)}”`;
@@ -541,8 +562,8 @@ export function ScheduleClient({
       });
       // Only offer Undo once the server accepted the change — otherwise Undo
       // would write the old values back for a change that never happened.
-      if (res?.error) setWarning(res.error);
-      else showUndo(label, () => revertTo(jobId, before), jobId);
+      if (settled(res))
+        showUndo(label, () => revertTo(jobId, before), jobId);
       router.refresh(); // reconcile with server truth
     });
   };
@@ -564,7 +585,7 @@ export function ScheduleClient({
         durationDays: snap.durationDays ?? undefined,
         jobStatus: snap.jobStatus,
       });
-      if (res?.error) setWarning(res.error);
+      settled(res);
       router.refresh();
     });
   };
@@ -583,8 +604,7 @@ export function ScheduleClient({
     const job = jobs.find((j) => j.id === jobId);
     startTransition(async () => {
       const res = await rescheduleJobAction({ jobId, durationDays });
-      if (res?.error) setWarning(res.error);
-      else
+      if (settled(res))
         showUndo(
           `Resized “${job ? jobLabel(job) : "job"}” to ${durationDays} day${durationDays === 1 ? "" : "s"}`,
           () => revertTo(jobId, before),
@@ -610,13 +630,12 @@ export function ScheduleClient({
     setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: "COMPLETED" } : j)));
     startTransition(async () => {
       const res = await setJobStatusAction({ jobId: job.id, jobStatus: "COMPLETED" });
-      if (res?.error) setWarning(res.error);
-      else
+      if (settled(res))
         showUndo(`Completed “${jobLabel(job)}”`, () => {
           setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: before.jobStatus } : j)));
           startTransition(async () => {
             const undoRes = await setJobStatusAction({ jobId: job.id, jobStatus: before.jobStatus });
-            if (undoRes?.error) setWarning(undoRes.error);
+            settled(undoRes);
             router.refresh();
           });
         }, job.id);
@@ -626,8 +645,7 @@ export function ScheduleClient({
   const duplicateFromMenu = (job: JobRow) => {
     startTransition(async () => {
       const res = await duplicateJobAction({ jobId: job.id });
-      if (res?.error) setWarning(res.error);
-      else if (res?.jobId) setPendingSelectId(res.jobId);
+      if (settled(res) && res?.jobId) setPendingSelectId(res.jobId);
       router.refresh();
     });
   };
@@ -662,7 +680,7 @@ export function ScheduleClient({
       const res = await fetch("/api/schedule/export");
       if (!res.ok) {
         const msg = (await res.text().catch(() => "")).trim().slice(0, 200);
-        setWarning(`Export failed: ${msg || `server returned ${res.status}`}`);
+        setError(`Export failed: ${msg || `server returned ${res.status}`}`);
         return;
       }
       const blob = await res.blob();
@@ -677,7 +695,7 @@ export function ScheduleClient({
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch {
-      setWarning("Export failed — check your connection and try again.");
+      setError("Export failed — check your connection and try again.");
     } finally {
       setExporting(false);
     }
@@ -687,8 +705,9 @@ export function ScheduleClient({
   const rangeLabel =
     view === "calendar"
       ? // Label the month that DOMINATES the (wheel-scrollable) 6-week grid.
-        addDays(startOfWeekSunday(anchor), 17).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
-      : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`;
+        // (fixed en-US + UTC, so the server and browser renders agree)
+        fmtDateOnly(addDays(startOfWeekSunday(anchor), 17), { month: "long", year: "numeric" })
+      : `${fmtDateOnly(weekDays[0], { month: "short", day: "numeric" })} – ${fmtDateOnly(weekEnd)}`;
 
   return (
     <div
@@ -698,12 +717,12 @@ export function ScheduleClient({
       onDrop={() => { draggingRef.current = false; }}
     >
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 print:hidden">
-        <div className="flex items-center gap-2">
-          <CalendarDays className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Field Service Schedule</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+      <PageHeader
+        className="mb-0 items-center border-b px-5 py-3 print:hidden"
+        icon={<CalendarDays className="h-5 w-5 text-muted-foreground" />}
+        title="Schedule"
+        actions={
+        <>
           <div className="flex items-center rounded-md border text-xs">
             <button
               type="button"
@@ -757,8 +776,9 @@ export function ScheduleClient({
           <Button size="sm" onClick={() => setNewOpen(true)}>
             <Plus className="mr-1.5 h-4 w-4" /> New job
           </Button>
-        </div>
-      </header>
+        </>
+        }
+      />
 
       {/* Insights + filters */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-5 py-2 text-xs print:hidden">
@@ -841,12 +861,33 @@ export function ScheduleClient({
         })}
       </div>
 
-      {warning ? (
-        <div className="flex items-center gap-2 border-b bg-amber-50 px-5 py-2 text-sm text-amber-800 print:hidden">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span className="flex-1">{warning}</span>
-          <button type="button" aria-label="Dismiss" onClick={() => setWarning(null)} className="rounded p-0.5 hover:bg-amber-100">
-            <X className="h-4 w-4" />
+      {error ? (
+        <div className="flex items-start gap-2 border-b bg-destructive/10 px-5 py-2 print:hidden">
+          <FormMessage tone="error" className="flex-1">{error}</FormMessage>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            onClick={() => setError(null)}
+            className="rounded p-0.5 text-destructive hover:bg-destructive/10"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
+      ) : null}
+      {notice ? (
+        <div
+          role="status"
+          className="flex items-center gap-2 border-b bg-amber-50 px-5 py-2 text-sm text-amber-800 print:hidden"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+          <span className="flex-1">{notice.text}</span>
+          <button
+            type="button"
+            aria-label="Dismiss note"
+            onClick={() => setNotice(null)}
+            className="rounded p-0.5 hover:bg-amber-100"
+          >
+            <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
       ) : null}
@@ -930,7 +971,7 @@ export function ScheduleClient({
           ) : (
             <>
               <div className="sticky top-0 z-10 grid grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b bg-background">
-                <div className="border-r px-3 py-2 text-xs font-medium text-muted-foreground">Technician</div>
+                <div className="border-r px-3 py-2 text-xs font-medium text-muted-foreground">Person</div>
                 {weekDays.map((d, i) => {
                   const isToday = ymd(d) === todayYmd;
                   const weekend = i === 0 || i === 6;
@@ -1079,7 +1120,7 @@ export function ScheduleClient({
         <Modal
           open
           onClose={() => setDayTasks(null)}
-          title={`Targeted tasks — ${parseYmd(dayTasks.ymd).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
+          title={`Targeted tasks — ${fmtDay(dayTasks.ymd)}`}
           description="Dashboard tasks due this day."
         >
           <ul className="space-y-1.5">
@@ -1134,8 +1175,8 @@ export function ScheduleClient({
           conflict={warnings.has(selected.id)}
           conflictReason={
             [
-              conflicts.has(selected.id) ? "Technician double-booked" : null,
-              ptoClashIds.has(selected.id) ? "Scheduled during the technician's time off" : null,
+              conflicts.has(selected.id) ? "Person double-booked" : null,
+              ptoClashIds.has(selected.id) ? "Scheduled during the person's time off" : null,
             ]
               .filter(Boolean)
               .join("; ") || undefined
@@ -1167,7 +1208,7 @@ export function ScheduleClient({
           onReason={(jobId, body) =>
             startTransition(async () => {
               const res = await addJobCommentAction({ jobId, body });
-              if (res.error) setWarning(res.error);
+              settled(res);
               router.refresh();
             })
           }
@@ -1203,9 +1244,9 @@ function TechFilter({
   const isAll = selected === null;
   const count = selected?.size ?? 0;
   const label = isAll
-    ? "All technicians"
+    ? "Everyone"
     : count === 0
-      ? "No technicians"
+      ? "No one"
       : count === 1
         ? (selected!.has("UNASSIGNED")
             ? "Unassigned"
@@ -1225,7 +1266,7 @@ function TechFilter({
     <div className="relative" ref={ref}>
       <button
         type="button"
-        aria-label="Filter technicians"
+        aria-label={`Filter people: ${label}`}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={`${selectClass} flex items-center gap-1 ${!isAll ? "border-primary/60 font-medium" : ""}`}
@@ -1242,7 +1283,7 @@ function TechFilter({
               onChange={() => onChange(isAll ? new Set() : null)}
               className="h-3.5 w-3.5 accent-primary"
             />
-            All technicians
+            Everyone
           </label>
           <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted">
             <input
@@ -1415,7 +1456,7 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
         </div>
         <p className="truncate text-[11px] opacity-80">
           {job.technicianName ?? "Unassigned"}
-          {job.startDate ? ` · ${job.startDate}` : ""}
+          {job.startDate ? ` · ${fmtDayRange(job.startDate, job.endDate)}` : ""}
         </p>
 
         {expanded ? (
@@ -1425,9 +1466,9 @@ function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; o
             <Detail label="Type" value={job.jobType ? JOB_TYPE_LABELS[job.jobType] : null} />
             <Detail label="Status" value={STATUS_LABELS[job.jobStatus] ?? job.jobStatus} />
             <Detail label="Hardware" value={job.hardwareTarget} />
-            <Detail label="Technician" value={job.technicianName ?? "Unassigned"} />
-            <Detail label="Start" value={job.startDate} />
-            <Detail label="End" value={job.endDate} />
+            <Detail label="Person" value={job.technicianName ?? "Unassigned"} />
+            <Detail label="Start" value={job.startDate ? fmtDay(job.startDate) : null} />
+            <Detail label="End" value={job.endDate ? fmtDay(job.endDate) : null} />
             <Detail label="Days" value={job.durationDays === 0 ? "TBD" : job.durationDays != null ? String(job.durationDays) : null} />
             <Detail label="Tentative" value={job.tentative ? "Yes" : "No"} />
             <Detail label="Scope" value={job.description} wrap />

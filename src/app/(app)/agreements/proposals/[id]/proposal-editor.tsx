@@ -1,24 +1,30 @@
 "use client";
 
 import { ymdEastern } from "@/lib/tz";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Check, Printer, RotateCcw, Send, Trash2, Undo2, X } from "lucide-react";
+import { Check, Printer, RotateCcw, Send, Trash2, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
+import { SaveStatus, useSaveStatus } from "@/components/ui/save-status";
 import { cn } from "@/lib/utils";
-import { AGREEMENT_LABELS, fmtDate, fmtMoney } from "@/lib/agreements/constants";
+import { AGREEMENT_LABELS, fmtDate, fmtMoney, type SaAgreement } from "@/lib/agreements/constants";
 import { pctBetween } from "@/lib/agreements/pricing";
 import type { ProposalDetail } from "@/lib/services/agreements/proposals";
 import { CustomerStatusBadge, ProposalBadge, UnconfirmedSo } from "../../badges";
 import { CloseProposalDialog } from "../../close-proposal-dialog";
 import { ProposalSheet } from "../proposal-sheet";
 import { printInFrame } from "../../print-frame";
+import { SIGN_TITLE, signMessage } from "../../sign-message";
+import type { ActionResult } from "../../types";
 import {
   addLineAction, deleteProposalAction, proposalTransitionAction, removeLineAction, setLinePriceAction, updateProposalHeaderAction,
 } from "../../actions";
 
-type Run = (fn: () => Promise<{ error?: string; stale?: boolean }>, ok?: string) => void;
+type Line = ProposalDetail["proposal"]["lines"][number];
 
 function daysBetween(from: string, to: string) {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
@@ -39,6 +45,9 @@ export function ProposalEditor({
   backHref?: string;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
+  const save = useSaveStatus();
+  // `pending` covers the workflow buttons only (send / sign / delete …) — the yellow cells are never disabled.
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<{ text: string; error?: boolean; stale?: boolean } | null>(null);
   const [closing, setClosing] = useState(false);
@@ -52,6 +61,76 @@ export function ProposalEditor({
   const lastTotal = p.lines.reduce((a, l) => a + (l.lastPrice ?? 0), 0);
   const sentAgo = p.status === "SENT" && p.sentDate ? daysBetween(p.sentDate, today) : null;
 
+  // ── Saves run one after another, each with the newest versions we know of ──
+  // Every edit bumps the proposal's version (and a price edit its line's), and the action returns the
+  // new numbers. The refreshed page data can arrive later than the next edit (or include someone else's
+  // save), so keep the highest version seen from either source — versions only ever go up.
+  const known = useRef<{ proposal: number; lines: Map<string, number> }>({
+    proposal: p.version,
+    lines: new Map(p.lines.map((l) => [l.id, l.version])),
+  });
+  useEffect(() => {
+    const k = known.current;
+    k.proposal = Math.max(k.proposal, p.version);
+    for (const l of p.lines) k.lines.set(l.id, Math.max(k.lines.get(l.id) ?? 0, l.version));
+  }, [p.version, p.lines]);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+
+  /** Queue a save; `fn` reads `known` when its turn comes. Resolves to the result (an error result if it threw). */
+  const enqueue = (fn: () => Promise<ActionResult>, lineId?: string): Promise<ActionResult> => {
+    const next = queue.current.then(async (): Promise<ActionResult> => {
+      let r: ActionResult;
+      try {
+        r = await save.run(fn);
+      } catch {
+        r = { error: "Couldn't save — check your connection and try again." };
+      }
+      const k = known.current;
+      if (r.proposalVersion !== undefined) k.proposal = Math.max(k.proposal, r.proposalVersion);
+      if (lineId && r.lineVersion !== undefined) k.lines.set(lineId, Math.max(k.lines.get(lineId) ?? 0, r.lineVersion));
+      if (r.stale) setMsg({ text: r.error ?? "Someone else changed this proposal.", error: true, stale: true });
+      router.refresh();
+      return r;
+    });
+    queue.current = next;
+    return next;
+  };
+  /** An inline edit (yellow cell, notes, add / remove): progress and errors show in the header's save status. */
+  const edit = (fn: () => Promise<ActionResult>, lineId?: string) => enqueue(fn, lineId).then((r) => !r.error);
+  /** A workflow step: waits for queued edits, disables the workflow buttons, confirms in the banner. */
+  const step = (fn: () => Promise<ActionResult>, ok: string, after?: (r: ActionResult) => void) =>
+    start(async () => {
+      setMsg(null);
+      const r = await enqueue(fn);
+      if (r.error) {
+        if (!r.stale) setMsg({ text: r.error, error: true });
+      } else setMsg({ text: ok });
+      after?.(r);
+    });
+
+  // End date and notes are saved together (one action). Keep the values last sent, so an end-date save
+  // queued right after a notes save doesn't send the notes from before the page refreshed (or vice versa).
+  const header = useRef({ endDate: p.endDate, notes: p.notes, inFlight: 0 });
+  const savedHeader = useRef({ endDate: p.endDate, notes: p.notes });
+  useEffect(() => {
+    savedHeader.current = { endDate: p.endDate, notes: p.notes };
+    if (header.current.inFlight === 0) Object.assign(header.current, savedHeader.current);
+  }, [p.endDate, p.notes]);
+  const saveHeader = (patch: { endDate?: string | null; notes?: string | null }) => {
+    const h = header.current;
+    if (patch.endDate !== undefined) h.endDate = patch.endDate;
+    if (patch.notes !== undefined) h.notes = patch.notes;
+    h.inFlight += 1;
+    return edit(() => updateProposalHeaderAction({ id: p.id, version: known.current.proposal, endDate: h.endDate, notes: h.notes })).then((ok) => {
+      h.inFlight -= 1;
+      if (!ok && h.inFlight === 0) Object.assign(h, savedHeader.current); // a failed save is not "last sent" any more
+      return ok;
+    });
+  };
+
+  const transition = (action: "send" | "unsend" | "sign" | "reopen", ok: string, extra: { restoreActive?: boolean } = {}) =>
+    step(() => proposalTransitionAction({ id: p.id, version: known.current.proposal, action, ...extra }), ok);
+
   // Success messages fade after a few seconds; errors stay until the next action.
   useEffect(() => {
     if (!msg || msg.error) return;
@@ -59,42 +138,84 @@ export function ProposalEditor({
     return () => clearTimeout(t);
   }, [msg]);
 
-  // Every save refreshes the page data, so the next edit sends the proposal's / line's NEW version
-  // (a price edit bumps the proposal's version too).
-  const run: Run = (fn, ok) =>
-    start(async () => {
-      const r = await fn();
-      setMsg(r.error ? { text: r.error, error: true, stale: r.stale } : ok ? { text: ok } : null);
-      router.refresh();
+  const markSigned = async () => {
+    const ok = await confirm({
+      title: SIGN_TITLE,
+      message: signMessage({ customer: c.name, year: p.year, total, agreements: p.lines.length }),
+      confirmLabel: "Mark signed",
     });
-  const transition = (action: "send" | "unsend" | "sign" | "reopen", ok: string, extra: { restoreActive?: boolean } = {}) =>
-    run(() => proposalTransitionAction({ id: p.id, version: p.version, action, ...extra }), ok);
+    if (ok) transition("sign", "Signed — the agreements are now on the customer's record.");
+  };
+
+  const deleteDraft = async () => {
+    const ok = await confirm({
+      title: "Delete this draft proposal?",
+      message: `${c.name}'s ${p.year} draft proposal (${fmtMoney(total)}) will be deleted. This can't be undone.`,
+      confirmLabel: "Delete draft",
+      tone: "danger",
+    });
+    if (!ok) return;
+    step(
+      () => deleteProposalAction({ id: p.id, version: known.current.proposal }),
+      "Draft deleted.",
+      (r) => { if (!r.error) router.push(`/agreements/customers/${c.id}?tab=proposals`); },
+    );
+  };
+
+  const addAgreement = async (agreement: SaAgreement, suggested: number | null) => {
+    const label = AGREEMENT_LABELS[agreement];
+    const raw = await confirm({
+      title: `Add ${label}`,
+      message: "Whole dollars, no cents (e.g. 1250).",
+      input: { label: `${label} price for ${p.year}`, required: true, initialValue: suggested ? String(suggested) : "" },
+      confirmLabel: "Add",
+    });
+    if (raw === null) return;
+    const cleaned = raw.replace(/[$,\s]/g, "");
+    if (!/^\d+$/.test(cleaned)) {
+      await confirm({
+        title: `${label} not added`,
+        message: `"${raw.trim()}" isn't a whole-dollar amount. Enter a number of zero or more without cents, such as 1250.`,
+        alert: true,
+      });
+      return;
+    }
+    void edit(() => addLineAction({ proposalId: p.id, agreement, price: Number(cleaned) }));
+  };
+
+  const removeAgreement = async (line: Line) => {
+    const label = AGREEMENT_LABELS[line.agreement];
+    const ok = await confirm({
+      title: `Remove ${label}?`,
+      message: `${label} (${fmtMoney(line.price)}) comes off ${c.name}'s ${p.year} proposal. You can add it back with the + in its cell.`,
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (ok) void edit(() => removeLineAction({ lineId: line.id }));
+  };
 
   return (
     <div className="space-y-4 print:space-y-0">
-      <nav className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground print:hidden">
-        <Link href={backHref} className="inline-flex items-center gap-1 hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /> Proposals
-        </Link>
-        <Link href={`/agreements/customers/${c.id}?tab=proposals`} className="hover:text-foreground">{c.name}</Link>
-      </nav>
-
-      {/* Workflow bar (screen only: Ctrl+P prints just the sheet, like Print / PDF) */}
-      <section className="rounded-lg border bg-card p-4 print:hidden">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-lg font-semibold">{p.year} renewal proposal</h2>
-              <ProposalBadge status={p.status} />
-              {c.status !== "ACTIVE" && <CustomerStatusBadge status={c.status} />}
-            </div>
-            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
-              <Link href={`/agreements/customers/${c.id}`} className="font-medium text-foreground hover:underline">{c.name}</Link>
-              <span>· SO # <span className="font-mono">{c.soNumber}</span></span>
-              {!c.soConfirmed && <UnconfirmedSo />}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
+      <PageHeader
+        className="mb-0 print:hidden"
+        back={{ href: backHref, label: "Proposals" }}
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            {p.year} proposal
+            <ProposalBadge status={p.status} />
+            {c.status !== "ACTIVE" && <CustomerStatusBadge status={c.status} />}
+          </span>
+        }
+        description={
+          <span className="flex flex-wrap items-center gap-x-2">
+            <Link href={`/agreements/customers/${c.id}`} className="font-medium text-foreground hover:underline">{c.name}</Link>
+            <span>· SO # <span className="font-mono">{c.soNumber}</span></span>
+            {!c.soConfirmed && <UnconfirmedSo />}
+          </span>
+        }
+        actions={
+          <>
+            {editable && <SaveStatus state={save.state} className="mr-1" />}
             <Button
               variant="outline"
               size="sm"
@@ -104,47 +225,27 @@ export function ProposalEditor({
                 printInFrame(`/agreements/proposals/print?ids=${p.id}`, `Proposal - ${c.name} ${p.year}`, () => setPrinting(false));
               }}
             >
-              <Printer className="h-4 w-4" /> {printing ? "Preparing…" : "Print / PDF"}
+              <Printer className="h-4 w-4" aria-hidden /> {printing ? "Preparing…" : "Print / PDF"}
             </Button>
             {canEdit && p.status === "DRAFT" && (
-              <Button size="sm" disabled={pending} onClick={() => transition("send", "Marked as sent.")}><Send className="h-4 w-4" /> Mark sent</Button>
+              <Button size="sm" disabled={pending} onClick={() => transition("send", "Marked as sent.")}><Send className="h-4 w-4" aria-hidden /> Mark sent</Button>
             )}
             {canEdit && p.status === "SENT" && (
-              <Button size="sm" variant="outline" disabled={pending} onClick={() => transition("unsend", "Back to draft.")}><Undo2 className="h-4 w-4" /> Back to draft</Button>
+              <Button size="sm" variant="outline" disabled={pending} onClick={() => transition("unsend", "Back to draft.")}><Undo2 className="h-4 w-4" aria-hidden /> Back to draft</Button>
             )}
             {editable && (
               <>
-                <Button
-                  size="sm"
-                  variant={p.status === "SENT" ? "default" : "outline"}
-                  disabled={pending}
-                  onClick={() => {
-                    if (confirm(`Mark ${c.name}'s ${p.year} proposal (${fmtMoney(total)}) signed today? Its prices become the ${p.year} agreements.`)) {
-                      transition("sign", "Signed — the agreements are now on the customer's record.");
-                    }
-                  }}
-                >
-                  <Check className="h-4 w-4" /> Mark signed
+                <Button size="sm" variant={p.status === "SENT" ? "default" : "outline"} disabled={pending} onClick={markSigned}>
+                  <Check className="h-4 w-4" aria-hidden /> Mark signed
                 </Button>
-                <Button size="sm" variant="outline" disabled={pending} onClick={() => setClosing(true)}><X className="h-4 w-4" /> Decline / withdraw</Button>
+                <Button size="sm" variant="outline" disabled={pending} onClick={() => setClosing(true)}>
+                  <X className="h-4 w-4" aria-hidden /> Decline / withdraw
+                </Button>
               </>
             )}
             {canEdit && p.status === "DRAFT" && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-destructive hover:text-destructive"
-                disabled={pending}
-                onClick={() => {
-                  if (!confirm(`Delete ${c.name}'s ${p.year} draft proposal (${fmtMoney(total)})? This can't be undone.`)) return;
-                  start(async () => {
-                    const r = await deleteProposalAction({ id: p.id, version: p.version });
-                    if (r.error) setMsg({ text: r.error, error: true });
-                    else router.push(`/agreements/customers/${c.id}?tab=proposals`);
-                  });
-                }}
-              >
-                <Trash2 className="h-4 w-4" /> Delete draft
+              <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={pending} onClick={deleteDraft}>
+                <Trash2 className="h-4 w-4" aria-hidden /> Delete draft
               </Button>
             )}
             {canEdit && (p.status === "DECLINED" || p.status === "WITHDRAWN") && (
@@ -154,14 +255,17 @@ export function ProposalEditor({
                 disabled={pending}
                 onClick={() => (c.status === "NOT_RENEWED" ? setReopening(true) : transition("reopen", "Reopened as a draft."))}
               >
-                <RotateCcw className="h-4 w-4" /> Reopen
+                <RotateCcw className="h-4 w-4" aria-hidden /> Reopen
               </Button>
             )}
-          </div>
-        </div>
+          </>
+        }
+      />
 
+      {/* Key figures + workflow (screen only: Ctrl+P prints just the sheet, like Print / PDF) */}
+      <section className="rounded-lg border bg-card p-4 print:hidden">
         {reopening && (
-          <div role="group" aria-label="Reopen proposal" className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+          <div role="group" aria-label="Reopen proposal" className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
             <span className="mr-auto">
               {c.name} is marked <b>Not renewed</b>, which hides it from the default lists and renewals. Set it back to Active too?
             </span>
@@ -190,8 +294,7 @@ export function ProposalEditor({
           </div>
         )}
 
-        {/* Key figures */}
-        <dl className="mt-4 grid grid-cols-2 gap-3 border-t pt-4 sm:grid-cols-4">
+        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div>
             <dt className="text-xs text-muted-foreground">Proposed total</dt>
             <dd className="text-xl font-semibold tabular-nums">{fmtMoney(total)}</dd>
@@ -205,7 +308,7 @@ export function ProposalEditor({
           <div>
             <dt className="text-xs text-muted-foreground">Term ends</dt>
             <dd className="text-xl font-semibold">{fmtDate(p.endDate) || "—"}</dd>
-            <dd className="text-xs text-muted-foreground">current ends {fmtDate(c.nextEndDate) || "—"}</dd>
+            <dd className="text-xs text-muted-foreground">current term ends {fmtDate(c.nextEndDate) || "—"}</dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">{p.status === "SENT" ? "Waiting on the customer" : "Status"}</dt>
@@ -222,23 +325,26 @@ export function ProposalEditor({
 
       <div aria-live="polite" className="min-h-0 print:hidden">
         {msg && (
-          <p role={msg.error ? "alert" : "status"} className={cn("rounded-md border px-3 py-2 text-sm", msg.error ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-emerald-500/40 bg-emerald-500/10")}>
+          <FormMessage
+            tone={msg.error ? "error" : "success"}
+            className={cn("rounded-md border px-3 py-2", msg.error ? "border-destructive/40 bg-destructive/10" : "border-emerald-500/40 bg-emerald-500/10")}
+          >
             {msg.text}
             {msg.stale && (
               <Button
                 size="sm"
                 variant="outline"
                 className="ml-2 h-7"
-                disabled={pending}
                 onClick={() => {
                   setMsg(null);
+                  save.reset();
                   router.refresh();
                 }}
               >
                 Reload latest
               </Button>
             )}
-          </p>
+          </FormMessage>
         )}
       </div>
 
@@ -248,20 +354,19 @@ export function ProposalEditor({
           d={data}
           printDate={today}
           editable={editable}
-          pending={pending}
           onPrice={(line, price) =>
-            run(() => setLinePriceAction({ lineId: line.id, version: line.version, price: Math.round(price) }), `${AGREEMENT_LABELS[line.agreement]} saved at ${fmtMoney(Math.round(price))}.`)}
-          onEndDate={(endDate) => run(() => updateProposalHeaderAction({ id: p.id, version: p.version, endDate, notes: p.notes }), "End date saved.")}
-          onAdd={(agreement, price) => run(() => addLineAction({ proposalId: p.id, agreement, price }), `${AGREEMENT_LABELS[agreement]} added.`)}
-          onRemove={(line) => run(() => removeLineAction({ lineId: line.id }), `${AGREEMENT_LABELS[line.agreement]} removed.`)}
-          onNotes={(notes) => run(() => updateProposalHeaderAction({ id: p.id, version: p.version, endDate: p.endDate, notes }), "Notes saved.")}
+            edit(() => setLinePriceAction({ lineId: line.id, version: known.current.lines.get(line.id) ?? line.version, price: Math.round(price) }), line.id)}
+          onEndDate={(endDate) => saveHeader({ endDate })}
+          onAdd={addAgreement}
+          onRemove={removeAgreement}
+          onNotes={(notes) => saveHeader({ notes })}
         />
       </div>
 
       {closing && (
         <CloseProposalDialog
           proposalId={p.id}
-          version={p.version}
+          version={() => known.current.proposal}
           customerName={c.name}
           year={p.year}
           onClose={() => setClosing(false)}

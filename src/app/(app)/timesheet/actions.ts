@@ -1,9 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireScope } from "@/lib/auth/current-user";
 import { saveTimesheet, setEmpNo } from "@/lib/services/timesheets";
 import type { SaveTimesheetInput } from "@/lib/services/timesheets";
+import { actionError } from "@/lib/log";
 import type { SaveState, EmpNoState } from "./types";
 
 export async function saveTimesheetAction(input: SaveTimesheetInput): Promise<SaveState> {
@@ -13,8 +14,7 @@ export async function saveTimesheetAction(input: SaveTimesheetInput): Promise<Sa
     revalidatePath("/timesheet");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not save the timesheet." };
+    return actionError("saveTimesheet", e, "Could not save the timesheet. Please try again.");
   }
 }
 
@@ -25,7 +25,6 @@ export async function setEmpNoAction(empNo: string): Promise<EmpNoState> {
     revalidatePath("/timesheet");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not save Emp No." };
+    return actionError("setEmpNo", e, "Could not save the Emp No. Please try again.");
   }
 }

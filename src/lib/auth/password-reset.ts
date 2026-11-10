@@ -25,7 +25,7 @@ export async function createAdminResetLink(
   targetUserId: string,
 ): Promise<{ token: string; link: string; username: string; expiresInHours: number }> {
   if (!scope.ctx.isOrgAdmin) {
-    throw new ForbiddenError("Only admins can issue password reset links");
+    throw new ForbiddenError("Only admins can issue set-password links.");
   }
 
   // The target must be a member of the admin's organization (tenancy guard).
@@ -33,7 +33,7 @@ export async function createAdminResetLink(
     where: { userId_orgId: { userId: targetUserId, orgId: scope.ctx.orgId } },
   });
   if (!membership) {
-    throw new ForbiddenError("User is not a member of your organization");
+    throw new ForbiddenError("That person is not in your organization.");
   }
 
   // Only the Owner may issue a link for the Owner (otherwise any admin could
@@ -67,7 +67,7 @@ export async function createAdminResetLink(
     entity: "auth",
     entityId: targetUserId,
     action: "reset-link-created",
-    summary: `Issued a password reset link for ${target?.name ?? target?.username ?? targetUserId}.`,
+    summary: `Issued a set-password link for ${target?.name ?? target?.username ?? targetUserId}.`,
   });
 
   return {
@@ -93,7 +93,7 @@ export async function resetPassword(
   await prisma.$transaction(async (tx) => {
     const rec = await tx.passwordResetToken.findUnique({ where: { tokenHash } });
     if (!rec || rec.usedAt || rec.expiresAt < new Date()) {
-      throw new Error("This reset link is no longer valid.");
+      throw new Error("This set-password link is no longer valid.");
     }
 
     await tx.user.update({
@@ -117,7 +117,7 @@ export async function resetPassword(
         actorId: user.id,
         actorEmail: user.email ?? user.username,
         action: "reset-completed",
-        summary: `${user.name ?? user.username} set a new password via a reset link.`,
+        summary: `${user.name ?? user.username} set a new password via a set-password link.`,
       });
     }
   });

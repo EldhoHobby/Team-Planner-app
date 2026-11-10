@@ -12,6 +12,7 @@
 // Config (env): EMAIL_AI_ENABLED, EMAIL_AI_MODEL, OLLAMA_URL.
 
 import { fmtEastern, todayYmd } from "@/lib/tz";
+import { logError } from "@/lib/log";
 
 const DEFAULT_MODEL = "qwen2.5:3b-instruct";
 const DEFAULT_URL = "http://ollama:11434";
@@ -138,8 +139,11 @@ export async function summarizeEmail(input: {
       targetDate: parseTargetDate(out.target_date, today),
       priority: priorityNum >= 1 && priorityNum <= 5 ? priorityNum : undefined,
     };
-  } catch {
-    return null; // down/slow/garbled model — caller falls back to the raw email
+  } catch (e) {
+    // Down / slow / garbled model — the caller falls back (null contract).
+    // A timeout is an expected outcome on a cold CPU model; log anything else.
+    if (!(e instanceof Error && e.name === "AbortError")) logError("email-ai summarize", e);
+    return null;
   } finally {
     clearTimeout(timer);
   }

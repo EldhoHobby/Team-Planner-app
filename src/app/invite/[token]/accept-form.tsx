@@ -7,6 +7,7 @@ import type { AcceptState } from "./types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FormMessage } from "@/components/ui/form-message";
 
 const initialState: AcceptState = {};
 
@@ -27,8 +28,8 @@ export function AcceptForm({ token, email }: { token: string; email: string }) {
       <input type="hidden" name="token" value={token} />
 
       <div className="space-y-2">
-        <Label>Email</Label>
-        <Input value={email} readOnly disabled />
+        <Label htmlFor="invite-email">Email</Label>
+        <Input id="invite-email" value={email} readOnly disabled />
       </div>
       <div className="space-y-2">
         <Label htmlFor="name">Your name</Label>
@@ -45,14 +46,10 @@ export function AcceptForm({ token, email }: { token: string; email: string }) {
       </div>
       <p className="text-xs text-muted-foreground">
         You&apos;ll sign in with a username, which is created for you. You can
-        see it any time under Settings → Account.
+        see it any time on your Account page (your name at the bottom of the sidebar).
       </p>
 
-      {state.error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {state.error}
-        </p>
-      ) : null}
+      <FormMessage>{state.error}</FormMessage>
 
       <SubmitButton />
     </form>

@@ -3,17 +3,17 @@
 // Shared board overlays + helpers for the schedule (used by both the timeline in
 // schedule-client.tsx and the month calendar in month-calendar.tsx):
 //   • ContextMenu     — right-click actions on a job (Open / Reassign ▸ / Complete
-//                       / Duplicate / Unschedule).
+//                       / Duplicate / Move to backlog).
 //   • ConflictPopover — click a ⚠ to see exactly what a job clashes with.
 //   • UndoToast       — bottom toast that reverts the last board change.
 //   • ResizeHandle    — right-edge drag to change a job's duration (both views).
 //   • conflictDetails — pure: the reasons a job is flagged (overlaps + time off).
 
 import { useEffect, useRef, useState } from "react";
-import { CalendarClock, Copy, ExternalLink, Trash2, UserCog, Undo2, X } from "lucide-react";
+import { CalendarClock, Copy, ExternalLink, Inbox, UserCog, Undo2, X } from "lucide-react";
 import { conflictReasons, resizeDayIndex, resizeDuration } from "@/lib/scheduling/job-conflicts";
 import { dotStyle } from "@/lib/scheduling/colors";
-import { jobLabel } from "./format";
+import { fmtDatesInText, jobLabel } from "./format";
 import type { JobRow, TechnicianOption, TechTimeOff } from "./types";
 
 /** The fields a board change (move/reassign/resize/unschedule) can touch — the
@@ -36,10 +36,11 @@ export function snapshotOf(j: JobRow): JobSnapshot {
 
 // ── Conflict details ────────────────────────────────────────────────────────
 
-/** Reasons `job` is flagged, rendered with the board's job label. The logic
- *  itself is pure + unit-tested in @/lib/scheduling/job-conflicts. */
+/** Reasons `job` is flagged, rendered with the board's job label and readable
+ *  dates ("Nov 10 – Nov 12, 2026"). The logic itself is pure + unit-tested in
+ *  @/lib/scheduling/job-conflicts. */
 export function conflictDetails(job: JobRow, jobs: JobRow[], timeOff: TechTimeOff[]): string[] {
-  return conflictReasons(job, jobs, timeOff, jobLabel);
+  return conflictReasons(job, jobs, timeOff, jobLabel).map(fmtDatesInText);
 }
 
 // ── Right-edge resize (both views) ────────────────────────────────────────────
@@ -218,11 +219,11 @@ export function ContextMenu({
         <button
           type="button"
           role="menuitem"
-          className={`${item} text-red-600`}
+          className={item}
           disabled={!job.startDate}
           onClick={() => { onUnschedule(job); onClose(); }}
         >
-          <Trash2 className="h-4 w-4" /> Unschedule
+          <Inbox className="h-4 w-4" /> Move to backlog
         </button>
       </div>
     </div>

@@ -1,17 +1,18 @@
 "use client";
 
-import { History } from "lucide-react";
-
-import { useEffect, useActionState, useState } from "react";
-import { useFormStatus } from "react-dom";
+import { startTransition, useCallback, useEffect, useActionState, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { ListChecks, Plus, X } from "lucide-react";
+import { History, ListChecks, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { daysFromToday, fmtEastern } from "@/lib/tz";
+import { daysFromToday, fmtDateOnly, fmtEastern } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
+import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 import { createTaskAction, updateTaskAction, deleteTaskAction, listTaskHistoryAction } from "./actions";
 import type {
   TaskRow,
@@ -131,87 +132,13 @@ function AssigneeBubble({ name, email }: { name: string | null; email: string })
   );
 }
 
-// ─── Modal wrapper ───
-
-function Modal({
-  open,
-  onClose,
-  title,
-  children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onMouseDown={onClose}
-    >
-      <div
-        className="relative flex w-full max-w-lg flex-col rounded-xl border bg-background shadow-lg"
-        style={{ maxHeight: "90vh" }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b px-6 py-4">
-          <h2 className="text-base font-semibold">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded text-muted-foreground hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="overflow-y-auto">{children}</div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Task form (create + edit) ───
 
-function SubmitButton({ label, pendingLabel }: { label: string; pendingLabel: string }) {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" disabled={pending} className="flex-1">
-      {pending ? pendingLabel : label}
-    </Button>
-  );
-}
+// Same limits as the task schemas in ./actions.ts.
+const MAX = { title: 200, description: 2000, location: 200 } as const;
 
-function DeleteButton() {
-  const { pending } = useFormStatus();
-  return (
-    <button
-      type="submit"
-      disabled={pending}
-      onClick={(e) => {
-        if (!window.confirm("Delete this task permanently?")) {
-          e.preventDefault();
-        }
-      }}
-      className="rounded-md px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-    >
-      {pending ? "Deleting…" : "Delete"}
-    </button>
-  );
-}
-
-function TaskForm({
+/** The create / edit task window (shared Modal). Mount it only while open. */
+function TaskFormDialog({
   mode,
   initialTask,
   projects,
@@ -226,8 +153,11 @@ function TaskForm({
 }) {
   const action = mode === "create" ? createTaskAction : updateTaskAction;
   const initialState: TaskFormState = {};
-  const [state, formAction] = useActionState(action, initialState);
-  const [deleteState, deleteFormAction] = useActionState(deleteTaskAction, initialState);
+  const [state, formAction, saving] = useActionState(action, initialState);
+  const [deleteState, deleteFormAction, deleting] = useActionState(deleteTaskAction, initialState);
+  const confirm = useConfirm();
+  // Anything typed yet → Escape / backdrop / X ask before discarding it.
+  const [dirty, setDirty] = useState(false);
   const [history, setHistory] = useState<AuditEntry[] | null>(null);
   const loadHistory = async () => setHistory(await listTaskHistoryAction({ taskId: initialTask?.id ?? "" }));
 
@@ -259,9 +189,44 @@ function TaskForm({
     if (state.success || deleteState.success) onClose();
   }, [state.success, deleteState.success, onClose]);
 
+  // Dispatched by hand instead of `<form action>`: React resets a form after
+  // its action returns (also on `{ error }`), which threw away what was typed
+  // whenever the server rejected the save.
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (saving || deleting) return;
+    const fd = new FormData(e.currentTarget);
+    startTransition(() => formAction(fd));
+  };
+
+  const remove = async () => {
+    if (!initialTask || saving || deleting) return;
+    const ok = await confirm({
+      title: `Delete task “${initialTask.title}”?`,
+      message: "The task and its assignments will be permanently deleted. This cannot be undone.",
+      confirmLabel: "Delete task",
+      tone: "danger",
+    });
+    if (!ok) return;
+    const fd = new FormData();
+    fd.set("taskId", initialTask.id);
+    startTransition(() => deleteFormAction(fd));
+  };
+
   return (
-    <>
-      <form action={formAction} className="space-y-4 p-6">
+    <Modal
+      open
+      onClose={onClose}
+      title={mode === "create" ? "New task" : "Edit task"}
+      canClose={() => !saving && !deleting}
+      dirty={dirty}
+      confirmClose={
+        mode === "create"
+          ? "This task has not been created yet — what you typed will be lost."
+          : "Your changes to this task have not been saved."
+      }
+    >
+      <form onSubmit={submit} onChange={() => setDirty(true)} className="space-y-4">
         {mode === "edit" && (
           <input type="hidden" name="taskId" value={initialTask?.id} />
         )}
@@ -273,6 +238,7 @@ function TaskForm({
             id="task-title"
             name="title"
             required
+            maxLength={MAX.title}
             placeholder="What needs to be done?"
             defaultValue={initialTask?.title}
           />
@@ -347,8 +313,10 @@ function TaskForm({
               <span className="font-normal text-muted-foreground">(optional)</span>
             </Label>
             <DatePicker
+              id="task-due"
               name="dueDate"
               defaultValue={initialTask?.dueDate ? initialTask.dueDate.slice(0, 10) : ""}
+              onChange={() => setDirty(true)}
             />
           </div>
           <div className="space-y-2">
@@ -378,6 +346,7 @@ function TaskForm({
             id="task-desc"
             name="description"
             rows={3}
+            maxLength={MAX.description}
             className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             placeholder="Add details, context, or links…"
             defaultValue={initialTask?.description ?? undefined}
@@ -402,6 +371,7 @@ function TaskForm({
             <Input
               id="task-location"
               name="location"
+              maxLength={MAX.location}
               placeholder="Site / address"
               defaultValue={initialTask?.location ?? undefined}
             />
@@ -447,18 +417,15 @@ function TaskForm({
           </div>
         )}
 
-        {state.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {state.error}
-          </p>
-        )}
+        <FormMessage tone="error">{state.error}</FormMessage>
 
         <div className="flex items-center gap-2">
-          <SubmitButton
-            label={mode === "create" ? "Create task" : "Save changes"}
-            pendingLabel={mode === "create" ? "Creating…" : "Saving…"}
-          />
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button type="submit" disabled={saving || deleting} className="flex-1">
+            {saving
+              ? mode === "create" ? "Creating…" : "Saving…"
+              : mode === "create" ? "Create task" : "Save changes"}
+          </Button>
+          <Button type="button" variant="outline" disabled={saving || deleting} onClick={onClose}>
             Cancel
           </Button>
         </div>
@@ -466,22 +433,24 @@ function TaskForm({
 
       {/* Delete section — only in edit mode */}
       {mode === "edit" && initialTask && (
-        <div className="border-t px-6 py-4">
-          <form action={deleteFormAction} className="flex items-center gap-2">
-            <input type="hidden" name="taskId" value={initialTask.id} />
-            {deleteState.error && (
-              <p className="flex-1 text-xs text-destructive">
-                {deleteState.error}
-              </p>
-            )}
-            <DeleteButton />
+        <div className="mt-4 border-t pt-4">
+          <div className="flex items-center gap-2">
+            <FormMessage tone="error" className="flex-1 text-xs">{deleteState.error}</FormMessage>
+            <button
+              type="button"
+              disabled={saving || deleting}
+              onClick={() => void remove()}
+              className="rounded-md px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
             <Button type="button" variant="ghost" size="sm" onClick={loadHistory} className="ml-auto">
               <History className="mr-1.5 h-4 w-4" /> {history ? "Refresh history" : "History"}
             </Button>
-          </form>
+          </div>
           {history && (
             <div className="mt-4 border-t pt-4">
-              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Change History</h4>
+              <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Change history</h3>
               {history.length ? (
                 <ul className="space-y-1.5 text-xs">
                   {history.map((h, i) => (
@@ -498,7 +467,7 @@ function TaskForm({
           )}
         </div>
       )}
-    </>
+    </Modal>
   );
 }
 
@@ -571,11 +540,7 @@ function TaskRow({
                 : "text-muted-foreground",
           )}
         >
-          {new Date(task.dueDate).toLocaleDateString(undefined, {
-            month: "short",
-            day: "numeric",
-            timeZone: "UTC",
-          })}
+          {fmtDateOnly(task.dueDate)}
         </span>
       ) : (
         <span className="hidden w-16 lg:block" />
@@ -595,7 +560,9 @@ function TaskRow({
 
       {/* Edit button */}
       <button
+        type="button"
         onClick={() => onEdit(task)}
+        aria-label={`Edit task ${task.title}`}
         className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         Edit
@@ -645,7 +612,12 @@ function FilterBar({
         />
         Assigned to me
       </label>
-      <select value={originFilter} onChange={(e) => setOrigin(e.target.value)} className={filterSelect}>
+      <select
+        value={originFilter}
+        onChange={(e) => setOrigin(e.target.value)}
+        aria-label="Filter by origin"
+        className={filterSelect}
+      >
         <option value="">All origins</option>
         <option value="SELF">Self</option>
         <option value="MANAGER">Assigned</option>
@@ -654,6 +626,7 @@ function FilterBar({
       <select
         value={statusFilter}
         onChange={(e) => setStatus(e.target.value)}
+        aria-label="Filter by status"
         className={filterSelect}
       >
         <option value="">All statuses</option>
@@ -665,6 +638,7 @@ function FilterBar({
       <select
         value={priorityFilter}
         onChange={(e) => setPriority(e.target.value)}
+        aria-label="Filter by priority"
         className={filterSelect}
       >
         <option value="">All priorities</option>
@@ -677,6 +651,7 @@ function FilterBar({
         <select
           value={projectFilter}
           onChange={(e) => setProject(e.target.value)}
+          aria-label="Filter by project"
           className={filterSelect}
         >
           <option value="">All projects</option>
@@ -730,6 +705,8 @@ export function TasksClient({
   const [mine, setMine] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editTask, setEditTask] = useState<TaskRow | null>(null);
+  const closeCreate = useCallback(() => setCreateOpen(false), []);
+  const closeEdit = useCallback(() => setEditTask(null), []);
 
   const filtered = tasks.filter(
     (t) =>
@@ -745,17 +722,20 @@ export function TasksClient({
   return (
     <>
       {/* Page */}
-      <main className="flex h-full flex-col">
+      <div className="flex h-full flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between border-b px-6 py-4">
-          <h1 className="text-xl font-semibold">Tasks</h1>
-          {!noProjects && (
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="mr-1.5 h-4 w-4" />
-              New task
-            </Button>
-          )}
-        </div>
+        <PageHeader
+          className="mb-0 items-center border-b px-6 py-4"
+          title="Tasks"
+          actions={
+            !noProjects ? (
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                New task
+              </Button>
+            ) : undefined
+          }
+        />
 
         {/* Filters */}
         {tasks.length > 0 && (
@@ -833,39 +813,29 @@ export function TasksClient({
             </div>
           )}
         </div>
-      </main>
+      </div>
 
       {/* Create modal */}
-      <Modal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        title="New task"
-      >
-        <TaskForm
+      {createOpen && (
+        <TaskFormDialog
           mode="create"
           projects={projects}
           teamMembers={teamMembers}
-          onClose={() => setCreateOpen(false)}
+          onClose={closeCreate}
         />
-      </Modal>
+      )}
 
       {/* Edit modal */}
-      <Modal
-        open={editTask !== null}
-        onClose={() => setEditTask(null)}
-        title="Edit task"
-      >
-        {editTask && (
-          <TaskForm
-            key={editTask.id}
-            mode="edit"
-            initialTask={editTask}
-            projects={projects}
-            teamMembers={teamMembers}
-            onClose={() => setEditTask(null)}
-          />
-        )}
-      </Modal>
+      {editTask && (
+        <TaskFormDialog
+          key={editTask.id}
+          mode="edit"
+          initialTask={editTask}
+          projects={projects}
+          teamMembers={teamMembers}
+          onClose={closeEdit}
+        />
+      )}
     </>
   );
 }

@@ -2,6 +2,7 @@ import { todayYmd } from "@/lib/tz";
 import { requireScope, UnauthorizedError, ForbiddenError } from "@/lib/auth/current-user";
 import { buildJobsWorkbook } from "@/lib/services/data-io";
 import { writeAudit } from "@/lib/services/audit";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +35,7 @@ export async function GET() {
     if (e instanceof ForbiddenError) {
       return new Response(e.message, { status: 403 });
     }
-    console.error("[schedule export] failed", e);
+    logError("schedule-export", e);
     return new Response("Could not build the schedule export.", { status: 500 });
   }
 }

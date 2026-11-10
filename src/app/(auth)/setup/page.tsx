@@ -1,14 +1,8 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { isBootstrapped } from "@/lib/auth/bootstrap";
+import { AuthCard } from "../auth-card";
 import { SetupForm } from "./setup-form";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 // First-run setup. Once the instance is bootstrapped this route is closed and
 // redirects to sign-in (registration is invite-only thereafter).
@@ -21,19 +15,11 @@ export default async function SetupPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-xl">Welcome — let&apos;s set up Team Planner</CardTitle>
-          <CardDescription>
-            Create your organization and the owner account. Add your people
-            under Settings → People once you&apos;re in.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <SetupForm />
-        </CardContent>
-      </Card>
-    </main>
+    <AuthCard
+      title="Set up Team Planner"
+      description="Create your organization and the Owner account. Add your people under People once you're in."
+    >
+      <SetupForm />
+    </AuthCard>
   );
 }

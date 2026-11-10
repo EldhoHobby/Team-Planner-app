@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/ui/page-header";
 import { cn } from "@/lib/utils";
 import {
   CUSTOMER_STATUSES, CUSTOMER_STATUS_LABELS, isOpenCustomer, SOFTWARES, SOFTWARE_LABELS, fmtDate, fmtMoney,
@@ -73,13 +74,19 @@ export function CustomersTable({
     <th className={cn("px-3 py-2 font-medium", cls)} aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : undefined}>
       <button type="button" className="inline-flex items-center gap-1 hover:text-foreground" onClick={() => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : key === "annualValue" ? -1 : 1 }))}>
         {label}
-        {sort.key === key && (sort.dir === 1 ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
+        {sort.key === key && (sort.dir === 1 ? <ArrowUp className="h-3 w-3" aria-hidden /> : <ArrowDown className="h-3 w-3" aria-hidden />)}
       </button>
     </th>
   );
 
   return (
     <div className="space-y-3">
+      <PageHeader
+        className="mb-1 print:hidden"
+        title="Customers"
+        description="Every service-agreement customer with their annual value and renewal state."
+        actions={canEdit ? <Button onClick={() => setAdding(true)}>Add customer</Button> : undefined}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, SO # or state" className="w-60" aria-label="Search customers" />
         <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Customer status">
@@ -99,7 +106,6 @@ export function CustomersTable({
           <input type="checkbox" checked={unconfirmed} onChange={(e) => setUnconfirmed(e.target.checked)} />
           SO # unconfirmed
         </label>
-        {canEdit && <Button className="ml-auto" onClick={() => setAdding(true)}>Add customer</Button>}
       </div>
 
       <div className="overflow-x-auto rounded-lg border bg-card">

@@ -9,6 +9,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db/client";
 import { getSessionActor, setSessionActingAs } from "./session";
 import { writeAuthAudit } from "@/lib/services/audit";
+import { actionError } from "@/lib/log";
 
 type Result = { error?: string; success?: boolean };
 
@@ -23,16 +24,27 @@ async function requireRealOwner() {
 }
 
 export async function startViewAs(input: { userId: string }): Promise<Result> {
+  if (typeof input !== "object" || input === null || typeof input.userId !== "string" || !input.userId) {
+    return { error: "Invalid request." };
+  }
+  try {
+    return await start(input.userId);
+  } catch (e) {
+    return actionError("viewAs.start", e, "Could not switch to that person. Please try again.");
+  }
+}
+
+async function start(userId: string): Promise<Result> {
   const auth = await requireRealOwner();
-  if (!auth) return { error: "Only the owner can use View as." };
-  if (input.userId === auth.actor.realUser.id) {
+  if (!auth) return { error: "Only the Owner can use View as." };
+  if (userId === auth.actor.realUser.id) {
     await setSessionActingAs(null);
     revalidatePath("/", "layout");
     return { success: true };
   }
   const target = await prisma.user.findFirst({
     where: {
-      id: input.userId,
+      id: userId,
       isActive: true,
       archived: false,
       memberships: { some: { orgId: auth.orgId } },
@@ -53,8 +65,16 @@ export async function startViewAs(input: { userId: string }): Promise<Result> {
 }
 
 export async function stopViewAs(): Promise<Result> {
+  try {
+    return await stop();
+  } catch (e) {
+    return actionError("viewAs.stop", e, "Could not exit View as. Please try again.");
+  }
+}
+
+async function stop(): Promise<Result> {
   const auth = await requireRealOwner();
-  if (!auth) return { error: "Only the owner can use View as." };
+  if (!auth) return { error: "Only the Owner can use View as." };
   const wasImpersonating = auth.actor.impersonating;
   await setSessionActingAs(null);
   if (wasImpersonating) {

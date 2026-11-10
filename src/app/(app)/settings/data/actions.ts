@@ -1,10 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireScope, ForbiddenError, UnauthorizedError } from "@/lib/auth/current-user";
+import { requireScope } from "@/lib/auth/current-user";
 import { runImport, resetOrgData } from "@/lib/services/data-io";
 import { checkConfirmPassword, isOrgOwner } from "@/lib/services/full-backup";
 import { writeAudit } from "@/lib/services/audit";
+import { actionError } from "@/lib/log";
 import { importSizeError, type DataIoState, type ResetState } from "./types";
 
 // NOTE: the full-backup RESTORE uploads are not server actions — they post to
@@ -13,17 +14,14 @@ import { importSizeError, type DataIoState, type ResetState } from "./types";
 
 type Scope = Awaited<ReturnType<typeof requireScope>>["scope"];
 
-const SESSION_EXPIRED = "Your session expired — sign in again.";
-
 /** requireScope() as a value: an expired session becomes a message, not Next's error page. */
 async function scopeOrError(): Promise<{ scope: Scope } | { error: string }> {
   try {
     const { scope } = await requireScope();
     return { scope };
   } catch (e) {
-    if (e instanceof UnauthorizedError) return { error: SESSION_EXPIRED };
-    if (e instanceof ForbiddenError) return { error: e.message };
-    throw e;
+    // An ended session / missing permission becomes a message (not Next's error page).
+    return actionError("data.scope", e, "Could not check your sign-in — please try again.");
   }
 }
 
@@ -48,8 +46,7 @@ export async function previewImportAction(
     const summary = await runImport(s.scope, file.buf, false);
     return { phase: "preview", summary };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not read that file — is it the exported workbook?" };
+    return actionError("data.previewImport", e, "Could not read that file — is it the exported workbook?");
   }
 }
 
@@ -71,8 +68,7 @@ export async function applyImportAction(
     });
     return { phase: "applied", summary };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Import failed." };
+    return actionError("data.applyImport", e, "The import failed — please try again.");
   }
 }
 
@@ -86,18 +82,18 @@ export async function resetDatabaseAction(
   const s = await scopeOrError();
   if ("error" in s) return { error: s.error };
   const { scope } = s;
-  if (!scope.ctx.isOrgAdmin || !(await isOrgOwner(scope))) {
-    return { error: "Only the Owner can reset all data." };
-  }
-
   const confirm = String(formData.get("confirm") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  if (confirm !== "RESET") return { error: 'Type RESET (in capitals) to confirm.' };
-
-  const pw = await checkConfirmPassword(scope, password);
-  if (!pw.ok) return { error: pw.error };
 
   try {
+    if (!scope.ctx.isOrgAdmin || !(await isOrgOwner(scope))) {
+      return { error: "Only the Owner can reset all data." };
+    }
+    if (confirm !== "RESET") return { error: "Type RESET (in capitals) to confirm." };
+
+    const pw = await checkConfirmPassword(scope, password);
+    if (!pw.ok) return { error: pw.error };
+
     await resetOrgData(scope);
     await writeAudit(scope, {
       entity: "data",
@@ -108,8 +104,6 @@ export async function resetDatabaseAction(
     revalidatePath("/", "layout");
     return { done: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    console.error("[reset] failed:", e);
-    return { error: "Reset failed — nothing was changed." };
+    return actionError("data.resetDatabase", e, "Reset failed — nothing was changed.");
   }
 }

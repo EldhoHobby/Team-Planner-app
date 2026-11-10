@@ -1,7 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState, type FormEvent } from "react";
-import { useFormStatus } from "react-dom";
+import { startTransition, useActionState, useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createJobAction } from "../tasks/actions";
 import type { JobFormState, JobRow, TechnicianOption } from "./types";
@@ -10,18 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
+import { FormMessage } from "@/components/ui/form-message";
 
 const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-function SaveButton() {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" disabled={pending}>
-      {pending ? "Creating…" : "Create job"}
-    </Button>
-  );
-}
+// Same limits as CreateJobSchema in ../tasks/actions.ts.
+const MAX = { title: 200, soNumber: 60, customerName: 160, description: 4000, hardwareTarget: 120 } as const;
 
 export function NewJobDialog({
   open,
@@ -35,7 +29,7 @@ export function NewJobDialog({
   /** Existing jobs — used to warn about a duplicate SO + title before creating. */
   allJobs: JobRow[];
 }) {
-  const [state, formAction] = useActionState(createJobAction, {} as JobFormState);
+  const [state, formAction, pending] = useActionState(createJobAction, {} as JobFormState);
   const router = useRouter();
 
   // Track the date so the Tentative checkbox can require one (a tentative job
@@ -43,6 +37,8 @@ export function NewJobDialog({
   const [startDate, setStartDate] = useState("");
   const [tentative, setTentative] = useState(false);
   const [dupError, setDupError] = useState<string | null>(null);
+  // Anything typed yet → closing by Escape / backdrop / X asks first.
+  const [dirty, setDirty] = useState(false);
 
   // Reset the controlled fields each time the dialog opens.
   useEffect(() => {
@@ -50,6 +46,7 @@ export function NewJobDialog({
       setStartDate("");
       setTentative(false);
       setDupError(null);
+      setDirty(false);
     }
   }, [open]);
 
@@ -63,7 +60,14 @@ export function NewJobDialog({
   // Hard-block creating a job that repeats the auto "(copy)" name or whose SO
   // number + title already matches another job. No bypass — must use a unique
   // title. (The server enforces this too; this is the instant feedback.)
-  const guardSubmit = (e: FormEvent<HTMLFormElement>) => {
+  //
+  // The action is dispatched by hand rather than through `<form action>`:
+  // React resets a form after its action returns — even on `{ error }` — which
+  // wiped everything typed when the server rejected the job. Submitting this
+  // way leaves the (uncontrolled) inputs exactly as the user left them.
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (pending) return;
     setDupError(null);
     const fd = new FormData(e.currentTarget);
     const title = String(fd.get("title") ?? "").trim();
@@ -75,40 +79,50 @@ export function NewJobDialog({
         (j.soNumber ?? "").trim().toLowerCase() === so.toLowerCase(),
     );
     if (stillCopy || collides) {
-      e.preventDefault(); // stop the create; the dialog stays open
       setDupError(
         stillCopy
           ? `“${title}” looks like an un-renamed copy — give it a unique title.`
           : `Another job already has SO “${so || "—"}” with the title “${title}”. Use a unique title.`,
       );
+      return; // the dialog stays open
     }
+    startTransition(() => formAction(fd));
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="New job" description="Add a field-service job. Leave the date blank to drop it in the backlog.">
-      <form action={formAction} onSubmit={guardSubmit} className="space-y-4">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="New job"
+      description="Add a field-service job. Leave the date blank to drop it in the backlog."
+      canClose={() => !pending}
+      dirty={dirty}
+      confirmClose="This job has not been created yet — what you typed will be lost."
+    >
+      <form onSubmit={submit} onChange={() => setDirty(true)} className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="title">Title</Label>
-          <Input id="title" name="title" required placeholder="Commission ePAQ at Site B" />
+          <Label htmlFor="nj-title">Title</Label>
+          <Input id="nj-title" name="title" required maxLength={MAX.title} placeholder="Commission ePAQ at Site B" />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
-            <Label htmlFor="soNumber">SO Number</Label>
-            <Input id="soNumber" name="soNumber" placeholder="SO-10421" />
+            <Label htmlFor="nj-so">SO Number</Label>
+            <Input id="nj-so" name="soNumber" maxLength={MAX.soNumber} placeholder="SO-10421" />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="customerName">Customer</Label>
-            <Input id="customerName" name="customerName" placeholder="Acme Utilities" />
+            <Label htmlFor="nj-customer">Customer</Label>
+            <Input id="nj-customer" name="customerName" maxLength={MAX.customerName} placeholder="Acme Utilities" />
           </div>
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="description">Scope of work</Label>
+          <Label htmlFor="nj-desc">Scope of work</Label>
           <textarea
-            id="description"
+            id="nj-desc"
             name="description"
             rows={3}
+            maxLength={MAX.description}
             className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             placeholder="Full commissioning, I/O checks, customer sign-off…"
           />
@@ -116,8 +130,8 @@ export function NewJobDialog({
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
-            <Label htmlFor="jobType">Job type</Label>
-            <select id="jobType" name="jobType" className={selectClass} defaultValue="">
+            <Label htmlFor="nj-type">Job type</Label>
+            <select id="nj-type" name="jobType" className={selectClass} defaultValue="">
               <option value="">—</option>
               <option value="COMMISSIONING">Commissioning</option>
               <option value="TRAINING">Training</option>
@@ -126,15 +140,15 @@ export function NewJobDialog({
             </select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="hardwareTarget">Hardware / product</Label>
-            <Input id="hardwareTarget" name="hardwareTarget" placeholder="ePAQ, RTU, QSCADA" />
+            <Label htmlFor="nj-hardware">Hardware / product</Label>
+            <Input id="nj-hardware" name="hardwareTarget" maxLength={MAX.hardwareTarget} placeholder="ePAQ, RTU, QSCADA" />
           </div>
         </div>
 
         <div className="grid grid-cols-3 gap-3">
           <div className="space-y-2">
-            <Label htmlFor="technicianId">Technician</Label>
-            <select id="technicianId" name="technicianId" className={selectClass} defaultValue="">
+            <Label htmlFor="nj-person">Person</Label>
+            <select id="nj-person" name="technicianId" className={selectClass} defaultValue="">
               <option value="">Unassigned</option>
               {technicians.filter((t) => t.active).map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>
@@ -142,19 +156,21 @@ export function NewJobDialog({
             </select>
           </div>
           <div className="space-y-2">
-            <Label>Start date</Label>
+            <Label htmlFor="nj-start">Start date</Label>
             <DatePicker
+              id="nj-start"
               name="startDate"
               value={startDate}
               onChange={(v) => {
                 setStartDate(v);
+                setDirty(true);
                 if (!v) setTentative(false);
               }}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="durationDays">Days</Label>
-            <Input id="durationDays" name="durationDays" type="number" min={0} max={60} defaultValue={1} />
+            <Label htmlFor="nj-days">Days</Label>
+            <Input id="nj-days" name="durationDays" type="number" min={0} max={60} step={1} defaultValue={1} />
             <p className="text-[11px] text-muted-foreground">0 = days TBD (placeholder)</p>
           </div>
         </div>
@@ -172,16 +188,13 @@ export function NewJobDialog({
           {!startDate ? <span className="text-xs text-muted-foreground">— needs a date</span> : null}
         </label>
 
-        {dupError ? (
-          <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{dupError}</p>
-        ) : null}
-        {state.error ? (
-          <p role="alert" className="text-sm text-destructive">{state.error}</p>
-        ) : null}
+        <FormMessage tone="error">{dupError ?? state.error}</FormMessage>
 
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-          <SaveButton />
+          <Button type="button" variant="outline" disabled={pending} onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={pending}>
+            {pending ? "Creating…" : "Create job"}
+          </Button>
         </div>
       </form>
     </Modal>

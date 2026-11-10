@@ -8,6 +8,8 @@ import { Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 import { cn } from "@/lib/utils";
 import {
   AGREEMENT_LABELS, CUSTOMER_STATUSES, CUSTOMER_STATUS_LABELS, isOpenCustomer, PROPOSAL_STATUSES, PROPOSAL_STATUS_LABELS, fmtDate, fmtMoney, fmtMonth, type SaAgreement, type SaCustomerStatus,
@@ -234,6 +236,16 @@ export function ProposalsClient({
 
   return (
     <div className="space-y-4">
+      <PageHeader
+        className="mb-0 print:hidden"
+        title="Proposals"
+        description="Renewal proposals for each customer — open one to edit its prices, send it or mark it signed."
+        actions={
+          canEdit && !bulkOpen ? (
+            <Button variant="outline" onClick={() => setBulkOpen(true)}>Create proposals in bulk…</Button>
+          ) : undefined
+        }
+      />
       {canEdit && bulkOpen && (
         <section className="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-4 print:hidden">
           <div className="min-w-[16rem] flex-1">
@@ -251,7 +263,7 @@ export function ProposalsClient({
         </section>
       )}
 
-      {error && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+      <FormMessage tone="error" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2">{error}</FormMessage>
       {result && (() => {
         const made = result.reduce((a, r) => a + (r.created ?? 0), 0);
         const failed = result.filter((r) => r.error);
@@ -277,7 +289,7 @@ export function ProposalsClient({
 
       <div className="flex flex-wrap items-center gap-2">
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or SO #" className="w-56" aria-label="Search proposals" />
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Status">
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Proposal status">
           <option value="OPEN">Open (draft + sent)</option>
           <option value="">All</option>
           {PROPOSAL_STATUSES.map((s) => <option key={s} value={s}>{PROPOSAL_STATUS_LABELS[s]}</option>)}
@@ -295,10 +307,7 @@ export function ProposalsClient({
           ))}
           <option value="">All customer statuses</option>
         </select>
-        {canEdit && !bulkOpen && (
-          <Button variant="outline" className="ml-auto" onClick={() => setBulkOpen(true)}>Create proposals in bulk…</Button>
-        )}
-        <Button variant="outline" className={cn(!(canEdit && !bulkOpen) && "ml-auto")} disabled={!printIds.length || printing} onClick={printSelected}>
+        <Button variant="outline" className="ml-auto" disabled={!printIds.length || printing} onClick={printSelected}>
           <Printer className="h-4 w-4" /> {printing ? "Preparing…" : printIds.length ? `Print ${printIds.length} selected` : "Print selected"}
         </Button>
       </div>
@@ -322,7 +331,8 @@ export function ProposalsClient({
         onClose={() => setPreview(null)}
         title={`Proposals for agreements ending ${bulkMonth ? fmtMonth(bulkMonth) : ""}`}
         description="Draft proposals are created with the Settings pricing rules. You can adjust each one before sending."
-        className="max-w-2xl"
+        size="lg"
+        canClose={() => !pending}
       >
         {preview && (
           <div className="space-y-3 text-sm">
@@ -341,9 +351,14 @@ export function ProposalsClient({
               </ul>
             )}
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPreview(null)}>Cancel</Button>
+              <Button variant="outline" disabled={pending} onClick={() => setPreview(null)}>Cancel</Button>
               <Button disabled={pending || !preview.some((r) => r.agreements.length)} onClick={applyBulk}>
-                Create {preview.filter((r) => r.agreements.length).length} proposals
+                {pending
+                  ? "Creating…"
+                  : (() => {
+                      const n = preview.filter((r) => r.agreements.length).length;
+                      return `Create ${n} proposal${n === 1 ? "" : "s"}`;
+                    })()}
               </Button>
             </div>
           </div>

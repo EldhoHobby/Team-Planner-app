@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db/client";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { destroyAllSessions, getSessionActor } from "@/lib/auth/session";
 import { writeAudit, writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
+import { actionError } from "@/lib/log";
 
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required"),
@@ -26,10 +27,18 @@ export async function changePasswordAction(
   _prev: ChangePasswordState,
   formData: FormData,
 ): Promise<ChangePasswordState> {
+  try {
+    return await changePassword(formData);
+  } catch (e) {
+    return actionError("account.changePassword", e, "Could not change your password. Please try again.");
+  }
+}
+
+async function changePassword(formData: FormData): Promise<ChangePasswordState> {
   const user = await requireUser();
 
   // "View as" guard: never change the impersonated person's password. Passwords
-  // aren't part of UI testing; exit View as (or use the admin reset link) instead.
+  // aren't part of UI testing; exit View as (or use an admin set-password link) instead.
   const actor = await getSessionActor();
   if (actor?.impersonating) {
     return { error: "Password can't be changed while using View as. Exit View as first." };
@@ -48,12 +57,12 @@ export async function changePasswordAction(
   });
 
   if (!dbUser) {
-    return { error: "User not found" };
+    return { error: "Your account could not be found — sign in again." };
   }
 
   const valid = await verifyPassword(dbUser.passwordHash, currentPassword);
   if (!valid) {
-    return { error: "Incorrect current password" };
+    return { error: "Your current password is incorrect." };
   }
 
   const newHash = await hashPassword(newPassword);
@@ -99,8 +108,16 @@ export async function updateDisplayNameAction(
   _prev: DisplayNameState,
   formData: FormData,
 ): Promise<DisplayNameState> {
+  try {
+    return await updateDisplayName(formData);
+  } catch (e) {
+    return actionError("account.updateDisplayName", e, "Could not save your name. Please try again.");
+  }
+}
+
+async function updateDisplayName(formData: FormData): Promise<DisplayNameState> {
   const actor = await getSessionActor();
-  if (!actor) return { error: "Your session has ended. Sign in again." };
+  if (!actor) return { error: "Your session has ended — sign in again." };
   // "View as" guard (same rule as the password change): never edit the
   // impersonated person's profile.
   if (actor.impersonating) {

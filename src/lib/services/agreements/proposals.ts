@@ -8,6 +8,7 @@ import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, HISTORY_YEARS, OPEN_CUSTOMER_
 import { addOneYear, proposePrices, type PricingRules } from "@/lib/agreements/pricing";
 import { claimedAgreements, customerRenewal, priceHistory, sortByAgreement, type LineLite, type ProposalLite } from "@/lib/agreements/renewal";
 import type { FieldChange } from "@/lib/services/change-history";
+import { logError } from "@/lib/log";
 import { assertCanEdit, audit, dateOf, getSettings, history, toLineLite, toProposalLite, ymd, type Db, type SettingsRow } from "./common";
 
 // Proposal workflow: DRAFT → SENT → SIGNED, or → DECLINED / WITHDRAWN.
@@ -205,7 +206,7 @@ export async function bulkCreateProposals(scope: TenantScope, month: string, app
         out.push({ ...row, proposalId: res.created[0]?.id, created: res.created.length });
       } catch (e) {
         out.push({ ...row, error: e instanceof ForbiddenError || e instanceof StaleSaveError ? e.message : "Unexpected error — try this customer on its own." });
-        if (!(e instanceof ForbiddenError || e instanceof StaleSaveError)) console.error(`Bulk proposal for ${c.name} failed`, e);
+        logError(`agreements bulk proposal (${c.name})`, e);
       }
     } else {
       out.push(row);
@@ -321,12 +322,21 @@ async function loadEditable(db: Db, scope: TenantScope, id: string) {
  * and only while it is still editable), so a screen still showing the old prices can't send /
  * sign it: its version check fails instead.
  */
-async function bumpProposal(tx: Db, scope: TenantScope, id: string) {
+async function bumpProposal(tx: Db, scope: TenantScope, id: string): Promise<number> {
   const res = await tx.saProposal.updateMany({
     where: { id, orgId: scope.ctx.orgId, status: { in: EDITABLE } },
     data: { version: { increment: 1 } },
   });
   assertFreshWrite(res.count, "proposal");
+  // The row is locked by this transaction now, so this is the version the edit leaves behind.
+  const row = await tx.saProposal.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { version: true } });
+  return row?.version ?? 0;
+}
+
+/** Versions an edit leaves behind, so the screen's next save can send them without waiting for a reload. */
+export interface ProposalEditVersions {
+  proposalVersion: number;
+  lineVersion?: number;
 }
 
 export async function updateProposalHeader(
@@ -334,7 +344,7 @@ export async function updateProposalHeader(
   id: string,
   input: { endDate: string | null; notes: string | null },
   expectedVersion: number,
-) {
+): Promise<ProposalEditVersions> {
   await assertCanEdit(scope);
   const p = await loadEditable(prisma, scope, id);
   const changes: FieldChange[] = [];
@@ -355,17 +365,18 @@ export async function updateProposalHeader(
     ].filter(Boolean).join(", ");
     await audit(scope, p.customerId, "proposal_updated", `${p.customer.name} ${p.year} proposal: ${what}`);
   }
+  return { proposalVersion: expectedVersion + 1 };
 }
 
-export async function setLinePrice(scope: TenantScope, lineId: string, price: number, expectedVersion: number) {
+export async function setLinePrice(scope: TenantScope, lineId: string, price: number, expectedVersion: number): Promise<ProposalEditVersions> {
   await assertCanEdit(scope);
   if (!Number.isFinite(price) || price < 0) throw new ForbiddenError("Price must be zero or more.");
   const l = await prisma.saProposalLine.findFirst({ where: { id: lineId, orgId: scope.ctx.orgId } });
   if (!l) throw new ForbiddenError("Line not found.");
   const p = await loadEditable(prisma, scope, l.proposalId);
   const rounded = Math.round(price);
-  await prisma.$transaction(async (tx) => {
-    await bumpProposal(tx, scope, p.id);
+  const proposalVersion = await prisma.$transaction(async (tx) => {
+    const pv = await bumpProposal(tx, scope, p.id);
     const res = await tx.saProposalLine.updateMany({
       where: { id: lineId, ...versionGuard(expectedVersion) },
       data: { price: rounded, rule: "manual", version: { increment: 1 } },
@@ -374,15 +385,17 @@ export async function setLinePrice(scope: TenantScope, lineId: string, price: nu
     if (Number(l.price) !== rounded) {
       await history(tx, scope, p.customerId, [{ field: `${p.year} proposal ${AGREEMENT_LABELS[l.agreement]}`, oldValue: String(Number(l.price)), newValue: String(rounded) }]);
     }
+    return pv;
   });
   if (Number(l.price) !== rounded) {
     await audit(scope, p.customerId, "proposal_price",
       `${p.customer.name} ${p.year} proposal: ${AGREEMENT_LABELS[l.agreement]} ${fmtMoney(Number(l.price))} → ${fmtMoney(rounded)}`);
   }
+  return { proposalVersion, lineVersion: expectedVersion + 1 };
 }
 
 /** Add an agreement the customer didn't have last year (e.g. a new Backup & DR). */
-export async function addLine(scope: TenantScope, proposalId: string, agreement: SaAgreement, price: number) {
+export async function addLine(scope: TenantScope, proposalId: string, agreement: SaAgreement, price: number): Promise<ProposalEditVersions> {
   await assertCanEdit(scope);
   if (!SA_AGREEMENTS.includes(agreement)) throw new ForbiddenError("Unknown agreement.");
   if (!Number.isFinite(price) || price < 0) throw new ForbiddenError("Price must be zero or more.");
@@ -391,28 +404,32 @@ export async function addLine(scope: TenantScope, proposalId: string, agreement:
   if (claimedAgreements(others.map(toProposalLite), p.year).has(agreement)) {
     throw new ForbiddenError(`${AGREEMENT_LABELS[agreement]} is already in a ${p.year} proposal for this customer.`);
   }
-  await prisma.$transaction(async (tx) => {
-    await bumpProposal(tx, scope, p.id);
+  const proposalVersion = await prisma.$transaction(async (tx) => {
+    const pv = await bumpProposal(tx, scope, p.id);
     await tx.saProposalLine.create({ data: { orgId: scope.ctx.orgId, proposalId, agreement, price: Math.round(price), rule: "manual" } });
     await history(tx, scope, p.customerId, [{ field: `${p.year} proposal ${AGREEMENT_LABELS[agreement]}`, oldValue: null, newValue: `added at ${Math.round(price)}` }]);
+    return pv;
   });
   await audit(scope, p.customerId, "proposal_line_added",
     `${p.customer.name} ${p.year} proposal: added ${AGREEMENT_LABELS[agreement]} at ${fmtMoney(Math.round(price))}`);
+  return { proposalVersion };
 }
 
-export async function removeLine(scope: TenantScope, lineId: string) {
+export async function removeLine(scope: TenantScope, lineId: string): Promise<ProposalEditVersions> {
   await assertCanEdit(scope);
   const l = await prisma.saProposalLine.findFirst({ where: { id: lineId, orgId: scope.ctx.orgId } });
   if (!l) throw new ForbiddenError("Line not found.");
   const p = await loadEditable(prisma, scope, l.proposalId);
   if (p.lines.length <= 1) throw new ForbiddenError("A proposal needs at least one agreement — withdraw it instead.");
-  await prisma.$transaction(async (tx) => {
-    await bumpProposal(tx, scope, p.id);
+  const proposalVersion = await prisma.$transaction(async (tx) => {
+    const pv = await bumpProposal(tx, scope, p.id);
     await tx.saProposalLine.delete({ where: { id: lineId } });
     await history(tx, scope, p.customerId, [{ field: `${p.year} proposal ${AGREEMENT_LABELS[l.agreement]}`, oldValue: String(Number(l.price)), newValue: "removed" }]);
+    return pv;
   });
   await audit(scope, p.customerId, "proposal_line_removed",
     `${p.customer.name} ${p.year} proposal: removed ${AGREEMENT_LABELS[l.agreement]} (was ${fmtMoney(Number(l.price))})`);
+  return { proposalVersion };
 }
 
 // ─── workflow ───

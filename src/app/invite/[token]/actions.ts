@@ -5,6 +5,7 @@ import { z } from "zod";
 import { acceptInvitation } from "@/lib/invitations/service";
 import { createSession } from "@/lib/auth/session";
 import { HOME_PATH } from "@/lib/home";
+import { actionError } from "@/lib/log";
 import type { AcceptState } from "./types";
 
 // The invitation service's own user-facing messages — anything else is logged.
@@ -48,8 +49,11 @@ export async function acceptInviteAction(
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
     if (SAFE_MESSAGES.has(msg)) return { error: msg };
-    console.error("[invite] could not accept the invitation:", e);
-    return { error: "Could not accept the invitation. Please try again, or ask an admin for a new link." };
+    return actionError(
+      "invite.accept",
+      e,
+      "Could not accept the invitation. Please try again, or ask an admin for a new link.",
+    );
   }
 
   await createSession(userId);

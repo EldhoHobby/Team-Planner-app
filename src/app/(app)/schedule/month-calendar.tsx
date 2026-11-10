@@ -9,7 +9,7 @@ import {
   MS_PER_DAY,
 } from "@/lib/scheduling/calc";
 import { barStyle, hatchStyle } from "@/lib/scheduling/colors";
-import { jobLabel } from "./format";
+import { fmtDay, jobLabel } from "./format";
 import { ResizeHandle, type JobSnapshot } from "./schedule-overlays";
 import type { JobRow, TechnicianOption, TechTimeOff } from "./types";
 import type { TargetedTask } from "@/lib/services/tech-tasks";
@@ -265,6 +265,7 @@ export function MonthCalendar({
                             <button
                               type="button"
                               onClick={() => onOpenDayTasks(ymd(day), dueTasks)}
+                              aria-label={`${dueTasks.length} targeted task${dueTasks.length === 1 ? "" : "s"} on ${fmtDay(ymd(day))}`}
                               title={`Targeted tasks:\n${dueTasks
                                 .map((t) => `${t.ownerName}: ${t.task.title} (P${t.task.priority})`)
                                 .join("\n")}`}
@@ -317,7 +318,7 @@ export function MonthCalendar({
                       onContextMenu={(e) => onOpenMenu(e, job)}
                       title={[
                         jobLabel(job),
-                        job.technicianName ? `Tech: ${job.technicianName}` : "Unassigned",
+                        job.technicianName ? `Person: ${job.technicianName}` : "Unassigned",
                         job.description ? `Scope: ${job.description}` : "",
                         "Double-click to open · right-click for actions · drag right edge to resize",
                       ]

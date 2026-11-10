@@ -39,7 +39,7 @@ async function assertCanInvite(
     });
     if (tm?.role === "MANAGER") return;
   }
-  throw new ForbiddenError("You don't have permission to invite users");
+  throw new ForbiddenError("You don't have permission to invite people.");
 }
 
 /**
@@ -59,7 +59,7 @@ export async function createInvitation(
     const team = await prisma.team.findFirst({
       where: { id: input.teamId, orgId: scope.ctx.orgId },
     });
-    if (!team) throw new ForbiddenError("Team not found in your organization");
+    if (!team) throw new ForbiddenError("That department is not in your organization.");
   }
 
   const token = generateToken();
