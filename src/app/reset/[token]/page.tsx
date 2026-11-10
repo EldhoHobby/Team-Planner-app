@@ -1,4 +1,4 @@
-import { isResetTokenValid } from "@/lib/auth/password-reset";
+import { resetTokenUsername } from "@/lib/auth/password-reset";
 import { ResetForm } from "./reset-form";
 import {
   Card,
@@ -16,12 +16,13 @@ export default async function ResetPasswordPage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
-  const valid = await isResetTokenValid(token);
+  // Null for an invalid / used / expired token — nothing is revealed then.
+  const username = await resetTokenUsername(token);
 
   return (
     <main className="flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-sm">
-        {valid ? (
+        {username !== null ? (
           <>
             <CardHeader>
               <CardTitle className="text-xl">Set a new password</CardTitle>
@@ -30,15 +31,18 @@ export default async function ResetPasswordPage({
                 your username and this password.
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
+              <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                You will sign in as: <span className="font-mono font-medium">{username}</span>
+              </p>
               <ResetForm token={token} />
             </CardContent>
           </>
         ) : (
           <CardHeader>
-            <CardTitle className="text-xl">Reset link unavailable</CardTitle>
+            <CardTitle className="text-xl">Set-password link unavailable</CardTitle>
             <CardDescription>
-              This password reset link is invalid, already used, or expired. Ask
+              This set-password link is invalid, already used, or expired. Ask
               an admin to issue a new one.
             </CardDescription>
           </CardHeader>

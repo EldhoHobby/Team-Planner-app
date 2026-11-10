@@ -11,6 +11,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { generateToken } from "@/lib/auth/tokens";
 import { uniqueUsername } from "@/lib/auth/username";
 import { normalizeUsername, isValidUsername } from "@/lib/users";
+import { callerIsOwner, looksLikeEmail } from "@/lib/services/people";
 import {
   ymd,
   sheetRows,
@@ -279,13 +280,20 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
  * People import — full round-trip. Blank id = CREATE a person (login user with a
  * placeholder password; hand them a set-password link from the People page),
  * known id = UPDATE their settings. Never touches passwords/secrets. Color blank
- * = auto-generate on create / keep on update. Safety: rows may not demote an
- * OWNER, and the importing admin cannot archive themselves.
+ * = auto-generate on create / keep on update. Safety (same rules as the People
+ * page, see services/people.ts): nobody becomes or stops being OWNER via import,
+ * the OWNER can't be archived, and the importing admin cannot archive or demote
+ * themselves ("view as": both the effective and the real user count as self).
+ * Only the Owner may change the Owner's username or email (both sign in).
+ * Usernames / emails are validated only when NEW or CHANGED — an unchanged
+ * stored legacy value never fails a row.
  */
 async function importPeople(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
   const res: SheetResult = { sheet: SHEET.people, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   const orgId = scope.ctx.orgId;
+  const selfIds = [scope.ctx.userId, scope.ctx.realUserId].filter((x): x is string => !!x);
   const err = (line: number, msg: string) => { res.skipped++; res.errors.push(`${SHEET.people} row ${line}: ${msg}`); };
+  const importerIsOwner = await callerIsOwner(scope);
 
   const teams = await prisma.team.findMany({ where: { orgId }, select: { id: true, name: true } });
   const teamByName = new Map(teams.map((t) => [t.name.trim().toLowerCase(), t.id]));
@@ -329,18 +337,27 @@ async function importPeople(scope: TenantScope, rows: Record<string, string>[], 
         });
         if (!ex) { err(line, "id not found"); continue; }
         const exRole = ex.memberships[0]?.role ?? "MEMBER";
+        const isSelf = selfIds.includes(p.id);
         if (exRole === "OWNER" && p.orgRole !== "OWNER") { err(line, "cannot change the OWNER's role via import"); continue; }
-        if (p.id === scope.ctx.userId && p.archived) { err(line, "you cannot archive yourself"); continue; }
-        if (p.username) {
-          const wanted = normalizeUsername(p.username);
-          if (!isValidUsername(wanted)) { err(line, "invalid username"); continue; }
-          if (wanted !== ex.username) {
-            const clash = await prisma.user.findUnique({ where: { username: wanted }, select: { id: true } });
-            if (clash) { err(line, "username already taken"); continue; }
-          }
-          p.username = wanted;
+        if (exRole !== "OWNER" && p.orgRole === "OWNER") { err(line, "cannot make someone the OWNER via import"); continue; }
+        if (exRole === "OWNER" && p.archived && !ex.archived) { err(line, "the OWNER cannot be archived"); continue; }
+        if (isSelf && p.archived) { err(line, "you cannot archive yourself"); continue; }
+        if (isSelf && exRole === "ADMIN" && p.orgRole !== "ADMIN") { err(line, "you cannot remove your own admin access"); continue; }
+        // Blank username = keep; blank email = clear. Compare with the stored value first.
+        const wantedUsername = p.username && p.username !== ex.username ? normalizeUsername(p.username) : ex.username;
+        const usernameChanged = wantedUsername !== ex.username;
+        const emailChanged = (email ?? "") !== (ex.email ?? "").toLowerCase();
+        if (exRole === "OWNER" && !importerIsOwner && (usernameChanged || emailChanged)) {
+          err(line, "only the Owner can change the Owner's username or email"); continue;
         }
-        if (email && email !== ex.email) {
+        if (usernameChanged) {
+          if (!isValidUsername(wantedUsername)) { err(line, "invalid username"); continue; }
+          const clash = await prisma.user.findUnique({ where: { username: wantedUsername }, select: { id: true } });
+          if (clash) { err(line, "username already taken"); continue; }
+        }
+        if (p.username) p.username = wantedUsername;
+        if (emailChanged && email) {
+          if (!looksLikeEmail(email)) { err(line, "invalid email"); continue; }
           const clash = await prisma.user.findUnique({ where: { email }, select: { id: true } });
           if (clash && clash.id !== p.id) { err(line, "email already in use"); continue; }
         }
@@ -393,6 +410,7 @@ async function importPeople(scope: TenantScope, rows: Record<string, string>[], 
       } else {
         // ── CREATE ──
         if (email) {
+          if (!looksLikeEmail(email)) { err(line, "invalid email"); continue; }
           const clash = await prisma.user.findUnique({ where: { email }, select: { id: true } });
           if (clash) { err(line, "email already in use"); continue; }
         }

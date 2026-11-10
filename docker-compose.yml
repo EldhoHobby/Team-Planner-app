@@ -130,32 +130,67 @@ services:
       - internal
     # No host ports — internal network only.
 
-  # Nightly Postgres backups → ./backups on the host (compressed pg_dump format).
-  # Dumps once at startup, then every 24 h; prunes dumps older than
-  # BACKUP_KEEP_DAYS. Restore (into the running db):
-  #   docker compose exec db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
+  # Postgres backups → ./backups on the host (compressed pg_dump format).
+  # Dumps once at startup, then every 24 h (retries after 1 h if a dump fails):
+  #   planner-YYYYMMDD-HHMMSS.dump  daily dump, pruned after BACKUP_KEEP_DAYS (14);
+  #                                 the newest 3 are always kept
+  #   planner-monthly-YYYYMM.dump   copy of the month's FIRST good dump, pruned
+  #                                 after BACKUP_KEEP_MONTHLY_DAYS (400)
+  # Pruning runs only after a SUCCESSFUL dump, so a broken pg_dump never
+  # deletes the good ones.
+  #   last-backup.txt               time + file name of the last SUCCESSFUL dump
+  #   last-backup-error.txt         time of the last FAILED dump (deleted on success)
+  # Names and times are UTC (container clock). Other dumps in the folder
+  # (pre-update-*.dump, move.dump, ...) are never pruned. In-place restore (stop
+  # app + backup first; safer side-database restore: DEPLOY.md 2.5):
+  #   docker compose exec -T db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
   backup:
     image: postgres:16.15-alpine   # pinned; bump deliberately
     restart: unless-stopped
     environment:
       PGPASSWORD: ${DB_PASSWORD}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      BACKUP_KEEP_MONTHLY_DAYS: ${BACKUP_KEEP_MONTHLY_DAYS:-400}
     volumes:
       - ./backups:/backups
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         while true; do
-          ts=$$(date +%Y%m%d-%H%M%S)
-          if pg_dump -Fc -h db -U planner planner > "/backups/planner-$$ts.dump.part"; then
-            mv "/backups/planner-$$ts.dump.part" "/backups/planner-$$ts.dump"
-            echo "backup: wrote planner-$$ts.dump"
+          ts=$$(date -u +%Y%m%d-%H%M%S)
+          f="planner-$$ts.dump"
+          m="planner-monthly-$$(date -u +%Y%m).dump"
+          if pg_dump -Fc -h db -U planner -f "/backups/$$f.part" planner && mv "/backups/$$f.part" "/backups/$$f"; then
+            echo "backup: wrote $$f"
+            printf '%s %s\n' "$$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$$f" > /backups/last-backup.txt
+            rm -f /backups/last-backup-error.txt
+            if [ ! -f "/backups/$$m" ]; then
+              if cp "/backups/$$f" "/backups/$$m.part" && mv "/backups/$$m.part" "/backups/$$m"; then
+                echo "backup: kept $$m (monthly copy)"
+              else
+                rm -f "/backups/$$m.part"
+                echo "backup: could not write $$m (will retry next cycle)"
+              fi
+            fi
+            # Prune ONLY after a good dump (a pg_dump that keeps failing must
+            # never delete the last good ones), and never the newest 3 dailies.
+            keep=$$(ls -1 /backups/planner-[0-9]*.dump 2>/dev/null | sort | tail -n 3 | tr '\n' ' ')
+            find /backups -maxdepth 1 -name 'planner-[0-9]*.dump' -mtime +$${BACKUP_KEEP_DAYS} | while read -r old; do
+              case " $$keep " in
+                *" $$old "*) ;;
+                *) rm -f "$$old" && echo "backup: pruned $$old" ;;
+              esac
+            done
+            find /backups -maxdepth 1 -name 'planner-monthly-*.dump' -mtime +$${BACKUP_KEEP_MONTHLY_DAYS} -delete
+            pause_s=86400
           else
-            rm -f "/backups/planner-$$ts.dump.part"
-            echo "backup: pg_dump FAILED (will retry next cycle)"
+            rm -f "/backups/$$f.part"
+            printf '%s pg_dump FAILED - see: docker compose logs backup\n' "$$(date -u '+%Y-%m-%d %H:%M:%S UTC')" > /backups/last-backup-error.txt
+            echo "backup: pg_dump FAILED (will retry in 1 h; nothing is pruned until a dump succeeds)"
+            pause_s=3600
           fi
-          find /backups -name 'planner-*.dump' -mtime +$${BACKUP_KEEP_DAYS} -delete
-          sleep 86400
+          find /backups -maxdepth 1 -name 'planner-*.part' -mtime +1 -delete
+          sleep "$$pause_s"
         done
     depends_on:
       db:

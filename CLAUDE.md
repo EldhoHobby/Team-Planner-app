@@ -7,6 +7,16 @@ paused WIP branches, open issues and working habits — read it when resuming wo
 `docs/claude-memory/` is a copy of Claude Code's memory notes for this project;
 `MOVING-TO-NEW-PC.md` covers setting up a fresh dev machine.
 
+## Rules for Claude on this project
+
+- **Subagents use Opus 5.5.** Every subagent spawned for this project (Agent tool,
+  workflows, any type — implementers, explorers, reviewers) must be started with
+  the Opus 5.5 model (`model: "opus"`). Never leave the model to the default.
+- **Subagent work is reviewed before it is committed.** The lead session reads
+  the full diff a subagent produced (logic, tenancy, data safety — not just a
+  spot-check), fixes what it finds, then builds/tests in Docker and commits.
+- **Never run `git push`.** Commit when asked; hand the push command to the user.
+
 ## What this is
 
 A self-hosted **field-service scheduling** app, built on a multi-team planner

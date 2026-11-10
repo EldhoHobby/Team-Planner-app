@@ -5,7 +5,8 @@ import { ForbiddenError } from "./current-user";
 import { writeAudit, writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 import type { TenantScope } from "@/lib/db/scope";
 
-const RESET_TTL_HOURS = 24;
+/** How long an admin-issued set-password link stays usable (shown in the People UI). */
+export const RESET_TTL_HOURS = 24;
 const RESET_TTL_MS = RESET_TTL_HOURS * 60 * 60 * 1000;
 
 /** Build the absolute reset URL for a raw token. */
@@ -22,7 +23,7 @@ export function resetLink(token: string): string {
 export async function createAdminResetLink(
   scope: TenantScope,
   targetUserId: string,
-): Promise<{ token: string; link: string }> {
+): Promise<{ token: string; link: string; username: string; expiresInHours: number }> {
   if (!scope.ctx.isOrgAdmin) {
     throw new ForbiddenError("Only admins can issue password reset links");
   }
@@ -33,6 +34,19 @@ export async function createAdminResetLink(
   });
   if (!membership) {
     throw new ForbiddenError("User is not a member of your organization");
+  }
+
+  // Only the Owner may issue a link for the Owner (otherwise any admin could
+  // take over the Owner's login). "View as": the real session owner counts too.
+  if (membership.role === "OWNER") {
+    const callerIds = [scope.ctx.userId, scope.ctx.realUserId].filter((x): x is string => !!x);
+    const callerIsOwner = await prisma.membership.findFirst({
+      where: { orgId: scope.ctx.orgId, userId: { in: callerIds }, role: "OWNER" },
+      select: { id: true },
+    });
+    if (!callerIsOwner) {
+      throw new ForbiddenError("Only the Owner can issue a set-password link for the Owner.");
+    }
   }
 
   const token = generateToken();
@@ -56,7 +70,12 @@ export async function createAdminResetLink(
     summary: `Issued a password reset link for ${target?.name ?? target?.username ?? targetUserId}.`,
   });
 
-  return { token, link: resetLink(token) };
+  return {
+    token,
+    link: resetLink(token),
+    username: target?.username ?? "",
+    expiresInHours: RESET_TTL_HOURS,
+  };
 }
 
 /**
@@ -104,10 +123,21 @@ export async function resetPassword(
   });
 }
 
-/** True if a reset token is currently usable (for rendering the reset page). */
-export async function isResetTokenValid(token: string): Promise<boolean> {
+/**
+ * The username a reset token belongs to, or null when the token is invalid,
+ * used, or expired (for rendering the reset page — never reveals anything for
+ * a token that isn't currently usable).
+ */
+export async function resetTokenUsername(token: string): Promise<string | null> {
   const rec = await prisma.passwordResetToken.findUnique({
     where: { tokenHash: hashToken(token) },
+    include: { user: { select: { username: true } } },
   });
-  return !!rec && !rec.usedAt && rec.expiresAt > new Date();
+  if (!rec || rec.usedAt || rec.expiresAt <= new Date()) return null;
+  return rec.user.username;
+}
+
+/** True if a reset token is currently usable. */
+export async function isResetTokenValid(token: string): Promise<boolean> {
+  return (await resetTokenUsername(token)) !== null;
 }

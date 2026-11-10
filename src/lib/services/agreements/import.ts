@@ -178,7 +178,9 @@ export async function importPrototype(scope: TenantScope, data: Buffer, apply: b
 /**
  * Admin-only: delete ALL service-agreement data for the org — customers and,
  * with them, their agreement lines, proposals and calls/repairs, plus their
- * change history. Pricing settings are kept. Logged in the audit trail.
+ * change history. Pricing settings (and their history) are kept. Logged in the
+ * audit trail. The caller (resetAgreementsAction) must already have checked
+ * the typed RESET + the real signed-in user's password.
  */
 export async function resetAgreements(scope: TenantScope) {
   if (!scope.ctx.isOrgAdmin) throw new ForbiddenError("Only admins can reset the service-agreement data.");
@@ -193,6 +195,7 @@ export async function resetAgreements(scope: TenantScope) {
     const h = await tx.changeHistory.deleteMany({ where: { orgId, entity: "sa_customer" } });
     return { customers, history: h.count };
   });
-  await audit(scope, "reset", "reset", `Reset service-agreement data: ${counts.customers} customers and all their agreements, proposals and calls deleted`);
+  await audit(scope, "reset", "reset",
+    `RESET service-agreement data (password confirmed): ${counts.customers} customers and all their agreements, proposals and calls deleted, plus ${counts.history} permanent history rows`);
   return counts;
 }

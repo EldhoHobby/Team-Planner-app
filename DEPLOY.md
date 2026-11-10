@@ -1,126 +1,803 @@
-# Team Planner — Offline Deployment Guide
+# Team Planner — Deployment & Operations Guide
 
-How the app is deployed to an **offline Windows host** by carrying prebuilt Docker
-images on a USB stick, plus how to **update** it and **back up / restore** the
-database. This is the procedure we used; the gotchas we hit are noted inline so
-you don't rediscover them.
+How production runs, how to **update** it and **roll back**, how to keep it
+**running**, and how to **back up / restore** it safely. The old offline (USB
+bundle) procedure is kept at the end for reference.
 
----
+All commands are **Windows PowerShell 5.1**: chain with `;`, not `&&`. Run them
+from `C:\TeamPlanner` unless a step says otherwise.
 
-## The setup at a glance
-
-- **Host:** Windows 11 with **Docker Desktop** (installed per-user under
-  `C:\Users\SCADA\AppData\Local\Programs\DockerDesktop`). Docker Desktop runs Linux
-  containers via its built-in VM.
-- **No internet on the host**, so images are built on a dev PC and carried over as a
-  file — nothing is pulled from a registry.
-- **Run folder on the host:** `C:\TeamPlanner`, containing `docker-compose.offline.yml`,
-  `Caddyfile`, `.env`, and (temporarily) the image bundle.
-- **Published port:** `8443` on the host → `443` in the container (host port 80/443
-  were taken by Windows' IIS/HTTP.sys, so we moved the published port to 8443).
-- **URL:** `https://<host-IP>:8443` on the LAN, `https://planner.localhost:8443` on the
-  host itself. TLS is a self-signed "internal" cert, so browsers show a warning you
-  click through.
-- **Data** lives in Docker named volumes (`teamplanner_db_data`, `teamplanner_uploads`),
-  not in `C:\TeamPlanner`.
-- **Email → task ingest needs outbound internet.** The app can poll a Gmail inbox
-  (IMAP) and turn "@username" emails into dashboard tasks, but that requires the
-  host to reach `imap.gmail.com:993`. On this offline host leave
-  `EMAIL_INGEST_ENABLED=false` (the default) — everything else works without it.
-  If the host ever gets outbound access, set `EMAIL_INGEST_ENABLED=true`,
-  `IMAP_USER`, `IMAP_PASSWORD` (a Google App Password) in `.env` and recreate the
-  app container.
+> **Never write a database dump with PowerShell `>` or pipe one through
+> `Get-Content`.** PowerShell 5.1 re-encodes the bytes as text and the
+> `pg_dump -Fc` file is silently corrupted — you only find out when a restore
+> fails. Every dump command in this guide writes the file **inside a
+> container** to the mounted `backups` folder (or uses `docker compose cp`).
 
 ---
 
-## Part A — Build the images (dev PC, has internet)
+## 1. Production host (current)
 
-Run in PowerShell from the project folder:
+| | |
+|---|---|
+| **PC** | `10.210.6.233` — Windows + Docker Desktop, **has internet** |
+| **In production since** | 2026-11-06 (moved from the old SCADA PC, see section 6) |
+| **URL** | `https://10.210.6.233:8443` (self-signed `tls internal` cert — click through the warning) |
+| **Folder** | `C:\TeamPlanner` = a **git clone of `main`** (running **v0.0.10**) |
+| **Compose file** | `docker-compose.offline.yml` (uses locally built / pulled images, `pull_policy: never`) |
+| **Images** | `team-planner-app:latest` + `team-planner-app-migrator:latest`, **built on this PC** from the clone; Caddy / Postgres / Ollama pulled with `docker pull` |
+| **`.env`** | `DB_PASSWORD`, `APP_URL=https://10.210.6.233:8443`, `HTTPS_PORT=8443`, `MAX_UPLOAD_MB`, `BACKUP_KEEP_DAYS=14` — not in git; keep a copy somewhere safe (it holds the DB password) |
+| **Caddyfile** | **edited locally** to the new IP (`10.210.6.233`) — see 1.3, it gets in the way of `git pull` |
+| **Email ingest** | off (`EMAIL_INGEST_ENABLED` unset) |
+| **Data** | Docker volumes `teamplanner_db_data` (database) and `teamplanner_uploads` (attachments); dumps in `C:\TeamPlanner\backups` |
+
+The **dev PC** is `10.210.4.130` (`https://planner.localhost`, `docker-compose.yml`).
+On dev, the same commands work without `-f docker-compose.offline.yml`.
+
+The **old SCADA PC** (`10.210.4.65`) is **stopped but kept as a fallback**. Do
+not start its stack while the new PC is in use — two copies would drift apart
+and changes made on one would be lost.
+
+How the data was moved (for the record): an in-container `pg_dump` on SCADA,
+copied out with `docker compose cp`, then on the new PC
+`pg_restore --clean --if-exists --no-owner /backups/move.dump`.
+
+### 1.1 Updating production
+
+Plan ~10–15 minutes of downtime (the images are built while the site is down,
+so nobody writes data after the backup). Do it outside working hours.
+
+**1. Go to the folder and note what is running now** — write the commit hash
+down; it is what you roll back to.
 
 ```powershell
-cd "C:\Users\eldho\Claude\Projects\Team Planner app"
+cd C:\TeamPlanner
+```
 
-# Build the two app images from the Dockerfile
-docker build --target runner   -t team-planner-app:latest .
+```powershell
+git log -1 --oneline
+```
+
+**2. Stop the proxy** (users can no longer reach the app, and Caddy lets go of
+the Caddyfile so git can rewrite it):
+
+```powershell
+docker compose -f docker-compose.offline.yml stop proxy
+```
+
+**3. Back up first — the safe way** (the `backup` container writes the file;
+the last line shows its size, which should be well over 10 KB):
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T backup sh -c 'f=/backups/pre-update-$(date +%Y%m%d-%H%M%S).dump; pg_dump -Fc -h db -U planner -f $f planner && ls -l $f'
+```
+
+Optional, if people attach files to tasks — copy the uploads out too:
+
+```powershell
+docker compose -f docker-compose.offline.yml cp app:/app/uploads "backups\uploads-$(Get-Date -Format yyyyMMdd-HHmmss)"
+```
+
+**4. Pull the new code, keeping the local Caddyfile** (details and conflicts: 1.3):
+
+```powershell
+git stash push -m "production Caddyfile" -- Caddyfile
+```
+
+```powershell
+git pull
+```
+
+**If `git pull` prints an error, STOP** — run `git stash pop`, start the proxy
+again, and fix the cause before continuing (the next steps would otherwise
+rebuild the OLD version without any warning):
+
+```powershell
+docker compose -f docker-compose.offline.yml start proxy
+```
+
+Otherwise put the local Caddyfile back:
+
+```powershell
+git stash pop
+```
+
+```powershell
+git diff -- Caddyfile
+```
+
+The diff should show only the IP lines (`10.210.6.233`).
+
+**5. Pull the base images the compose file pins** (needs internet; a no-op when
+they are already present). This reads the exact tags from the compose file:
+
+```powershell
+Select-String -Path .\docker-compose.offline.yml -Pattern '^\s*image:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Where-Object { $_ -notlike 'team-planner-*' } | Sort-Object -Unique | ForEach-Object { docker pull $_ }
+```
+
+**6. Rebuild both app images** (the build also runs the unit tests — a failing
+test stops the build, and the old images keep working):
+
+```powershell
+docker build --target runner -t team-planner-app:latest .
+```
+
+```powershell
 docker build --target migrator -t team-planner-app-migrator:latest .
+```
 
-# Make sure the base images are present locally
+**7. Start it.** `migrate` applies any new database migrations, then `app` and
+`proxy` start on the new images:
+
+```powershell
+docker compose -f docker-compose.offline.yml up -d
+```
+
+**8. Check it.**
+
+```powershell
+docker compose -f docker-compose.offline.yml ps
+```
+
+You want `app`, `proxy`, `db`, `backup`, `ollama` running and `migrate`
+**exited (0)**. If `migrate` exited with an error, read its log and go to 1.2:
+
+```powershell
+docker compose -f docker-compose.offline.yml logs --tail=40 migrate
+```
+
+```powershell
+curl.exe -k https://10.210.6.233:8443/api/health
+```
+
+Expect `{"status":"ok","db":"up",...}`. Then open `https://10.210.6.233:8443`
+and check the **sidebar footer** shows the new version and git hash, sign in,
+and open the Schedule and Dashboard.
+
+#### First update after v0.0.10 (one-time notes)
+
+Production is on v0.0.10; the next release jumps to the service-agreements line
+(v0.0.11 → v0.0.40+). Things to know before that update:
+
+- **Rehearse the migrations on a copy of production first** (below). The jump
+  adds seven migrations (change history + task version column, the whole
+  service-agreements schema, agreement settings / redesign, data fixes) on top
+  of the three v0.0.10 already has.
+- The compose files now **pin** `caddy:2.11.8-alpine`, `postgres:16.15-alpine`
+  and `ollama/ollama:0.40.14`. Step 5 pulls them; without it `up -d` fails
+  with "pull access denied / no such image" because of `pull_policy: never`.
+  Same Postgres major version (16), so the data volume is unaffected.
+- **Keep the old images** (`caddy:2-alpine`, `postgres:16-alpine`,
+  `ollama/ollama`) until the new version has run for a while — the v0.0.10
+  compose file uses them, so a rollback needs them. Don't `docker image prune -a`.
+- The `backup` container now also keeps monthly copies and writes
+  `backups\last-backup.txt` (section 2.1).
+- **Agreement data exists only on the dev PC.** Updating the code does not
+  move it. Bring it over with **Restore agreements only** — it replaces just
+  the service-agreement data and leaves production's people, jobs and tasks
+  alone:
+  1. Upgrade production (1.1) and check it.
+  2. On production, Settings → Data → **Download full backup** (a safety copy
+     of production as it is now).
+  3. On the dev PC, Settings → Data → **Download full backup**.
+  4. On production, Settings → Data → **Restore agreements only…** with the
+     dev file. The dialog shows production's current agreement counts next to
+     the file's; a file with no agreement customers is refused. Dev people that
+     don't exist on production keep their names in the agreement history (the
+     link to a user is left empty).
+
+  Do it **before** people start entering agreements on production — the
+  restore replaces all agreement data there.
+- **Full backup download, full restore and Settings → Data → Reset are
+  Owner-only** (the file holds every password hash). Other admins can still
+  use Restore agreements only and the Agreements reset.
+
+**Rehearsal on the dev PC** (separate compose project `tp-rehearsal`, so dev's
+own data is not touched). Check out the exact code you are about to deploy
+(`migrate` is built from the working tree). Copy a production dump (e.g. last
+night's `planner-…dump`, from the off-PC copy) into the dev repo's `backups`
+folder with Explorer or `Copy-Item`, then in the dev repo folder:
+
+```powershell
+docker compose -p tp-rehearsal up -d db
+```
+
+```powershell
+docker compose -p tp-rehearsal exec -T db pg_restore -U planner -d planner --no-owner /backups/<production-file>.dump
+```
+
+Build the rehearsal's `migrate` image from the working tree first —
+`run` would otherwise reuse an image from an earlier rehearsal and silently
+test the OLD migrations:
+
+```powershell
+docker compose -p tp-rehearsal build migrate
+```
+
+```powershell
+docker compose -p tp-rehearsal run --rm migrate
+```
+
+The migrate output must end without errors (`All migrations have been
+successfully applied` or similar). Then remove the rehearsal — **always with
+`-p tp-rehearsal`**; without it these would hit dev's real stack:
+
+```powershell
+docker compose -p tp-rehearsal down
+```
+
+```powershell
+docker volume rm tp-rehearsal_db_data
+```
+
+### 1.2 Rolling back
+
+Use this when the update fails (migrate error, app won't start) or the new
+version misbehaves. You go back to the code you noted in step 1 **and** the
+database from the `pre-update-…dump` — anything entered after the update is
+lost, so decide quickly.
+
+**1. Dump the current state first** — while the `backup` container is still
+running. If the rollback goes wrong, or you need something entered after the
+update, this is the only copy of it:
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T backup sh -c 'f=/backups/before-rollback-$(date +%Y%m%d-%H%M%S).dump; pg_dump -Fc -h db -U planner -f $f planner && ls -l $f'
+```
+
+**2. Copy the monthly dumps out of the backups folder.** The v0.0.10
+`backup` container deletes every `planner-*.dump` older than 14 days —
+including the new `planner-monthly-*.dump` copies, and even in subfolders.
+Keep them outside `C:\TeamPlanner\backups` (and outside the git clone):
+
+```powershell
+New-Item -ItemType Directory -Force C:\TeamPlanner-local\monthly-dumps
+```
+
+```powershell
+Copy-Item C:\TeamPlanner\backups\planner-monthly-*.dump C:\TeamPlanner-local\monthly-dumps\
+```
+
+**3. Restore the pre-update dump with the side-database procedure in 2.5**
+("Clean restore", steps A–E) using `backups\pre-update-YYYYMMDD-HHMMSS.dump`.
+It stops `proxy`, `app` and `backup`, loads the dump into a NEW database and
+swaps it in only when the load succeeded — the current database is kept as
+`planner_old` until you have checked the result. Find the file name with:
+
+```powershell
+dir backups\pre-update-*.dump
+```
+
+Stop after step E of 2.5 (the swap — don't start the stack yet) and continue
+here.
+
+**4. Go back to the previous code** (use the hash you wrote down, or a tag such
+as `v0.0.10`; run `git fetch --tags` first if the tag is missing):
+
+```powershell
+git stash push -m "production Caddyfile" -- Caddyfile
+```
+
+```powershell
+git checkout <previous-commit-or-tag>
+```
+
+```powershell
+git stash pop
+```
+
+**5. Rebuild both images from that code** (same commands as 1.1 step 6):
+
+```powershell
+docker build --target runner -t team-planner-app:latest .
+```
+
+```powershell
+docker build --target migrator -t team-planner-app-migrator:latest .
+```
+
+**6. Start and check** — `migrate` finds the old migration history and has
+nothing to do:
+
+```powershell
+docker compose -f docker-compose.offline.yml up -d
+```
+
+```powershell
+curl.exe -k https://10.210.6.233:8443/api/health
+```
+
+**7. Later, once the app is confirmed working**, drop the swapped-out database
+(2.5 step H). Until then it is your way back.
+
+Notes: checking out v0.0.10 also removes the `scripts\` folder from the clone —
+that is why the off-PC script lives in `C:\TeamPlanner-local` (2.3). When you go
+forward again, copy the monthly dumps from `C:\TeamPlanner-local\monthly-dumps`
+back into `C:\TeamPlanner\backups` if any were pruned.
+
+The clone is now on a "detached HEAD". When the fix is ready, go forward again
+with `git checkout main` (stash the Caddyfile around it the same way) and
+follow 1.1.
+
+### 1.3 The locally edited Caddyfile (known pain point)
+
+The Caddyfile in git names the dev PC's IP; production's copy was edited to
+`10.210.6.233`. Git sees that as an uncommitted change, so:
+
+- `git pull` / `git checkout` **refuse to run** whenever the incoming commit
+  also changes the Caddyfile ("Your local changes would be overwritten").
+- If the edit is simply discarded, Caddy serves the wrong IP and browsers get
+  `ERR_SSL_PROTOCOL_ERROR`.
+- While the proxy runs it holds the file open, so git (or an editor) can fail
+  with a "user-mapped section" error — stop the proxy first (1.1 step 2).
+
+The routine is the `git stash push -- Caddyfile` → pull/checkout → `git stash pop`
+shown in 1.1. If `git stash pop` reports a **conflict**, open `Caddyfile` in
+Notepad, keep the new version's content, set the two IP lines (`default_sni`
+and the site address) to `10.210.6.233`, remove the `<<<<<<<` / `=======` /
+`>>>>>>>` marker lines, save, then:
+
+```powershell
+git restore --staged Caddyfile
+```
+
+```powershell
+git stash drop
+```
+
+Keep a copy of the working production Caddyfile **outside the repo** (e.g.
+`C:\TeamPlanner-local\Caddyfile`) so it can always be put back by hand. After
+any Caddyfile change, `docker compose -f docker-compose.offline.yml restart proxy`.
+
+> Better long-term fix (not done yet): let the compose file read the Caddyfile
+> path from `.env` (e.g. `CADDYFILE=./Caddyfile.production`, git-ignored), so
+> production's file is never a tracked change.
+
+### 1.4 Keeping it running
+
+Docker Desktop only runs while a user is **signed in**, so a reboot (power cut,
+Windows Update) leaves the app down until someone signs in — unless:
+
+- **Docker Desktop starts on sign-in:** Docker Desktop → Settings → General →
+  "Start Docker Desktop when you sign in to your computer". All services use
+  `restart: unless-stopped`, so they come back once the engine is up.
+- **Automatic sign-in (planned):** Microsoft Sysinternals **Autologon** (from
+  Microsoft's Sysinternals site) — run it as Administrator, enter the account
+  Docker Desktop runs under, click Enable. It stores the password encrypted
+  (LSA secret), not in plain text.
+- **Lock the screen after auto sign-in**, so the console isn't left open. A
+  logon task that locks the workstation a minute after sign-in (run as that
+  user):
+
+  ```powershell
+  $lockAction = New-ScheduledTaskAction -Execute "rundll32.exe" -Argument "user32.dll,LockWorkStation"
+  ```
+
+  ```powershell
+  $lockTrigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+  ```
+
+  ```powershell
+  $lockTrigger.Delay = "PT1M"
+  ```
+
+  ```powershell
+  Register-ScheduledTask -TaskName "TeamPlanner lock after sign-in" -Action $lockAction -Trigger $lockTrigger
+  ```
+
+  Locking is fine (Docker keeps running); **signing out stops the app**.
+- **No sleep / hibernate on AC power:**
+
+  ```powershell
+  powercfg /change standby-timeout-ac 0
+  ```
+
+  ```powershell
+  powercfg /change hibernate-timeout-ac 0
+  ```
+
+- **BIOS/UEFI: power on after a power cut** — the setting is called "Restore on
+  AC Power Loss", "AC Recovery" or "After Power Failure" depending on the
+  vendor; set it to **Power On**.
+- **Windows Update:** Settings → Windows Update → Advanced options → **Active
+  hours** set manually to cover the working day (e.g. 6:00–22:00), so update
+  restarts happen at night. With the items above the app comes back on its own.
+- **Static IP / DHCP reservation** for `10.210.6.233` — the Caddyfile and
+  `APP_URL` depend on it.
+- **Firewall** (Administrator PowerShell; already done at setup):
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "TeamPlanner HTTPS 8443" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -Profile Any
+  ```
+
+**Test once:** restart the PC and, without touching it, open
+`https://10.210.6.233:8443` from another PC within ~5 minutes.
+
+---
+
+## 2. Backups and restore
+
+### 2.1 What happens automatically
+
+The `backup` container (in both compose files) writes to `C:\TeamPlanner\backups`
+once at startup and then every 24 hours (after a failed dump it retries in 1 h):
+
+| File | What | Kept |
+|---|---|---|
+| `planner-YYYYMMDD-HHMMSS.dump` | daily `pg_dump -Fc` | `BACKUP_KEEP_DAYS` (14) days |
+| `planner-monthly-YYYYMM.dump` | copy of the **first** good dump of each month | `BACKUP_KEEP_MONTHLY_DAYS` (400) days |
+| `last-backup.txt` | time + file name of the last **successful** dump | overwritten |
+| `last-backup-error.txt` | time of the last **failed** dump | deleted on the next success |
+
+Names and times are **UTC**. Dumps are written as `*.part` and renamed when
+complete, so a `.dump` file is never half-written. Pruning runs **only after a
+successful dump**, and the **newest 3 daily dumps are always kept** — a
+`pg_dump` that keeps failing can never delete the last good ones. Other dumps
+you put in the folder (`pre-update-…`, `before-rollback-…`, `move.dump`) are
+**never pruned** — delete them by hand when no longer needed.
+
+These dumps cover the **database only**. Attachments live in the `uploads`
+volume (copy them with the `docker compose cp` line in 1.1 step 3). For a
+second, app-level copy, Settings → Data → **Download full backup** gives a
+`.json` snapshot of the whole org (Owner only — the file holds every login's
+password hash; full restore and Settings → Data → Reset are Owner-only too).
+
+### 2.2 Checking backup health
+
+```powershell
+Get-Content C:\TeamPlanner\backups\last-backup.txt
+```
+
+```powershell
+Test-Path C:\TeamPlanner\backups\last-backup-error.txt
+```
+
+```powershell
+Get-ChildItem C:\TeamPlanner\backups\*.dump | Sort-Object LastWriteTime | Select-Object -Last 5 Name, Length, LastWriteTime
+```
+
+```powershell
+docker compose -f docker-compose.offline.yml logs --tail=20 backup
+```
+
+Healthy = `last-backup.txt` is less than a day old, no `last-backup-error.txt`,
+and the dumps are a similar size from day to day. The off-PC script (2.3) runs
+the same checks every day.
+
+### 2.3 Off-PC copies (daily scheduled task)
+
+Dumps that only exist on the production PC die with its disk. The script
+`scripts\backup-offsite.ps1` copies every new `*.dump` (plus any `uploads-*`
+attachment folders saved next to them) to a network share or USB drive with
+robocopy (it never deletes anything at the destination), logs to
+`C:\TeamPlanner\backups\backup-offsite.log`, and reports the newest **daily**
+dump's name, size and age — it **warns if the newest `planner-YYYYMMDD-…dump`
+is older than 26 hours or smaller than 10 KB** (manual `pre-update-…` dumps
+don't count, so they can't hide a dead backup container). Exit code: `0` OK,
+`1` copy failed, `2` copied but the backups need attention.
+
+**The scheduled task runs a copy kept OUTSIDE the git clone**, in
+`C:\TeamPlanner-local\`. Never copy files into `C:\TeamPlanner\scripts\` by
+hand: the next `git pull` would abort ("untracked working tree files would be
+overwritten"), and a rollback checkout to v0.0.10 removes `scripts\` entirely.
+
+```powershell
+New-Item -ItemType Directory -Force C:\TeamPlanner-local
+```
+
+Production runs v0.0.10, which doesn't have `scripts\` yet — before the update,
+copy `scripts\backup-offsite.ps1` from the repo (dev PC / GitHub) to
+`C:\TeamPlanner-local\backup-offsite.ps1` with Explorer. After an update that
+changes the script, refresh the copy from the clone:
+
+```powershell
+Copy-Item C:\TeamPlanner\scripts\backup-offsite.ps1 C:\TeamPlanner-local\backup-offsite.ps1 -Force
+```
+
+Use a **UNC path** (`\\server\share\...`) for a network share — mapped drive
+letters don't exist for a task that runs while nobody is signed in. Replace
+`\\SERVER\SHARE\TeamPlanner-backups` below with the real destination.
+
+**Run it once by hand first:**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\TeamPlanner-local\backup-offsite.ps1 -Destination "\\SERVER\SHARE\TeamPlanner-backups"
+```
+
+**Register it as a daily task** that runs whether anyone is signed in or not
+(Administrator PowerShell; the account must be able to write to the share —
+you are asked for its password, which Task Scheduler stores):
+
+```powershell
+$cred = Get-Credential -Message "Windows account the off-PC backup runs as"
+```
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\TeamPlanner-local\backup-offsite.ps1" -Destination "\\SERVER\SHARE\TeamPlanner-backups"'
+```
+
+```powershell
+$trigger = New-ScheduledTaskTrigger -Daily -At 3am
+```
+
+```powershell
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+```
+
+```powershell
+Register-ScheduledTask -TaskName "TeamPlanner off-PC backup" -Action $action -Trigger $trigger -Settings $settings -User $cred.UserName -Password $cred.GetNetworkCredential().Password
+```
+
+**Test the task once:**
+
+```powershell
+Start-ScheduledTask -TaskName "TeamPlanner off-PC backup"
+```
+
+```powershell
+Get-ScheduledTaskInfo -TaskName "TeamPlanner off-PC backup" | Select-Object LastRunTime, LastTaskResult
+```
+
+`LastTaskResult` `0` = OK, `1` = copy failed, `2` = look at the backups,
+`267009` = still running. Details:
+
+```powershell
+Get-Content C:\TeamPlanner\backups\backup-offsite.log -Tail 20
+```
+
+Look at the destination now and then: the folder grows by one dump a day and is
+not pruned by the script.
+
+### 2.4 Manual backup (before an update or a risky change)
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T backup sh -c 'f=/backups/pre-update-$(date +%Y%m%d-%H%M%S).dump; pg_dump -Fc -h db -U planner -f $f planner && ls -l $f'
+```
+
+Check that a dump is readable (lists its contents; an error means it's broken):
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db pg_restore -l /backups/<file>.dump | Select-Object -First 10
+```
+
+### 2.5 Restore
+
+Restoring **replaces** the current data. The file must be in
+`C:\TeamPlanner\backups` (the `db` container sees that folder read-only as
+`/backups`); copy a dump from the share/USB there with Explorer or `Copy-Item`
+(both are binary-safe).
+
+**Clean restore (recommended)** — load the dump into a NEW side database and
+swap it in only after the load succeeded. The current database is never
+dropped before a good copy exists; it is kept as `planner_old` until you have
+checked the app. (Needs free disk space for a second copy of the database.)
+
+**A. Check that the dump is readable** (lists its contents; an error means the
+file is broken — stop here and pick another dump):
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db pg_restore -l /backups/<file>.dump | Select-Object -First 10
+```
+
+**B. Stop everything that uses the database:**
+
+```powershell
+docker compose -f docker-compose.offline.yml stop proxy app backup
+```
+
+**C. List the databases.** You should see `planner` (and `postgres`,
+`template0/1`). If a `planner_new` is left over from an earlier failed attempt,
+drop it (`DROP DATABASE planner_new;` the same way as step H). If a
+`planner_old` from an earlier restore is still there, drop it only if you are
+sure you no longer need it — step E needs the name.
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d postgres -c "\l"
+```
+
+**D. Create the side database and load the dump into it:**
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d postgres -c "CREATE DATABASE planner_new OWNER planner;"
+```
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db pg_restore -U planner -d planner_new --no-owner /backups/<file>.dump
+```
+
+If `pg_restore` printed **any error** (for example `errors ignored on restore:
+N`), do NOT continue: the live `planner` database is untouched — drop
+`planner_new`, start the stack again (`up -d`) and investigate.
+
+**E. Swap** (the app is stopped, so nothing is connected to `planner`; if
+Postgres says the database "is being accessed by other users", repeat step B):
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d postgres -c "ALTER DATABASE planner RENAME TO planner_old;"
+```
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d postgres -c "ALTER DATABASE planner_new RENAME TO planner;"
+```
+
+**F. Start and check** (sign in, open the Schedule, Dashboard and Agreements):
+
+```powershell
+docker compose -f docker-compose.offline.yml up -d
+```
+
+```powershell
+curl.exe -k https://10.210.6.233:8443/api/health
+```
+
+To undo the swap instead (the restored data is wrong): stop as in step B,
+rename `planner` to `planner_bad` and `planner_old` back to `planner`, start.
+
+**G. Take a fresh dump of the restored database** once it checks out — the
+`backup` container did one at startup; confirm with
+`Get-Content C:\TeamPlanner\backups\last-backup.txt`.
+
+**H. Days later, when you are sure,** drop the swapped-out database:
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d postgres -c "DROP DATABASE planner_old;"
+```
+
+**In-place restore** (what the machine move used) — fine when the dump comes
+from the **same app version**; it overwrites the objects in the dump but leaves
+any extra tables alone:
+
+```powershell
+docker compose -f docker-compose.offline.yml exec -T db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
+```
+
+> Restore onto the **same or newer** Postgres major version (16). The volumes
+> survive `docker compose down`; only `down -v` (or `docker volume rm`) deletes
+> them — avoid `-v` unless you mean to wipe.
+
+---
+
+## 3. Quick reference (production, from `C:\TeamPlanner`)
+
+| Task | Command |
+|------|------|
+| Start / apply changes | `docker compose -f docker-compose.offline.yml up -d` |
+| Status | `docker compose -f docker-compose.offline.yml ps` |
+| Logs (app / proxy / migrate / backup) | `docker compose -f docker-compose.offline.yml logs --tail=40 app` |
+| Health | `curl.exe -k https://10.210.6.233:8443/api/health` |
+| Stop everything | `docker compose -f docker-compose.offline.yml stop` |
+| Restart proxy only | `docker compose -f docker-compose.offline.yml restart proxy` |
+| Back up DB now | `docker compose -f docker-compose.offline.yml exec -T backup sh -c 'f=/backups/manual-$(date +%Y%m%d-%H%M%S).dump; pg_dump -Fc -h db -U planner -f $f planner && ls -l $f'` |
+| Last good backup | `Get-Content backups\last-backup.txt` |
+| SQL prompt | `docker compose -f docker-compose.offline.yml exec db psql -U planner -d planner` |
+
+## 4. Troubleshooting (things we hit)
+
+- `bind: ...forbidden by its access permissions` on port 80/443 → held by
+  Windows IIS/HTTP.sys. Publish on `8443` (`HTTPS_PORT=8443`, already done), or
+  disable IIS (`Stop-Service W3SVC; Set-Service W3SVC -StartupType Disabled`).
+- `ERR_SSL_PROTOCOL_ERROR` by IP → the Caddyfile is missing that IP or the
+  `default_sni` line. Fix both, then `restart proxy`.
+- `user-mapped section open` saving the Caddyfile (or during `git pull`) →
+  stop the proxy (and close Notepad++, which locks files too) first.
+- `cannot find ... dockerDesktopLinuxEngine` → Docker Desktop isn't running;
+  start it and wait for "Engine running".
+- `pull access denied` / `No such image` on `up -d` → an image the compose file
+  pins isn't on the PC (`pull_policy: never`). Run 1.1 step 5.
+- HTTPS certificate expired on the LAN address → Caddy's internal cert failed
+  to renew; `docker compose -f docker-compose.offline.yml restart proxy`.
+
+---
+
+## 5. Email ingest (off on production)
+
+The app can poll a Gmail inbox (IMAP) and turn "@username" emails into
+dashboard tasks. It is **off** on production. The new PC has internet, so it
+could be turned on: set `EMAIL_INGEST_ENABLED=true`, `IMAP_USER`,
+`IMAP_PASSWORD` (a Google App Password) in `.env`, then `up -d`. Only **one**
+install may poll an inbox — turn it off on dev first.
+
+---
+
+## 6. Offline host (USB bundle) — legacy
+
+> **Legacy.** This is how the old **SCADA PC** (`10.210.4.65`, no internet) was
+> deployed until 2026-11-06. That PC is retired (stopped, kept as a fallback).
+> Use this only for a host without internet access.
+
+### 6.1 At a glance
+
+- Windows 11 + Docker Desktop (per-user install). No internet, so every image
+  is built/pulled on the dev PC and carried over on USB as one `.tar` file.
+- Run folder `C:\TeamPlanner` holding `docker-compose.offline.yml`, `Caddyfile`,
+  `.env`, `timesheet-template\` and (temporarily) the image bundle.
+- Published on host port `8443` → container `443`.
+
+### 6.2 Build the bundle (dev PC, has internet)
+
+From the project folder on the dev PC — commit and bump the version first so
+the footer hash is right:
+
+```powershell
+docker build --provenance=false --target runner -t team-planner-app:latest .
+```
+
+```powershell
+docker build --provenance=false --target migrator -t team-planner-app-migrator:latest .
+```
+
+Pull the **exact** base images `docker-compose.offline.yml` pins (check the
+`image:` lines — on this branch `caddy:2.11.8-alpine`, `postgres:16.15-alpine`,
+`ollama/ollama:0.40.14`). Ollama must travel too even with AI off: with
+`pull_policy: never`, `up -d` fails if any image is missing.
+
+```powershell
 docker pull caddy:2.11.8-alpine
+```
+
+```powershell
 docker pull postgres:16.15-alpine
 ```
 
-Bundle **all four** images into one file (the host can't pull Caddy/Postgres either,
-so they must travel too):
-
 ```powershell
-docker save -o team-planner-bundle.tar `
-  team-planner-app:latest `
-  team-planner-app-migrator:latest `
-  caddy:2.11.8-alpine `
-  postgres:16.15-alpine
+docker pull ollama/ollama:0.40.14
 ```
 
-> If the host's `docker load` ever complains about platform/manifest, rebuild the two
-> app images with `--provenance=false` (e.g. `docker build --provenance=false --target runner -t team-planner-app:latest .`) and re-save.
+Bundle **all five** images into one file (`docker save -o` writes the file
+itself — no redirect involved; the Ollama image makes it several GB):
 
-Copy these to a USB stick:
+```powershell
+docker save -o team-planner-bundle.tar team-planner-app:latest team-planner-app-migrator:latest caddy:2.11.8-alpine postgres:16.15-alpine ollama/ollama:0.40.14
+```
 
-- `team-planner-bundle.tar`
-- `docker-compose.offline.yml`
-- `Caddyfile`
-- the `timesheet-template/` folder (contains `Time_Sheet_Template.xlsm`) — the compose
-  bind-mounts `./timesheet-template` so the timesheet generator can read it on the host.
-  You can update this .xlsm on the host anytime without rebuilding the image.
+Copy to the USB stick: `team-planner-bundle.tar`, `docker-compose.offline.yml`,
+`Caddyfile`, and the `timesheet-template\` folder (bind-mounted by the compose
+file; the `.xlsm` can be replaced on the host any time). Do **not** copy
+`.env` — create it on the host.
 
-Do **not** copy `.env` — create it fresh on the host (secrets shouldn't ride on the USB).
+For a code-only update, bundle just the two app images (unless the pinned
+base images changed):
 
----
+```powershell
+docker save -o team-planner-app-update.tar team-planner-app:latest team-planner-app-migrator:latest
+```
 
-## Part B — Set up on the host (offline)
+### 6.3 Set up / update on the offline host
 
-1. **Make sure Docker Desktop is running.** It starts in the logged-in user's session —
-   press the Windows key, type "Docker Desktop", open it, wait for **"Engine running."**
-   Confirm with `docker version` (you want a **Server** section, no pipe error).
-
-2. **Put the three files in `C:\TeamPlanner`** and load the images:
+1. Make sure Docker Desktop is running (`docker version` shows a **Server**
+   section).
+2. Back up first if the stack already runs (section 2.4 — same command).
+3. Put the files in `C:\TeamPlanner`, then load the images:
 
    ```powershell
    cd C:\TeamPlanner
-   docker load -i team-planner-bundle.tar
-   docker images   # expect team-planner-app, team-planner-app-migrator, caddy, postgres
    ```
-
-3. **Create `.env`** in `C:\TeamPlanner` (generates strong secrets automatically):
 
    ```powershell
-   $dbpw   = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
-   @"
-   DB_PASSWORD=$dbpw
-   APP_URL=https://planner.localhost:8443
-   HTTPS_PORT=8443
-   MAX_UPLOAD_MB=10
-   BACKUP_KEEP_DAYS=14
-   "@ | Set-Content -Path .\.env -Encoding ascii
+   docker load -i team-planner-bundle.tar
    ```
 
-   > `HTTPS_PORT` is the published host port (default 8443 — Windows often
-   > reserves 443 for IIS/HTTP.sys). Email ingest and the AI summarizer need
-   > internet, so leave them unset on this host — they're off by default.
+4. **New host only — create `.env`** (random DB password):
 
-   > Keep this `.env` safe — it holds the DB password and session secret. If you ever
-   > recreate it with a different `DB_PASSWORD`, the existing database volume won't match
-   > and the app won't connect.
+   ```powershell
+   $dbpw = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
+   ```
 
-4. **Set the Caddyfile** for your host's IP. Find it with `ipconfig` (ours was
-   `10.210.4.65`). The key bits: `default_sni` (so browsing by raw IP works — browsers
-   don't send a server name for IPs) and `tls internal` (self-signed, no internet needed):
+   ```powershell
+   "DB_PASSWORD=$dbpw`r`nAPP_URL=https://<host-IP>:8443`r`nHTTPS_PORT=8443`r`nMAX_UPLOAD_MB=10`r`nBACKUP_KEEP_DAYS=14" | Set-Content -Path .\.env -Encoding ascii
+   ```
+
+   Keep `.env` safe; recreating it with a different `DB_PASSWORD` locks the app
+   out of the existing database volume.
+
+5. **New host only — Caddyfile:** put the host's IP (`ipconfig`) in both the
+   `default_sni` line and the site address, keep `tls internal`:
 
    ```
    {
-     default_sni planner.localhost
+     default_sni <host-IP>
    }
 
-   planner.localhost, 10.210.4.65 {
+   planner.localhost, <host-IP> {
      encode gzip
      reverse_proxy app:3000 {
        header_up X-Real-IP {remote_host}
@@ -129,188 +806,21 @@ Do **not** copy `.env` — create it fresh on the host (secrets shouldn't ride o
    }
    ```
 
-   > **Editing the Caddyfile gotcha:** while the proxy container is running it holds the
-   > file open ("user-mapped section" error on save). Run
-   > `docker compose -f docker-compose.offline.yml stop proxy` first, edit, then
-   > `up -d`. Also close Notepad++ if open — it memory-maps files and locks them too.
+6. Create the backups folder and start:
 
-5. **Start the stack:**
+   ```powershell
+   mkdir backups -ErrorAction SilentlyContinue
+   ```
 
    ```powershell
    docker compose -f docker-compose.offline.yml up -d
-   docker compose -f docker-compose.offline.yml ps
    ```
 
-   You want `app`, `proxy`, `db`, `backup` **running** (db "healthy") and `migrate`
-   **exited (0)** — `migrate` is a one-shot that applies the versioned migrations
-   and stops; on a fresh database its log shows `database state = fresh` then
-   applies `0_init`. The `backup` sidecar dumps the database to
-   `C:\TeamPlanner\backups` at startup and every 24 h (create the folder first:
-   `mkdir backups`).
+7. Check with `ps` (as in 1.1 step 8), open the firewall (1.4) and browse to
+   `https://<host-IP>:8443`. A fresh database starts at the setup wizard.
 
-   > **Starting fresh on a host that already ran the app:** wipe the old data
-   > volumes FIRST (this permanently deletes the previous database + uploads):
-   > `docker compose -f docker-compose.offline.yml down -v`, then `up -d`.
+> Starting fresh on a host that already ran the app: `down -v` wipes the old
+> database and uploads **permanently** — back up first.
 
-6. **Open the firewall** for the published port (Administrator PowerShell):
-
-   ```powershell
-   New-NetFirewallRule -DisplayName "TeamPlanner HTTPS 8443" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow -Profile Any
-   ```
-
-   Also make sure the active network is **Private**, not Public (`Get-NetConnectionProfile`).
-
-7. **Access it.** On the host: `https://planner.localhost:8443`. From other devices on the
-   same LAN: `https://<host-IP>:8443`. Accept the certificate warning (Advanced → Proceed).
-   First visit is the setup wizard to create your owner account.
-
----
-
-## Keeping it running 24/7
-
-- Docker Desktop runs in the **SCADA** user's session. The machine must stay **logged in
-  as SCADA** — a lock screen is fine, but a full sign-out stops Docker and the app.
-- In Docker Desktop → **Settings → General**, enable **"Start Docker Desktop when you sign
-  in."** Containers use `restart: unless-stopped`, so they return automatically once the
-  engine is up.
-- The host IP (`10.210.4.65`) is likely DHCP. Ask for a **static IP / DHCP reservation**,
-  otherwise it can change and you'll have to update the `Caddyfile` IP again.
-
----
-
-## Updating the app later (offline)
-
-On the dev PC, rebuild and re-bundle (you usually only need the two app images; Caddy and
-Postgres rarely change):
-
-```powershell
-docker build --target runner   -t team-planner-app:latest .
-docker build --target migrator -t team-planner-app-migrator:latest .
-docker save -o team-planner-app-update.tar team-planner-app:latest team-planner-app-migrator:latest
-```
-
-Carry `team-planner-app-update.tar` to the host, then:
-
-```powershell
-cd C:\TeamPlanner
-docker load -i team-planner-app-update.tar
-docker compose -f docker-compose.offline.yml up -d
-```
-
-The `migrate` container syncs any schema changes and the `app` restarts on the new image
-(a few seconds of downtime; the data volumes are untouched).
-
-> **Back up the database before every update** (see below).
-
----
-
-## Database — archive (backup) and restore
-
-The database lives in the `teamplanner_db_data` Docker volume. Don't copy that volume's
-files directly; use Postgres' own tools, which produce a clean, portable archive.
-
-### Archive (back up)
-
-Plain SQL dump (human-readable, easy):
-
-```powershell
-cd C:\TeamPlanner
-mkdir backups -ErrorAction SilentlyContinue
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-docker compose -f docker-compose.offline.yml exec -T db pg_dump -U planner planner > "backups\planner-$stamp.sql"
-```
-
-Compressed/custom format (smaller, and restores more cleanly — recommended for archives):
-
-```powershell
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-docker compose -f docker-compose.offline.yml exec -T db pg_dump -U planner -Fc planner > "backups\planner-$stamp.dump"
-```
-
-Each file is a complete snapshot of the database at that moment. Store copies off the
-machine (USB, network share). Run one before any app update.
-
-### Restore
-
-Restoring replaces the current data, so do it deliberately. Stop the app so nothing is
-writing, recreate an empty database, then load the archive.
-
-**From a `.sql` file:**
-
-```powershell
-cd C:\TeamPlanner
-docker compose -f docker-compose.offline.yml stop app migrate
-
-# Drop and recreate an empty database
-docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d postgres -c "DROP DATABASE IF EXISTS planner WITH (FORCE);"
-docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d postgres -c "CREATE DATABASE planner OWNER planner;"
-
-# Load the dump
-Get-Content "backups\planner-YYYYMMDD-HHMMSS.sql" | docker compose -f docker-compose.offline.yml exec -T db psql -U planner -d planner
-
-docker compose -f docker-compose.offline.yml up -d
-```
-
-**From a `.dump` (custom format) file** — `pg_restore --clean` handles the wipe for you:
-
-```powershell
-cd C:\TeamPlanner
-docker compose -f docker-compose.offline.yml stop app migrate
-Get-Content "backups\planner-YYYYMMDD-HHMMSS.dump" -Raw -Encoding Byte | `
-  docker compose -f docker-compose.offline.yml exec -T db pg_restore -U planner -d planner --clean --if-exists
-docker compose -f docker-compose.offline.yml up -d
-```
-
-> Restore onto the **same or newer** Postgres major version (we use 16). The named
-> volume survives `docker compose down`; it's only deleted by `docker compose down -v`
-> or removing the volume explicitly — so avoid `-v` unless you intend to wipe.
-
-### Optional: scheduled daily backup (legacy — usually unnecessary now)
-
-> The stack now includes a `backup` sidecar that dumps to `C:\TeamPlanner\backups`
-> automatically every 24 h and prunes old dumps. The scheduled task below is only
-> useful if you want a second, independent schedule.
-
-Save this as `C:\TeamPlanner\backup-db.ps1`:
-
-```powershell
-$ErrorActionPreference = "Stop"
-Set-Location C:\TeamPlanner
-New-Item -ItemType Directory -Force -Path .\backups | Out-Null
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-docker compose -f docker-compose.offline.yml exec -T db pg_dump -U planner -Fc planner > "backups\planner-$stamp.dump"
-# Keep only the 14 most recent
-Get-ChildItem .\backups\planner-*.dump | Sort-Object LastWriteTime -Descending |
-  Select-Object -Skip 14 | Remove-Item -Force
-```
-
-Then schedule it (run once, as Administrator) to fire every day at 1am:
-
-```powershell
-$action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File C:\TeamPlanner\backup-db.ps1"
-$trigger = New-ScheduledTaskTrigger -Daily -At 1am
-Register-ScheduledTask -TaskName "TeamPlanner DB Backup" -Action $action -Trigger $trigger -RunLevel Highest -User "SCADA"
-```
-
----
-
-## Quick reference
-
-| Task | Command (from `C:\TeamPlanner`) |
-|------|------|
-| Start / apply changes | `docker compose -f docker-compose.offline.yml up -d` |
-| Status | `docker compose -f docker-compose.offline.yml ps` |
-| Logs (app / proxy) | `docker compose -f docker-compose.offline.yml logs --tail=40 app` |
-| Stop everything | `docker compose -f docker-compose.offline.yml stop` |
-| Restart proxy only | `docker compose -f docker-compose.offline.yml restart proxy` |
-| Back up DB | `docker compose -f docker-compose.offline.yml exec -T db pg_dump -U planner -Fc planner > backups\planner.dump` |
-| SQL prompt | `docker compose -f docker-compose.offline.yml exec db psql -U planner -d planner` |
-
-**Troubleshooting we hit, and the fix:**
-
-- `bind: ...forbidden by its access permissions` on port 80 → port was held by Windows
-  IIS/HTTP.sys. Solution: publish on `8443` instead (already done), or disable IIS
-  (`Stop-Service W3SVC; Set-Service W3SVC -StartupType Disabled`).
-- `ERR_SSL_PROTOCOL_ERROR` by IP → Caddyfile missing that IP / no `default_sni`. Add both.
-- `user-mapped section open` saving the Caddyfile → stop the proxy (and close Notepad++) first.
-- `cannot find ... dockerDesktopLinuxEngine` → Docker Desktop isn't running; start it and wait.
+Keeping an offline host running is the same as 1.4 (Docker Desktop on sign-in,
+stay signed in, static IP).

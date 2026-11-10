@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireScope, ForbiddenError, UnauthorizedError } from "@/lib/auth/current-user";
 import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
 import { updateSettings, type SettingsRow } from "@/lib/services/agreements/common";
 import {
@@ -13,6 +13,7 @@ import {
   type ProposalAction,
 } from "@/lib/services/agreements/proposals";
 import { resetAgreements } from "@/lib/services/agreements/import";
+import { checkConfirmPassword } from "@/lib/services/full-backup";
 import { importAgreementsWorkbook } from "@/lib/services/agreements/workbook";
 import type { SaAgreement } from "@/lib/agreements/constants";
 import type { ActionResult, BulkResult, WorkbookImportResult } from "./types";
@@ -171,9 +172,29 @@ export async function importWorkbookAction(formData: FormData): Promise<Workbook
   }
 }
 
-export async function resetAgreementsAction(input: { confirm: string }): Promise<ActionResult> {
-  if (input.confirm !== "RESET") return { error: 'Type RESET to confirm.' };
-  return run("Could not reset the service-agreement data.", async (scope) => {
+// Deletes customers + their agreements, proposals, calls AND their permanent
+// change history — so, like the Settings → Data reset, it needs the typed word
+// plus the REAL signed-in user's password ("View as" → the owner's own),
+// rate-limited (checkConfirmPassword). Admin-level, not Owner-only: it never
+// touches people or roles.
+export async function resetAgreementsAction(input: { confirm: string; password: string }): Promise<ActionResult> {
+  if (input.confirm !== "RESET") return { error: "Type RESET (in capitals) to confirm." };
+  if (!input.password) return { error: "Enter your password to confirm." };
+  let scope: Awaited<ReturnType<typeof requireScope>>["scope"];
+  try {
+    ({ scope } = await requireScope());
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return { error: "Your session expired — sign in again." };
+    return fail(e, "Could not reset the service-agreement data.");
+  }
+  try {
+    if (!scope.ctx.isOrgAdmin) throw new ForbiddenError("Only admins can reset the service-agreement data.");
+    const pw = await checkConfirmPassword(scope, input.password);
+    if (!pw.ok) return { error: pw.error };
     await resetAgreements(scope);
-  });
+    refresh();
+    return { ok: true };
+  } catch (e) {
+    return fail(e, "Could not reset the service-agreement data.");
+  }
 }

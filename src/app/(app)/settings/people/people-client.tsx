@@ -1,13 +1,14 @@
 "use client";
 
-import { useActionState, useMemo, useState, useTransition } from "react";
+import { useActionState, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Plus, X, Trash2, KeyRound, Archive, RotateCcw, Users2 } from "lucide-react";
+import { Plus, X, Trash2, KeyRound, Archive, RotateCcw, Users2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Modal } from "@/components/ui/modal";
 import {
   createDepartmentAction,
   renameDepartmentAction,
@@ -57,18 +58,36 @@ interface TimeOff {
   endDate: string;
   reason: string | null;
 }
+/** A set-password hand-off shown to the admin once. */
+interface Handoff {
+  link: string;
+  username?: string;
+  expiresInHours?: number;
+}
 
 const SELECT =
   "h-9 rounded-md border border-input bg-transparent px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+const ICON_BTN = "rounded p-1.5 disabled:cursor-not-allowed disabled:opacity-40";
+// App access an admin can hand out. OWNER is shown as a fixed label, never offered.
 const ORG_ROLES = ["MEMBER", "ADMIN"] as const;
 const DEPT_ROLES = ["MEMBER", "MANAGER"] as const;
+const COLOR_SAVE_DELAY_MS = 400;
 
 function displayName(p: Person) {
   return p.name ?? p.email ?? p.username;
 }
-/** The linked display state: "Name (email-or-username)". */
+/** The sign-in username, plus the contact email when there is one. */
 function handleOf(p: Person) {
-  return p.email ?? p.username;
+  return p.email ? `${p.username} · ${p.email}` : p.username;
+}
+
+/** Inline failure line for a card (empty when there's nothing to report). */
+function ErrorLine({ error }: { error: string | null | undefined }) {
+  return error ? (
+    <p role="alert" className="text-sm text-destructive">
+      {error}
+    </p>
+  ) : null;
 }
 
 export function PeopleClient({
@@ -76,32 +95,44 @@ export function PeopleClient({
   people,
   workGroups,
   timeOff,
+  selfIds,
 }: {
   departments: Dept[];
   people: Person[];
   workGroups: WorkGroupLite[];
   timeOff: TimeOff[];
+  /** "You" — the signed-in user (and the real owner while using "View as"). */
+  selfIds: string[];
 }) {
   const active = people.filter((p) => !p.archived);
   const archived = people.filter((p) => p.archived);
   const byId = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
+  const viewerIsOwner = people.some((p) => selfIds.includes(p.id) && p.orgRole === "OWNER");
 
   return (
     <main className="mx-auto max-w-4xl space-y-6 p-6">
       <div>
         <h1 className="text-2xl font-semibold">People &amp; Departments</h1>
         <p className="text-sm text-muted-foreground">
-          One list for everyone. A person is both a login user and a schedulable
-          technician. Group people into departments; department managers see their
-          team on the dashboard.
+          One list for everyone. Each person signs in with their own username and
+          can be put on the schedule. Group people into departments; department
+          managers see their department&apos;s people on the dashboard.
         </p>
       </div>
 
       <AddPersonCard departments={departments} workGroups={workGroups} />
-      <PeopleTable people={active} departments={departments} workGroups={workGroups} allPeople={active} />
+      <PeopleTable
+        people={active}
+        departments={departments}
+        workGroups={workGroups}
+        allPeople={active}
+        selfIds={selfIds}
+        viewerIsOwner={viewerIsOwner}
+      />
       <DepartmentsCard departments={departments} />
       <WorkGroupsCard workGroups={workGroups} people={active} />
-      {archived.length > 0 ? <ArchivedCard people={archived} /> : null}
+      {/* Always mounted so a "Restored…" note survives restoring the last archived person. */}
+      <ArchivedCard people={archived} />
       <TimeOffCard people={active} timeOff={timeOff} byId={byId} />
     </main>
   );
@@ -122,23 +153,39 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
   const router = useRouter();
   const [state, formAction] = useActionState(createDepartmentAction, {} as { error?: string; success?: boolean });
   const [, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
 
-  const rename = (id: string, name: string, current: string) => {
-    if (name.trim() && name !== current) {
-      startTransition(async () => {
-        await renameDepartmentAction({ id, name });
-        router.refresh();
-      });
+  const rename = (id: string, input: HTMLInputElement, current: string) => {
+    const name = input.value;
+    if (name === current) return;
+    if (!name.trim()) {
+      input.value = current;
+      setError("Department name is required.");
+      return;
     }
+    startTransition(async () => {
+      const res = await renameDepartmentAction({ id, name });
+      if (res.error) {
+        input.value = current; // snap back to the saved name
+        setError(res.error);
+      } else {
+        setError(null);
+        router.refresh();
+      }
+    });
   };
 
   const reparent = (id: string, parentTeamId: string | null) =>
     startTransition(async () => {
-      await setDepartmentParentAction({ id, parentTeamId });
-      router.refresh();
+      const res = await setDepartmentParentAction({ id, parentTeamId });
+      if (res.error) setError(res.error);
+      else {
+        setError(null);
+        router.refresh();
+      }
     });
 
-  // Render the tree: top-level departments first, each followed by its sub-teams.
+  // Render the tree: top-level departments first, each followed by its sub-departments.
   const roots = departments.filter((d) => !d.parentTeamId || !departments.some((x) => x.id === d.parentTeamId));
   const childrenOf = (id: string) => departments.filter((d) => d.parentTeamId === id);
   const ordered: { dept: Dept; depth: number }[] = [];
@@ -155,7 +202,7 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
         <CardDescription>
           Each person belongs to one department. Departments can nest (e.g. Software
           Engineering under Engineering) — a parent department&apos;s manager also
-          oversees its sub-teams.
+          oversees its sub-departments.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -165,7 +212,7 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
             <Input id="dept-name" name="name" required placeholder="e.g. Engineering" />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="dept-parent">Sub-team of</Label>
+            <Label htmlFor="dept-parent">Part of</Label>
             <select id="dept-parent" name="parentTeamId" className={`${SELECT} w-44`}>
               <option value="">— Top level —</option>
               {departments.map((d) => (
@@ -175,7 +222,8 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
           </div>
           <DeptSubmit />
         </form>
-        {state?.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
+        <ErrorLine error={state?.error} />
+        <ErrorLine error={error} />
         {departments.length === 0 ? (
           <p className="text-sm text-muted-foreground">No departments yet.</p>
         ) : (
@@ -185,14 +233,16 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
                 {depth > 0 ? <span className="text-xs text-muted-foreground">↳</span> : null}
                 <input
                   defaultValue={d.name}
-                  onBlur={(e) => rename(d.id, e.target.value, d.name)}
+                  aria-label={`Department name: ${d.name}`}
+                  onBlur={(e) => rename(d.id, e.currentTarget, d.name)}
                   className="flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-sm font-medium hover:border-input focus:border-input focus-visible:outline-none"
                 />
                 <select
                   className={`${SELECT} h-7 w-36 text-xs`}
                   value={d.parentTeamId ?? ""}
                   onChange={(e) => reparent(d.id, e.target.value || null)}
-                  title="Parent department"
+                  title="Part of (parent department)"
+                  aria-label={`${d.name} is part of`}
                 >
                   <option value="">Top level</option>
                   {departments.filter((x) => x.id !== d.id).map((x) => (
@@ -232,13 +282,19 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
   const router = useRouter();
   const [state, formAction] = useActionState(createWorkGroupAction, {} as { error?: string; success?: boolean });
   const [, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
 
-  const remove = (id: string, name: string) =>
+  const remove = (id: string, name: string) => {
+    if (!window.confirm(`Archive work group "${name}"?`)) return;
     startTransition(async () => {
-      if (!confirm(`Archive work group "${name}"?`)) return;
-      await archiveWorkGroupAction({ id });
-      router.refresh();
+      const res = await archiveWorkGroupAction({ id });
+      if (res.error) setError(res.error);
+      else {
+        setError(null);
+        router.refresh();
+      }
     });
+  };
 
   const memberCount = (id: string) => people.filter((p) => p.workGroupIds.includes(id)).length;
 
@@ -268,7 +324,8 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
           </div>
           <WorkGroupSubmit />
         </form>
-        {state?.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
+        <ErrorLine error={state?.error} />
+        <ErrorLine error={error} />
         {workGroups.length === 0 ? (
           <p className="text-sm text-muted-foreground">No work groups yet.</p>
         ) : (
@@ -280,7 +337,13 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
                   {WG_PURPOSES.find((p) => p.value === g.purpose)?.label ?? g.purpose} · {memberCount(g.id)}{" "}
                   {memberCount(g.id) === 1 ? "person" : "people"}
                 </span>
-                <button onClick={() => remove(g.id, g.name)} className="rounded p-1 text-destructive hover:bg-destructive/10" title="Archive">
+                <button
+                  type="button"
+                  onClick={() => remove(g.id, g.name)}
+                  className="rounded p-1 text-destructive hover:bg-destructive/10"
+                  title="Archive"
+                  aria-label={`Archive work group ${g.name}`}
+                >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </li>
@@ -307,7 +370,7 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
   const [schedulable, setSchedulable] = useState(true);
   const [wgIds, setWgIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [link, setLink] = useState<string | null>(null);
+  const [handoff, setHandoff] = useState<Handoff | null>(null);
 
   const toggleWg = (id: string) =>
     setWgIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -327,7 +390,7 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
       });
       if (res.error) setError(res.error);
       else {
-        setLink(res.link ?? null);
+        setHandoff(res.link ? { link: res.link, username: res.username, expiresInHours: res.expiresInHours } : null);
         setEmail("");
         setUsername("");
         setName("");
@@ -342,9 +405,9 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-lg">Add a person</CardTitle>
-            <CardDescription>Creates a login and a set-password link to hand off.</CardDescription>
+            <CardDescription>Creates their sign-in and a set-password link to hand off.</CardDescription>
           </div>
-          <Button size="sm" variant="outline" onClick={() => { setOpen((v) => !v); setLink(null); }}>
+          <Button size="sm" variant="outline" onClick={() => { setOpen((v) => !v); setHandoff(null); setError(null); }}>
             {open ? "Cancel" : "Add person"}
           </Button>
         </div>
@@ -353,20 +416,20 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label>Name</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
+              <Label htmlFor="add-name">Name</Label>
+              <Input id="add-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
             </div>
             <div className="space-y-1">
-              <Label>Username (optional — auto-generated)</Label>
-              <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. jane.doe" />
+              <Label htmlFor="add-username">Username (optional — auto-generated)</Label>
+              <Input id="add-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. jane.doe" />
             </div>
             <div className="space-y-1">
-              <Label>Email (optional)</Label>
-              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="person@company.com" />
+              <Label htmlFor="add-email">Email (optional)</Label>
+              <Input id="add-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="person@company.com" />
             </div>
             <div className="space-y-1">
-              <Label>Department</Label>
-              <select className={`${SELECT} w-full`} value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
+              <Label htmlFor="add-dept">Department</Label>
+              <select id="add-dept" className={`${SELECT} w-full`} value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
                 <option value="">— None —</option>
                 {departments.map((d) => (
                   <option key={d.id} value={d.id}>{d.name}</option>
@@ -374,14 +437,14 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
               </select>
             </div>
             <div className="space-y-1">
-              <Label>Department role</Label>
-              <select className={`${SELECT} w-full`} value={deptRole} onChange={(e) => setDeptRole(e.target.value)}>
+              <Label htmlFor="add-dept-role">Department role</Label>
+              <select id="add-dept-role" className={`${SELECT} w-full`} value={deptRole} onChange={(e) => setDeptRole(e.target.value)}>
                 {DEPT_ROLES.map((r) => <option key={r} value={r}>{r === "MANAGER" ? "Manager" : "Member"}</option>)}
               </select>
             </div>
             <div className="space-y-1">
-              <Label>Org access</Label>
-              <select className={`${SELECT} w-full`} value={orgRole} onChange={(e) => setOrgRole(e.target.value)}>
+              <Label htmlFor="add-org-role">App access</Label>
+              <select id="add-org-role" className={`${SELECT} w-full`} value={orgRole} onChange={(e) => setOrgRole(e.target.value)}>
                 {ORG_ROLES.map((r) => <option key={r} value={r}>{r === "ADMIN" ? "Admin" : "Member"}</option>)}
               </select>
             </div>
@@ -409,14 +472,13 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
             A unique board colour is generated automatically — admins can change it
             later from the person&apos;s row.
           </p>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          <ErrorLine error={error} />
           <Button onClick={submit} disabled={pending || !name.trim()}>
             {pending ? "Adding…" : "Create person"}
           </Button>
-          {link ? (
+          {handoff ? (
             <div className="space-y-1 rounded-md border bg-muted/40 p-2">
-              <p className="text-xs font-medium">Set-password link (shown once):</p>
-              <CopyLink link={link} />
+              <HandoffDetails handoff={handoff} />
             </div>
           ) : null}
         </CardContent>
@@ -427,70 +489,210 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
 
 // ─────────────────────────── People table ───────────────────────────
 
-function PeopleTable({ people, departments, workGroups, allPeople }: { people: Person[]; departments: Dept[]; workGroups: WorkGroupLite[]; allPeople: Person[] }) {
+function PeopleTable({
+  people,
+  departments,
+  workGroups,
+  allPeople,
+  selfIds,
+  viewerIsOwner,
+}: {
+  people: Person[];
+  departments: Dept[];
+  workGroups: WorkGroupLite[];
+  allPeople: Person[];
+  selfIds: string[];
+  viewerIsOwner: boolean;
+}) {
+  const router = useRouter();
+  // The last refusal, shown in a row directly under the person it belongs to.
+  const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
+  const [editing, setEditing] = useState<Person | null>(null);
+  const closeEdit = useCallback(() => setEditing(null), []);
+
+  /** Every row action reports here: show the refusal, or clear the last one on success. */
+  const report = useCallback((who: Person, res: { error?: string }) => {
+    setRowError(res.error ? { id: who.id, message: `${displayName(who)}: ${res.error}` } : null);
+  }, []);
+
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-lg">People</CardTitle>
-        <CardDescription>Edit department, role, colour, and scheduling inline.</CardDescription>
+        <CardDescription>
+          Edit department, department role, app access, colour, and scheduling inline.
+          People sign in with their username.
+        </CardDescription>
       </CardHeader>
-      <CardContent className="overflow-x-auto p-0">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-y bg-muted/20 text-xs text-muted-foreground">
-              <th className="px-3 py-2 text-left">Person</th>
-              <th className="px-2 py-2 text-left">Department</th>
-              <th className="px-2 py-2 text-left">Role</th>
-              <th className="px-2 py-2 text-left">Org</th>
-              <th className="px-2 py-2 text-left">Work groups</th>
-              <th className="px-2 py-2 text-center">Colour</th>
-              <th className="px-2 py-2 text-center">Sched.</th>
-              <th className="px-2 py-2"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {people.map((p) => (
-              <PersonRowUI key={p.id} person={p} departments={departments} workGroups={workGroups} allPeople={allPeople} />
-            ))}
-          </tbody>
-        </table>
+      <CardContent className="space-y-2 p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-y bg-muted/20 text-xs text-muted-foreground">
+                <th className="px-3 py-2 text-left">Person</th>
+                <th className="px-2 py-2 text-left">Department</th>
+                <th className="px-2 py-2 text-left">Department role</th>
+                <th className="px-2 py-2 text-left">App access</th>
+                <th className="px-2 py-2 text-left">Work groups</th>
+                <th className="px-2 py-2 text-center">Colour</th>
+                <th className="px-2 py-2 text-center">On schedule</th>
+                <th className="px-2 py-2"><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {people.map((p) => (
+                <PersonRowUI
+                  key={p.id}
+                  person={p}
+                  departments={departments}
+                  workGroups={workGroups}
+                  allPeople={allPeople}
+                  isSelf={selfIds.includes(p.id)}
+                  viewerIsOwner={viewerIsOwner}
+                  error={rowError?.id === p.id ? rowError.message : null}
+                  onResult={report}
+                  onEdit={setEditing}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       </CardContent>
+      {/* Only the Owner may change the Owner's username or email (both sign in — avoids locking them out). */}
+      {editing ? (
+        <EditPersonModal
+          key={editing.id}
+          person={editing}
+          canEditSignIn={editing.orgRole !== "OWNER" || viewerIsOwner}
+          onClose={closeEdit}
+          onSaved={() => {
+            setEditing(null);
+            setRowError(null);
+            router.refresh();
+          }}
+        />
+      ) : null}
     </Card>
   );
 }
 
-function PersonRowUI({ person, departments, workGroups, allPeople }: { person: Person; departments: Dept[]; workGroups: WorkGroupLite[]; allPeople: Person[] }) {
+function PersonRowUI({
+  person,
+  departments,
+  workGroups,
+  allPeople,
+  isSelf,
+  viewerIsOwner,
+  error,
+  onResult,
+  onEdit,
+}: {
+  person: Person;
+  departments: Dept[];
+  workGroups: WorkGroupLite[];
+  allPeople: Person[];
+  isSelf: boolean;
+  viewerIsOwner: boolean;
+  /** The last refusal for THIS person (rendered in a row right under theirs). */
+  error: string | null;
+  onResult: (who: Person, res: { error?: string }) => void;
+  onEdit: (p: Person) => void;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [resetLink, setResetLink] = useState<string | null>(null);
+  const [handoff, setHandoff] = useState<Handoff | null>(null);
   const [mgrOpen, setMgrOpen] = useState(false);
+  const isOwner = person.orgRole === "OWNER";
 
-  const toggleWorkGroup = (groupId: string) =>
+  /** Run an action, report its result to the card, refresh on success (a refusal snaps back). */
+  const run = (action: () => Promise<{ error?: string }>) =>
     startTransition(async () => {
-      const next = person.workGroupIds.includes(groupId)
-        ? person.workGroupIds.filter((x) => x !== groupId)
-        : [...person.workGroupIds, groupId];
-      await setPersonWorkGroupsAction({ userId: person.id, groupIds: next });
+      const res = await action();
+      onResult(person, res);
       router.refresh();
     });
 
-  const save = (patch: Parameters<typeof updatePersonAction>[0]) =>
-    startTransition(async () => {
-      await updatePersonAction(patch);
-      router.refresh();
-    });
+  const toggleWorkGroup = (groupId: string) => {
+    const next = person.workGroupIds.includes(groupId)
+      ? person.workGroupIds.filter((x) => x !== groupId)
+      : [...person.workGroupIds, groupId];
+    run(() => setPersonWorkGroupsAction({ userId: person.id, groupIds: next }));
+  };
+
+  const save = (patch: Parameters<typeof updatePersonAction>[0]) => run(() => updatePersonAction(patch));
+
+  // ── Colour: saved as it changes (debounced while the picker is dragged) ──
+  const [color, setColor] = useState(person.color);
+  const savedColor = useRef(person.color);
+  const pendingColor = useRef<string | null>(null);
+  const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const colorSavesInFlight = useRef(0);
+  useEffect(() => {
+    // Don't adopt the server's value while a pick is pending or a save is in
+    // flight: a refresh from an earlier save would snap the swatch back mid-drag.
+    if (pendingColor.current !== null || colorSavesInFlight.current > 0) return;
+    savedColor.current = person.color;
+    setColor(person.color);
+  }, [person.color]);
+  const flushColor = () => {
+    if (colorTimer.current) clearTimeout(colorTimer.current);
+    colorTimer.current = null;
+    const next = pendingColor.current;
+    pendingColor.current = null;
+    if (next && next !== savedColor.current) {
+      const before = savedColor.current;
+      savedColor.current = next;
+      colorSavesInFlight.current++;
+      startTransition(async () => {
+        const res = await updatePersonAction({ id: person.id, color: next }).finally(() => {
+          colorSavesInFlight.current--;
+        });
+        onResult(person, res);
+        if (res.error) {
+          // Refused: put the swatch back to the saved colour.
+          savedColor.current = before;
+          setColor(before);
+        }
+        router.refresh();
+      });
+    }
+  };
+  const onColorChange = (value: string) => {
+    setColor(value);
+    pendingColor.current = value;
+    if (colorTimer.current) clearTimeout(colorTimer.current);
+    colorTimer.current = setTimeout(flushColor, COLOR_SAVE_DELAY_MS);
+  };
+  const personId = person.id;
+  useEffect(
+    () => () => {
+      // Leaving the page mid-debounce: still send the last picked colour.
+      if (colorTimer.current) clearTimeout(colorTimer.current);
+      const next = pendingColor.current;
+      if (next && next !== savedColor.current) void updatePersonAction({ id: personId, color: next });
+    },
+    [personId],
+  );
 
   const doReset = () =>
     startTransition(async () => {
       const res = await resetPersonAction({ id: person.id });
-      if (res.link) setResetLink(res.link);
+      onResult(person, res);
+      if (res.link) setHandoff({ link: res.link, username: res.username, expiresInHours: res.expiresInHours });
     });
-  const doArchive = () =>
-    startTransition(async () => {
-      if (!confirm(`Archive ${displayName(person)}? They can't log in or be scheduled.`)) return;
-      await archivePersonAction({ id: person.id });
-      router.refresh();
-    });
+  const doArchive = () => {
+    if (!window.confirm(`Archive ${displayName(person)}? They can't sign in or be scheduled.`)) return;
+    run(() => archivePersonAction({ id: person.id }));
+  };
+
+  const archiveBlocked = isOwner
+    ? "The Owner can't be archived"
+    : isSelf
+      ? "You can't archive yourself"
+      : null;
+  const resetBlocked = isOwner && !viewerIsOwner ? "Only the Owner can issue a set-password link for the Owner" : null;
+  const resetWhyId = `reset-why-${person.id}`;
+  const archiveWhyId = `archive-why-${person.id}`;
 
   return (
     <>
@@ -502,6 +704,7 @@ function PersonRowUI({ person, departments, workGroups, allPeople }: { person: P
         <td className="px-2 py-2">
           <select
             className={SELECT}
+            aria-label={`Department for ${displayName(person)}`}
             value={person.departmentId ?? ""}
             onChange={(e) => save({ id: person.id, departmentId: e.target.value || null, deptRole: person.deptRole ?? "MEMBER" })}
           >
@@ -514,6 +717,7 @@ function PersonRowUI({ person, departments, workGroups, allPeople }: { person: P
         <td className="px-2 py-2">
           <select
             className={SELECT}
+            aria-label={`Department role for ${displayName(person)}`}
             value={person.deptRole ?? "MEMBER"}
             disabled={!person.departmentId}
             onChange={(e) => save({ id: person.id, deptRole: e.target.value })}
@@ -522,13 +726,25 @@ function PersonRowUI({ person, departments, workGroups, allPeople }: { person: P
           </select>
         </td>
         <td className="px-2 py-2">
-          <select
-            className={SELECT}
-            value={person.orgRole}
-            onChange={(e) => save({ id: person.id, orgRole: e.target.value })}
-          >
-            {ORG_ROLES.map((r) => <option key={r} value={r}>{r === "ADMIN" ? "Admin" : "Member"}</option>)}
-          </select>
+          {isOwner ? (
+            <span
+              className="inline-flex h-9 items-center rounded-md bg-muted px-2 text-sm font-medium"
+              title="The Owner's app access can't be changed"
+            >
+              Owner
+            </span>
+          ) : (
+            <select
+              className={SELECT}
+              aria-label={`App access for ${displayName(person)}`}
+              value={person.orgRole}
+              disabled={isSelf}
+              title={isSelf ? "You can't change your own app access. Ask another admin to do it." : undefined}
+              onChange={(e) => save({ id: person.id, orgRole: e.target.value })}
+            >
+              {ORG_ROLES.map((r) => <option key={r} value={r}>{r === "ADMIN" ? "Admin" : "Member"}</option>)}
+            </select>
+          )}
         </td>
         <td className="px-2 py-2">
           <div className="flex flex-wrap gap-1">
@@ -537,8 +753,10 @@ function PersonRowUI({ person, departments, workGroups, allPeople }: { person: P
               return (
                 <button
                   key={g.id}
+                  type="button"
                   onClick={() => toggleWorkGroup(g.id)}
                   title={on ? `Remove from ${g.name}` : `Add to ${g.name}`}
+                  aria-pressed={on}
                   className={`rounded-full border px-2 py-0.5 text-xs ${on ? "border-primary bg-primary/10 font-medium" : "border-input text-muted-foreground hover:bg-muted"}`}
                 >
                   {g.name}
@@ -551,14 +769,17 @@ function PersonRowUI({ person, departments, workGroups, allPeople }: { person: P
         <td className="px-2 py-2 text-center">
           <input
             type="color"
-            defaultValue={person.color}
-            onBlur={(e) => e.target.value !== person.color && save({ id: person.id, color: e.target.value })}
+            aria-label={`Board colour for ${displayName(person)}`}
+            value={color}
+            onChange={(e) => onColorChange(e.target.value)}
+            onBlur={flushColor}
             className="h-7 w-10 rounded border border-input bg-transparent"
           />
         </td>
         <td className="px-2 py-2 text-center">
           <input
             type="checkbox"
+            aria-label={`${displayName(person)} can be scheduled`}
             checked={person.schedulable}
             onChange={(e) => save({ id: person.id, schedulable: e.target.checked })}
             className="h-4 w-4 accent-primary"
@@ -566,54 +787,222 @@ function PersonRowUI({ person, departments, workGroups, allPeople }: { person: P
         </td>
         <td className="px-2 py-2">
           <div className="flex items-center justify-end gap-1">
-            <button onClick={() => setMgrOpen(true)} title="Extra managers" className="rounded p-1.5 text-muted-foreground hover:bg-muted">
+            <button
+              type="button"
+              onClick={() => onEdit(person)}
+              title="Edit name, username and email"
+              aria-label={`Edit name, username and email for ${displayName(person)}`}
+              className={`${ICON_BTN} text-muted-foreground hover:bg-muted`}
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMgrOpen(true)}
+              title="Extra managers"
+              aria-label={`Extra managers for ${displayName(person)}`}
+              className={`${ICON_BTN} text-muted-foreground hover:bg-muted`}
+            >
               <Users2 className="h-4 w-4" />
             </button>
-            <button onClick={doReset} title="Set-password link" className="rounded p-1.5 text-muted-foreground hover:bg-muted">
+            {/* Blocked actions stay focusable (aria-disabled, not disabled) so the reason can be read. */}
+            <button
+              type="button"
+              onClick={() => {
+                if (resetBlocked) return;
+                doReset();
+              }}
+              aria-disabled={resetBlocked ? true : undefined}
+              aria-describedby={resetBlocked ? resetWhyId : undefined}
+              title={resetBlocked ?? "Set-password link"}
+              aria-label={`Set-password link for ${displayName(person)}`}
+              className={`${ICON_BTN} text-muted-foreground ${resetBlocked ? "cursor-not-allowed opacity-40" : "hover:bg-muted"}`}
+            >
               <KeyRound className="h-4 w-4" />
             </button>
-            <button onClick={doArchive} title="Archive" className="rounded p-1.5 text-destructive hover:bg-destructive/10">
+            {resetBlocked ? <span id={resetWhyId} className="sr-only">{resetBlocked}</span> : null}
+            <button
+              type="button"
+              onClick={() => {
+                if (archiveBlocked) return;
+                doArchive();
+              }}
+              aria-disabled={archiveBlocked ? true : undefined}
+              aria-describedby={archiveBlocked ? archiveWhyId : undefined}
+              title={archiveBlocked ?? "Archive"}
+              aria-label={`Archive ${displayName(person)}`}
+              className={`${ICON_BTN} text-destructive ${archiveBlocked ? "cursor-not-allowed opacity-40" : "hover:bg-destructive/10"}`}
+            >
               <Archive className="h-4 w-4" />
             </button>
+            {archiveBlocked ? <span id={archiveWhyId} className="sr-only">{archiveBlocked}</span> : null}
           </div>
         </td>
       </tr>
-      {resetLink ? (
-        <tr className="border-b bg-muted/30">
+      {error ? (
+        <tr className="border-b bg-destructive/5">
           <td colSpan={8} className="px-3 py-2">
-            <p className="mb-1 text-xs font-medium">Set-password link for {displayName(person)} (shown once):</p>
-            <CopyLink link={resetLink} />
+            <ErrorLine error={error} />
+          </td>
+        </tr>
+      ) : null}
+      {handoff ? (
+        <tr className="border-b bg-muted/30">
+          <td colSpan={8} className="space-y-1 px-3 py-2">
+            <HandoffDetails handoff={handoff} forName={displayName(person)} />
           </td>
         </tr>
       ) : null}
       {mgrOpen ? (
-        <ManagerModal person={person} allPeople={allPeople} onClose={() => setMgrOpen(false)} onSaved={() => { setMgrOpen(false); router.refresh(); }} />
+        <ManagerModal
+          person={person}
+          allPeople={allPeople}
+          onClose={() => setMgrOpen(false)}
+          onSaved={() => {
+            setMgrOpen(false);
+            onResult(person, {});
+            router.refresh();
+          }}
+        />
       ) : null}
     </>
+  );
+}
+
+/** Name / username / email correction (admin). Username renames keep the person signed in. */
+function EditPersonModal({
+  person,
+  canEditSignIn,
+  onClose,
+  onSaved,
+}: {
+  person: Person;
+  /** Username + email both work at sign-in: only the Owner may change the Owner's. */
+  canEditSignIn: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [name, setName] = useState(person.name ?? "");
+  const [username, setUsername] = useState(person.username);
+  const [email, setEmail] = useState(person.email ?? "");
+  const [error, setError] = useState<string | null>(null);
+  // While the save is in flight the modal stays open, so a failure is never lost.
+  const close = () => {
+    if (!pending) onClose();
+  };
+
+  const submit = () =>
+    startTransition(async () => {
+      setError(null);
+      const res = await updatePersonAction({
+        id: person.id,
+        name,
+        ...(canEditSignIn ? { username, email: email.trim() || null } : {}),
+      });
+      if (res.error) setError(res.error);
+      else onSaved();
+    });
+
+  const ownerOnly = "Only the Owner can change the Owner's username or email (both are used to sign in).";
+
+  return (
+    <Modal open onClose={close} title={`Edit ${displayName(person)}`} description="Correct the person's name, sign-in username and contact email.">
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <div className="space-y-1">
+          <Label htmlFor="edit-person-name">Name</Label>
+          <Input id="edit-person-name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="edit-person-username">Username</Label>
+          <Input
+            id="edit-person-username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            disabled={!canEditSignIn}
+            title={canEditSignIn ? undefined : ownerOnly}
+            required
+            autoComplete="off"
+            className="font-mono"
+          />
+          <p className="text-xs text-muted-foreground">
+            {canEditSignIn
+              ? "What they type to sign in: 3–32 characters, a–z, 0–9, dots, dashes, underscores. Changing it doesn't sign them out — just tell them the new one."
+              : ownerOnly}
+          </p>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="edit-person-email">Email (optional)</Label>
+          <Input
+            id="edit-person-email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={!canEditSignIn}
+            title={canEditSignIn ? undefined : ownerOnly}
+            placeholder="person@company.com"
+          />
+        </div>
+        <ErrorLine error={error} />
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={close} disabled={pending}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={pending || !name.trim() || (canEditSignIn && !username.trim())}>
+            {pending ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
 function ManagerModal({ person, allPeople, onClose, onSaved }: { person: Person; allPeople: Person[]; onClose: () => void; onSaved: () => void }) {
   const [pending, startTransition] = useTransition();
   const [selected, setSelected] = useState<string[]>(person.managerIds);
+  const [error, setError] = useState<string | null>(null);
   const candidates = allPeople.filter((p) => p.id !== person.id);
 
   const toggle = (id: string) =>
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const save = () =>
     startTransition(async () => {
-      await setManagerLinksAction({ memberId: person.id, managerIds: selected });
-      onSaved();
+      const res = await setManagerLinksAction({ memberId: person.id, managerIds: selected });
+      if (res.error) setError(res.error);
+      else onSaved();
     });
+
+  // Escape closes, like the shared Modal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const headingId = `mgr-modal-title-${person.id}`;
 
   return (
     <tr>
       <td colSpan={8}>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
-          <div className="w-full max-w-sm rounded-xl border bg-background shadow-lg" onMouseDown={(e) => e.stopPropagation()}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={headingId}
+            className="w-full max-w-sm rounded-xl border bg-background shadow-lg"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b px-4 py-3">
-              <h3 className="text-sm font-semibold">Extra managers for {displayName(person)}</h3>
-              <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
+              <h3 id={headingId} className="text-sm font-semibold">Extra managers for {displayName(person)}</h3>
+              <button type="button" onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
             </div>
             <div className="max-h-72 space-y-1 overflow-y-auto p-4">
               <p className="mb-2 text-xs text-muted-foreground">
@@ -627,7 +1016,8 @@ function ManagerModal({ person, allPeople, onClose, onSaved }: { person: Person;
                 </label>
               ))}
             </div>
-            <div className="border-t p-3">
+            <div className="space-y-2 border-t p-3">
+              <ErrorLine error={error} />
               <Button onClick={save} disabled={pending} className="w-full">{pending ? "Saving…" : "Save"}</Button>
             </div>
           </div>
@@ -640,23 +1030,56 @@ function ManagerModal({ person, allPeople, onClose, onSaved }: { person: Person;
 function ArchivedCard({ people }: { people: Person[] }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
-  const restore = (id: string) =>
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const restore = (p: Person) =>
     startTransition(async () => {
-      await restorePersonAction({ id });
-      router.refresh();
+      const res = await restorePersonAction({ id: p.id });
+      if (res.error) {
+        setError(`${displayName(p)}: ${res.error}`);
+        setNote(null);
+      } else {
+        setError(null);
+        // Restore keeps `schedulable` as it was; people archived by older versions
+        // came back off the schedule, so say so.
+        setNote(
+          p.schedulable
+            ? null
+            : `Restored. ${displayName(p)} is not on the schedule — tick "On schedule" to add them.`,
+        );
+        router.refresh();
+      }
     });
+  if (people.length === 0 && !note && !error) return null;
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-lg">Archived</CardTitle>
-        <CardDescription>Hidden from the board and login. Restore to reactivate.</CardDescription>
+        <CardDescription>Hidden from the board and can&apos;t sign in. Restore to reactivate.</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-2">
+        <ErrorLine error={error} />
+        {note ? (
+          <p role="status" className="text-sm text-muted-foreground">
+            {note}
+          </p>
+        ) : null}
+        {people.length === 0 ? <p className="text-sm text-muted-foreground">No archived people.</p> : null}
         <ul className="divide-y">
           {people.map((p) => (
             <li key={p.id} className="flex items-center justify-between py-2 text-sm">
-              <span className="text-muted-foreground">{displayName(p)} · {p.email}</span>
-              <Button size="sm" variant="outline" onClick={() => restore(p.id)}>
+              <span className="text-muted-foreground">
+                {displayName(p)} · {handleOf(p)}
+                {!p.schedulable ? (
+                  <span
+                    className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs"
+                    title="Restoring won't put them back on the schedule — tick &quot;On schedule&quot; afterwards."
+                  >
+                    not on schedule
+                  </span>
+                ) : null}
+              </span>
+              <Button size="sm" variant="outline" onClick={() => restore(p)}>
                 <RotateCcw className="mr-1 h-3.5 w-3.5" /> Restore
               </Button>
             </li>
@@ -678,11 +1101,23 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
   const router = useRouter();
   const [state, formAction] = useActionState(addTimeOffAction, {} as { error?: string; success?: boolean });
   const [, startTransition] = useTransition();
-  const remove = (id: string) =>
+  const [error, setError] = useState<string | null>(null);
+  const nameOf = (t: TimeOff) => {
+    const p = byId.get(t.technicianId);
+    return p ? displayName(p) : "—";
+  };
+  // TODO(shared confirm dialog): replace window.confirm when the shared dialog lands.
+  const remove = (t: TimeOff) => {
+    if (!window.confirm(`Remove time off for ${nameOf(t)} (${t.startDate} → ${t.endDate})?`)) return;
     startTransition(async () => {
-      await deleteTimeOffAction({ id });
-      router.refresh();
+      const res = await deleteTimeOffAction({ id: t.id });
+      if (res.error) setError(res.error);
+      else {
+        setError(null);
+        router.refresh();
+      }
     });
+  };
 
   return (
     <Card>
@@ -713,7 +1148,8 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
           </div>
           <TimeOffSubmit />
         </form>
-        {state?.error ? <p className="text-sm text-destructive">{state.error}</p> : null}
+        <ErrorLine error={state?.error} />
+        <ErrorLine error={error} />
         {timeOff.length === 0 ? (
           <p className="text-sm text-muted-foreground">No time off scheduled.</p>
         ) : (
@@ -721,10 +1157,16 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
             {timeOff.map((t) => (
               <li key={t.id} className="flex items-center justify-between py-2 text-sm">
                 <span>
-                  <span className="font-medium">{byId.get(t.technicianId) ? displayName(byId.get(t.technicianId)!) : "—"}</span>
+                  <span className="font-medium">{nameOf(t)}</span>
                   <span className="ml-2 text-muted-foreground">{t.startDate} → {t.endDate}{t.reason ? ` · ${t.reason}` : ""}</span>
                 </span>
-                <button onClick={() => remove(t.id)} className="rounded p-1 text-destructive hover:bg-destructive/10" title="Remove">
+                <button
+                  type="button"
+                  onClick={() => remove(t)}
+                  className="rounded p-1 text-destructive hover:bg-destructive/10"
+                  title="Remove"
+                  aria-label={`Remove time off for ${nameOf(t)}, ${t.startDate} to ${t.endDate}`}
+                >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </li>
@@ -738,11 +1180,33 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
 
 // ─────────────────────────── shared ───────────────────────────
 
+/** Set-password hand-off: the link plus the username they sign in with and when it expires. */
+function HandoffDetails({ handoff, forName }: { handoff: Handoff; forName?: string }) {
+  const hours = handoff.expiresInHours;
+  return (
+    <>
+      <p className="text-xs font-medium">
+        Set-password link{forName ? ` for ${forName}` : ""} (shown once):
+      </p>
+      <CopyLink link={handoff.link} />
+      <p className="text-xs text-muted-foreground">
+        {handoff.username ? (
+          <>
+            Username: <span className="font-mono font-medium text-foreground">{handoff.username}</span>
+            {hours ? " · " : null}
+          </>
+        ) : null}
+        {hours ? `Link expires in ${hours} ${hours === 1 ? "hour" : "hours"}` : null}
+      </p>
+    </>
+  );
+}
+
 function CopyLink({ link }: { link: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="flex gap-2">
-      <Input readOnly value={link} className="font-mono text-xs" />
+      <Input readOnly value={link} aria-label="Set-password link" className="font-mono text-xs" />
       <Button
         type="button"
         variant="outline"

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
-import { listDepartments, listPeople } from "@/lib/services/people";
+import { listDepartments, listPeople, selfIdsOf } from "@/lib/services/people";
 import { listWorkGroups } from "@/lib/services/work-groups";
 import { listTechTimeOff } from "@/lib/services/technicians";
 import { recordPageView } from "@/lib/services/audit";
@@ -32,5 +32,16 @@ export default async function PeoplePage() {
 
   const workGroupRows = workGroups.map((g) => ({ id: g.id, name: g.name, purpose: g.purpose as string }));
 
-  return <PeopleClient departments={departments} people={people} workGroups={workGroupRows} timeOff={timeOffRows} />;
+  // "You" for the self-guards in the UI ("view as": the viewed-as person AND the real owner).
+  const selfIds = selfIdsOf(scope.ctx);
+
+  return (
+    <PeopleClient
+      departments={departments}
+      people={people}
+      workGroups={workGroupRows}
+      timeOff={timeOffRows}
+      selfIds={selfIds}
+    />
+  );
 }

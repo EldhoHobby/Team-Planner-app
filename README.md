@@ -45,7 +45,11 @@ current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
 - **Full backup/restore** (`/settings/data`) — download the ENTIRE app as one
   .json file (people incl. logins, departments, jobs, tasks, time off,
   holidays, timesheets) and restore it on any install — a full-replace
-  snapshot for machine moves. Guarded by typed RESTORE + password.
+  snapshot for machine moves. Download, full restore and the data reset are
+  **Owner-only** (the file holds password hashes); guarded by typed RESTORE +
+  password (rate-limited). **Restore agreements only** (admins) takes just the
+  service-agreement data from such a file and leaves people, jobs and tasks
+  alone. Uploads go to `POST /api/admin/restore` (up to 50 MB).
 - **Email → tasks** (`/settings/email`) — the app polls a designated Gmail
   inbox (IMAP + app password); "@username" tags in an email create dashboard
   tasks. Admin page has a Check-mail-now button, 30-day statistics and
@@ -64,8 +68,9 @@ current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
   edit details, discuss in a comment thread, and see the full change history
   (who changed what, when) — kept forever.
 - **Automatic backups** — a sidecar dumps the database to `./backups` at
-  startup and nightly, keeping `BACKUP_KEEP_DAYS` (default 14) days. Restore:
-  `docker compose exec db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump`
+  startup and every 24 h, keeping `BACKUP_KEEP_DAYS` (default 14) days of
+  dailies plus the first dump of each month for 400 days, and writes
+  `backups/last-backup.txt`. See [Backups](#backups) below.
 - **Audit trail** (`/settings/audit`) — admin-only history of everything done
   in the app for the last 30 days: sign-ins/outs, failed login attempts,
   every data change, imports/exports, and View-as sessions. Filter by person,
@@ -84,11 +89,17 @@ docker compose up -d --build
 
 - `proxy` is the only service published to the host (80/443); `app` and `db`
   stay on the internal Docker network.
-- The one-shot `migrate` service runs `prisma db push --accept-data-loss` to sync
-  the schema from `prisma/schema.prisma`, then exits; `app` waits for it. There
-  are **no migration files yet** (see TODO in `CLAUDE.md`).
+- The one-shot `migrate` service (the `migrator` image) applies the **versioned
+  migrations** in `prisma/migrations/` (`prisma/migrate.sh`: `pre-push.sql` data
+  fixes → one-time baseline of old `db push` databases → `prisma migrate deploy`),
+  then exits; `app` waits for it. Schema changes need a new migration — see the
+  schema-change gotcha in `CLAUDE.md`.
 - App: `https://planner.localhost` (self-signed — click through). Health:
   `/api/health`.
+
+**Production** runs on a separate Windows PC from a git clone with
+`docker-compose.offline.yml` and images built on that PC. Updating, rolling
+back, keeping it running and off-PC backups are all in **[DEPLOY.md](DEPLOY.md)**.
 
 ## Access from other devices
 
@@ -134,10 +145,47 @@ point.
 
 ## Backups
 
-Persisted state lives in Docker volumes — back these up:
+Persisted state lives in Docker volumes:
 
-- `db_data` — PostgreSQL data
-- `uploads` — task attachments
-- `caddy_data` — issued TLS certificates
+- `db_data` — PostgreSQL data (dumped automatically, below)
+- `uploads` — task attachments (not in the dumps — copy with
+  `docker compose cp app:/app/uploads backups\uploads-copy`)
+- `caddy_data` — issued TLS certificates (re-issued if lost)
+
+The `backup` service writes `pg_dump -Fc` files to `./backups` at startup and
+every 24 h: `planner-YYYYMMDD-HHMMSS.dump` (kept `BACKUP_KEEP_DAYS`, default
+14; pruned only after a successful dump, newest 3 always kept),
+`planner-monthly-YYYYMM.dump` (first good dump of each month, kept
+`BACKUP_KEEP_MONTHLY_DAYS`, default 400 days), plus `last-backup.txt` /
+`last-backup-error.txt` status files.
+`scripts/backup-offsite.ps1` copies the dumps off the PC (see DEPLOY.md 2.3).
+
+> **Never redirect a dump with PowerShell `>`** (or pipe one through
+> `Get-Content`) — Windows PowerShell 5.1 re-encodes the bytes and corrupts the
+> file. Let a container write it into the mounted `backups` folder:
+
+```powershell
+docker compose exec -T backup sh -c 'f=/backups/manual-$(date +%Y%m%d-%H%M%S).dump; pg_dump -Fc -h db -U planner -f $f planner && ls -l $f'
+```
+
+In-place restore (the `db` container mounts `./backups` read-only at
+`/backups`; stop the app AND the `backup` sidecar first so nothing reads or
+writes during the restore — same app version only):
+
+```powershell
+docker compose stop app backup
+```
+
+```powershell
+docker compose exec -T db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
+```
+
+```powershell
+docker compose start app backup
+```
+
+For a clean restore (into a side database that is swapped in only when the
+load succeeded), or across app versions, follow DEPLOY.md section 2.5.
+Production uses the same commands with `-f docker-compose.offline.yml`.
 
 `docker compose down` is safe (keeps volumes); only `down -v` deletes data.

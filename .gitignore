@@ -18,9 +18,16 @@
 # local uploads (dev only; in prod this is a Docker volume)
 /uploads
 
-# database backups (host folder written by the backup sidecar)
-/backups/*.dump
-/backups/*.dump.part
+# database backups (host folder written by the backup sidecar + status/log
+# files). Keep only the placeholder that makes the folder exist in a clone.
+/backups/*
+!/backups/.gitkeep
+# DB dumps anywhere (customer data + password hashes) - never commit
+*.dump
+*.dump.part
+
+# machine-move / USB deploy folder (may hold .env copies and dumps)
+/USB Files/
 
 # misc
 .DS_Store
@@ -35,6 +42,7 @@ next-env.d.ts
 # docker image bundles / model exports for offline deploy (large; never commit)
 *.tar
 *.tar.gz
+*.tgz
 
 # scratch/notes
 process.txt
