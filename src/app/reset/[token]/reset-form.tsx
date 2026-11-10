@@ -28,7 +28,8 @@ export function ResetForm({ token }: { token: string }) {
 
       <div className="space-y-2">
         <Label htmlFor="password">New password</Label>
-        <Input id="password" name="password" type="password" required minLength={8} autoComplete="new-password" />
+        <Input id="password" name="password" type="password" required minLength={8} autoComplete="new-password" aria-describedby="password-hint" />
+        <p id="password-hint" className="text-xs text-muted-foreground">At least 8 characters.</p>
       </div>
       <div className="space-y-2">
         <Label htmlFor="confirmPassword">Confirm new password</Label>

@@ -3,6 +3,9 @@ import type { WorkbookImportSummary } from "@/lib/services/agreements/workbook";
 
 export type { WorkbookImportSummary };
 
+/** Largest workbook upload: just under the 10 MB server-action body limit (next.config.mjs). */
+export const WORKBOOK_MAX_BYTES = 9.5 * 1024 * 1024;
+
 export interface ActionResult {
   ok?: boolean;
   error?: string;
@@ -20,6 +23,10 @@ export interface BulkRow {
   agreements: SaAgreement[];
   skipped: SaAgreement[];
   proposalId?: string;
+  /** Proposals created for this customer (apply only). */
+  created?: number;
+  /** Why this customer's proposal could not be created (apply only). */
+  error?: string;
 }
 
 export interface BulkResult extends ActionResult {

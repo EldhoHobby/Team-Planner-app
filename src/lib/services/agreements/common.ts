@@ -8,6 +8,7 @@ import { assertFreshWrite, versionGuard } from "@/lib/db/optimistic";
 import { AGREEMENT_LABELS, SA_AGREEMENTS, SA_EDITOR_GROUP, type SaAgreement } from "@/lib/agreements/constants";
 import { FIXED_PRICE_AGREEMENTS, type PricingRules } from "@/lib/agreements/pricing";
 import type { LineLite, ProposalLite } from "@/lib/agreements/renewal";
+import { fieldLabel, formatChangeValue } from "@/lib/agreements/history-format";
 
 // Shared plumbing for the service-agreement services: dates, permissions,
 // audit/history, settings. Tenancy: every query filters scope.ctx.orgId.
@@ -94,8 +95,16 @@ const FIXED_PRICE_COLUMN = {
 type FixedAgreement = keyof typeof FIXED_PRICE_COLUMN;
 type FixedColumn = (typeof FIXED_PRICE_COLUMN)[FixedAgreement];
 
+/** The org's settings row; created with the policy defaults on first use. Read-only on the common path (no write per read). */
+async function settingsRow(orgId: string) {
+  const found = await prisma.saSettings.findUnique({ where: { orgId } });
+  if (found) return found;
+  // First use: create it (upsert, so two first requests at once don't collide on the unique orgId).
+  return prisma.saSettings.upsert({ where: { orgId }, create: { orgId }, update: {} });
+}
+
 export async function getSettings(scope: TenantScope): Promise<SettingsRow> {
-  const s = await prisma.saSettings.upsert({ where: { orgId: scope.ctx.orgId }, create: { orgId: scope.ctx.orgId }, update: {} });
+  const s = await settingsRow(scope.ctx.orgId);
   const fixedPrices: Partial<Record<SaAgreement, number>> = {};
   for (const [a, col] of Object.entries(FIXED_PRICE_COLUMN) as [FixedAgreement, FixedColumn][]) {
     if (s[col] !== null) fixedPrices[a] = s[col];
@@ -128,6 +137,9 @@ export async function updateSettings(scope: TenantScope, input: Omit<SettingsRow
   if (!Number.isInteger(input.dueWindowDays) || input.dueWindowDays < 1 || input.dueWindowDays > 365) {
     throw new ForbiddenError("The due window must be 1–365 days.");
   }
+  if (!Number.isFinite(input.afterHoursWaiveAt) || input.afterHoursWaiveAt < 0) {
+    throw new ForbiddenError("The After Hours waiver amount must be a dollar amount of zero or more.");
+  }
   const fixedCols: Partial<Record<FixedColumn, number | null>> = {};
   for (const [a, col] of Object.entries(FIXED_PRICE_COLUMN) as [FixedAgreement, FixedColumn][]) {
     const v = input.fixedPrices[a];
@@ -156,7 +168,10 @@ export async function updateSettings(scope: TenantScope, input: Omit<SettingsRow
     const changes: FieldChange[] = [];
     const simple = ["tierLowMax", "tierMidMax", "pctLow", "pctMid", "pctHigh", "tdmsPct", "autoWaiveAfterHours", "afterHoursWaiveAt", "dueWindowDays"] as const;
     for (const f of simple) {
-      if (String(before[f]) !== String(input[f])) changes.push({ field: f, oldValue: String(before[f]), newValue: String(input[f]) });
+      // Stored readable ("First tier %": "5%"), like the rest of the Activity.
+      if (String(before[f]) !== String(input[f])) {
+        changes.push({ field: fieldLabel(f), oldValue: formatChangeValue(f, String(before[f])), newValue: formatChangeValue(f, String(input[f])) });
+      }
     }
     const esc = (l: SaAgreement[]) => SA_AGREEMENTS.filter((a) => l.includes(a)).map((a) => AGREEMENT_LABELS[a]).join(", ");
     if (esc(before.escalating) !== esc(input.escalating)) changes.push({ field: "escalating", oldValue: esc(before.escalating), newValue: esc(input.escalating) });

@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { isOpenCustomer, type SaCustomerStatus, type SaProposalStatus } from "@/lib/agreements/constants";
 import type { RenewalState } from "@/lib/agreements/renewal";
+import { formatChange } from "@/lib/agreements/history-format";
 import { todayYmd } from "@/lib/tz";
 import { HISTORY_ENTITY } from "./common";
 import { loadPortfolio } from "./customers";
@@ -125,7 +126,7 @@ export async function getDashboard(scope: TenantScope) {
     take: 12,
   });
   const names = new Map(rows.map((r) => [r.id, r.name]));
-  const activity = recent.map((h) => ({
+  const activity = recent.map((h) => formatChange({
     id: h.id, at: h.createdAt.toISOString(), actor: h.actorName, customerId: h.entityId,
     customer: names.get(h.entityId) ?? "—", field: h.field, oldValue: h.oldValue, newValue: h.newValue,
   }));

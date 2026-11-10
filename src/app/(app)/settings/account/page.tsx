@@ -1,9 +1,11 @@
+import type { Metadata } from "next";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
 import { AccountClient } from "./account-client";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Account" };
 
 export default async function AccountPage() {
   const user = await requireAuth();

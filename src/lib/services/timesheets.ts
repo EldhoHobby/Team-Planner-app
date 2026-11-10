@@ -1,11 +1,13 @@
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import ExcelJS from "exceljs";
 import { unzipSync, zipSync, strToU8, strFromU8 } from "fflate";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { toUtcMidnight, addDays } from "@/lib/scheduling/calc";
+import { todayUtcMs } from "@/lib/tz";
+import { writeAudit } from "@/lib/services/audit";
 
 // The 15 INDIRECT LABOR categories, in the EXACT order of the template rows
 // (C32..C46). The generator maps index → template row, so order is load-bearing.
@@ -68,8 +70,10 @@ export function weekEndingFor(d: Date): Date {
   const m = toUtcMidnight(d);
   return addDays(m, 6 - m.getUTCDay()); // getUTCDay: 0=Sun … 6=Sat
 }
+/** Week ending of TODAY in US Eastern time (the server clock is UTC, which
+ *  already reads Sunday on Saturday evenings Eastern). */
 export function currentWeekEnding(): Date {
-  return weekEndingFor(new Date());
+  return weekEndingFor(new Date(todayUtcMs()));
 }
 function isSaturday(d: Date): boolean {
   return d.getUTCDay() === 6;
@@ -176,7 +180,7 @@ export async function saveTimesheet(scope: TenantScope, input: SaveTimesheetInpu
     return { functionLabel: label, lineNo: i + 1, days: clampDays(src) };
   }).filter((r) => rowTotal(r.days) > 0);
 
-  await prisma.$transaction(async (tx) => {
+  const saved = await prisma.$transaction(async (tx) => {
     const ts = await tx.timesheet.upsert({
       where: { userId_weekEnding: { userId: scope.ctx.userId, weekEnding } },
       create: { orgId: scope.ctx.orgId, userId: scope.ctx.userId, weekEnding, comments: input.comments.trim() || null },
@@ -197,12 +201,36 @@ export async function saveTimesheet(scope: TenantScope, input: SaveTimesheetInpu
         })),
       ],
     });
+    return ts;
   });
+
+  const totalHours =
+    Math.round(
+      [...directEntries, ...indirectEntries].reduce((a, r) => a + rowTotal(r.days), 0) * 100,
+    ) / 100;
+  // Repeated saves of the same week coalesce into one audit entry.
+  await writeAudit(
+    scope,
+    {
+      entity: "timesheet",
+      entityId: saved.id,
+      action: "updated",
+      summary: `Saved timesheet for week ending ${ymd(weekEnding)} (${totalHours} h)`,
+    },
+    { coalesceMs: 5 * 60 * 1000 },
+  );
 }
 
 /** Persist the caller's employment ID (shown as Emp No on the timesheet). */
 export async function setEmpNo(scope: TenantScope, empNo: string): Promise<void> {
-  await prisma.user.update({ where: { id: scope.ctx.userId }, data: { empNo: empNo.trim() || null } });
+  const value = empNo.trim() || null;
+  await prisma.user.update({ where: { id: scope.ctx.userId }, data: { empNo: value } });
+  await writeAudit(scope, {
+    entity: "timesheet",
+    entityId: scope.ctx.userId,
+    action: "updated",
+    summary: value ? `Changed timesheet Emp No to ${value}` : "Cleared timesheet Emp No",
+  });
 }
 
 // ─────────────────────────── generate (fill the Excel template) ───────────────────────────
@@ -236,20 +264,29 @@ export interface SoLookupEntry {
  * (the "Lookup01" B:C table the old VBA used for its VLOOKUP). Typing a matching
  * code on the timesheet auto-fills Customer Name. Returns [] if unavailable.
  */
+// Parsed lookup, cached in module memory and re-read only when the template
+// file changes (keyed by path + mtime) — parsing the .xlsm on every page load is slow.
+let soLookupCache: { key: string; entries: SoLookupEntry[] } | null = null;
+
 export async function getSoLookup(): Promise<SoLookupEntry[]> {
   try {
+    const file = templatePath();
+    const { mtimeMs } = await stat(file);
+    const key = `${file}|${mtimeMs}`;
+    if (soLookupCache?.key === key) return soLookupCache.entries;
+
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.readFile(templatePath());
+    await wb.xlsx.readFile(file);
     const s2 = wb.getWorksheet("Sheet2");
-    if (!s2) return [];
     const out: SoLookupEntry[] = [];
-    s2.eachRow((row) => {
+    s2?.eachRow((row) => {
       const code = (row.getCell(2).text ?? "").trim(); // column B
       const description = (row.getCell(3).text ?? "").trim(); // column C
       if (code && description && code.toLowerCase() !== "dev-number") {
         out.push({ code, description });
       }
     });
+    soLookupCache = { key, entries: out };
     return out;
   } catch {
     return [];

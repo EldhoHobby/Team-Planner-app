@@ -91,6 +91,18 @@ describe("proposePrices", () => {
     expect(lines.find((l) => l.agreement === "AFTER_HOURS")).toMatchObject({ price: 0, rule: "waived" });
   });
 
+  it("waives After Hours from the customer's SCADA price when SCADA is not in the same group", () => {
+    const rules = { ...r, fixedPrices: {} };
+    const waived = proposePrices({ AFTER_HOURS: 1955 }, "QSCADA_PLUS", rules, { scadaPrice: 25000 });
+    expect(waived[0]).toMatchObject({ agreement: "AFTER_HOURS", price: 0, rule: "waived" });
+    expect(proposePrices({ AFTER_HOURS: 1955 }, "QSCADA_PLUS", rules, { scadaPrice: 24999 })[0]!.price).toBe(1955);
+    expect(proposePrices({ AFTER_HOURS: 1955 }, "QSCADA_PLUS", rules)[0]!.price).toBe(1955);
+    // A SCADA line in the group wins over the passed-in price.
+    const inGroup = proposePrices({ SCADA_SOFTWARE: 10000, AFTER_HOURS: 1955 }, "QSCADA_PLUS", rules, { scadaPrice: 30000 });
+    expect(inGroup.find((l) => l.agreement === "AFTER_HOURS")!.price).toBe(1955);
+    expect(proposePrices({ AFTER_HOURS: 1955 }, "QSCADA_PLUS", { ...rules, autoWaiveAfterHours: false }, { scadaPrice: 30000 })[0]!.price).toBe(1955);
+  });
+
   it("honours a custom escalating list", () => {
     const [l] = proposePrices({ DIAGNOSTIC: 1700 }, null, { ...r, fixedPrices: {}, escalating: ["DIAGNOSTIC"] });
     expect(l!.price).toBe(1785);

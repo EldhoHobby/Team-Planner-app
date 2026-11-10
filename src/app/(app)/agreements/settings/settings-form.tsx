@@ -28,23 +28,44 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 const fixedFrom = (prices: Partial<Record<SaAgreement, number>>) =>
   Object.fromEntries(FIXED_PRICE_AGREEMENTS.map((a) => [a, prices[a]?.toString() ?? ""]));
 
+const numsFrom = (s: SettingsRow): Record<NumKey, string> => ({
+  tierLowMax: String(s.tierLowMax),
+  tierMidMax: String(s.tierMidMax),
+  pctLow: String(s.pctLow),
+  pctMid: String(s.pctMid),
+  pctHigh: String(s.pctHigh),
+  tdmsPct: s.tdmsPct === null ? "" : String(s.tdmsPct),
+  afterHoursWaiveAt: String(s.afterHoursWaiveAt),
+  dueWindowDays: String(s.dueWindowDays),
+});
+
 export function SettingsForm({ settings, canEdit }: { settings: SettingsRow; canEdit: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
-  const [n, setN] = useState<Record<NumKey, string>>({
-    tierLowMax: String(settings.tierLowMax),
-    tierMidMax: String(settings.tierMidMax),
-    pctLow: String(settings.pctLow),
-    pctMid: String(settings.pctMid),
-    pctHigh: String(settings.pctHigh),
-    tdmsPct: settings.tdmsPct === null ? "" : String(settings.tdmsPct),
-    afterHoursWaiveAt: String(settings.afterHoursWaiveAt),
-    dueWindowDays: String(settings.dueWindowDays),
-  });
+  const [msg, setMsg] = useState<{ text: string; error?: boolean; stale?: boolean } | null>(null);
+  const [n, setN] = useState<Record<NumKey, string>>(() => numsFrom(settings));
   const [escalating, setEscalating] = useState<SaAgreement[]>(settings.escalating);
   const [autoWaive, setAutoWaive] = useState(settings.autoWaiveAfterHours);
   const [fixed, setFixed] = useState<Record<string, string>>(() => fixedFrom(settings.fixedPrices));
+  // The version the values in the form are based on — from when the form was loaded or last saved,
+  // NOT the latest props: the page auto-refreshes, and sending a refreshed version with values typed
+  // before the refresh would silently overwrite someone else's change.
+  const [version, setVersion] = useState(settings.version);
+
+  const loadFrom = (s: SettingsRow) => {
+    setN(numsFrom(s));
+    setEscalating(s.escalating);
+    setAutoWaive(s.autoWaiveAfterHours);
+    setFixed(fixedFrom(s.fixedPrices));
+    setVersion(s.version);
+  };
+  // "Reload latest": the failed save already refreshed the page data, so the props hold the
+  // latest saved settings — put them (and their version) back in the form.
+  const reloadLatest = () => {
+    loadFrom(settings);
+    setMsg({ text: "Showing the latest saved settings — make your change again and save." });
+    router.refresh();
+  };
 
   const num = (k: NumKey, w = "w-24", label?: string, placeholder?: string) => (
     <Input
@@ -67,14 +88,22 @@ export function SettingsForm({ settings, canEdit }: { settings: SettingsRow; can
         if (!/^\d+(\.\d+)?$/.test(v)) return setMsg({ text: `${AGREEMENT_LABELS[a]}: enter a dollar amount or leave it blank.`, error: true });
         fixedPrices[a] = Number(v);
       }
+      const waiveAt = n.afterHoursWaiveAt.replace(/[$,\s]/g, "");
+      if (!/^\d+(\.\d+)?$/.test(waiveAt)) {
+        return setMsg({ text: "After Hours waiver: enter a dollar amount of zero or more.", error: true });
+      }
       const tdms = n.tdmsPct.trim();
       const r = await saveSettingsAction({
         tierLowMax: Number(n.tierLowMax), tierMidMax: Number(n.tierMidMax), pctLow: Number(n.pctLow), pctMid: Number(n.pctMid),
         pctHigh: Number(n.pctHigh), tdmsPct: tdms === "" ? null : Number(tdms), escalating,
-        autoWaiveAfterHours: autoWaive, afterHoursWaiveAt: Number(n.afterHoursWaiveAt), dueWindowDays: Number(n.dueWindowDays),
-        fixedPrices, version: settings.version,
+        autoWaiveAfterHours: autoWaive, afterHoursWaiveAt: Number(waiveAt), dueWindowDays: Number(n.dueWindowDays),
+        fixedPrices, version,
       });
-      setMsg(r.error ? { text: r.error, error: true } : { text: "Saved. New proposals use these rules." });
+      if (r.error) setMsg({ text: r.error, error: true, stale: r.stale });
+      else {
+        setVersion((v) => v + 1); // updateSettings bumps the version exactly once
+        setMsg({ text: "Saved. New proposals use these rules." });
+      }
       router.refresh();
     });
 
@@ -155,8 +184,16 @@ export function SettingsForm({ settings, canEdit }: { settings: SettingsRow; can
         </label>
       </Section>
 
-      {msg && <p role={msg.error ? "alert" : "status"} className={msg.error ? "text-destructive" : "text-emerald-700 dark:text-emerald-400"}>{msg.text}</p>}
-      {canEdit && (
+      {msg && (
+        <p role={msg.error ? "alert" : "status"} className={msg.error ? "text-destructive" : "text-emerald-700 dark:text-emerald-400"}>
+          {msg.text}
+          {msg.stale && (
+            <Button size="sm" variant="outline" className="ml-2 h-7" disabled={pending} onClick={reloadLatest}>
+              Reload latest
+            </Button>
+          )}
+        </p>
+      )}      {canEdit && (
         <div className="flex gap-2 border-t pt-4">
           <Button disabled={pending} onClick={save}>Save settings</Button>
           <Button variant="outline" disabled={pending} onClick={resetToPolicy}>Reset to policy values</Button>

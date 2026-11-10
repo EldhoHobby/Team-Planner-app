@@ -7,6 +7,7 @@ import { canEditAgreements } from "@/lib/services/agreements/common";
 import { CustomerView, type CustomerTab } from "./customer-view";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Customer" };
 
 const TABS: CustomerTab[] = ["agreements", "history", "proposals", "calls", "activity"];
 

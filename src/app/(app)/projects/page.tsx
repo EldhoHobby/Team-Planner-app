@@ -6,6 +6,7 @@ import { recordPageView } from "@/lib/services/audit";
 import { ProjectsClient } from "./projects-client";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Projects" };
 
 export default async function ProjectsPage() {
   await requireAuth();

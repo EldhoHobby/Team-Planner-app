@@ -85,14 +85,23 @@ export function TaskTicket({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
 
+  // Load failures are kept apart from comment errors: they replace the
+  // "Loading…" line with the reason and a retry button.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const loadThread = () =>
-    getTaskThreadAction({ taskId: task.id }).then((r) => {
-      if (r.error) setThreadError(r.error);
-      else setThread(r.notes ?? []);
-    });
+    getTaskThreadAction({ taskId: task.id })
+      .then((r) => {
+        if (r.error) setLoadError(r.error);
+        else {
+          setLoadError(null);
+          setThread(r.notes ?? []);
+        }
+      })
+      .catch(() => setLoadError("Could not load the discussion."));
   useEffect(() => {
     setThread(null);
     setThreadError(null);
+    setLoadError(null);
     void loadThread();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id]);
@@ -139,11 +148,14 @@ export function TaskTicket({
   const postComment = () => {
     const body = draft.trim();
     if (!body) return;
-    setDraft("");
     startTransition(async () => {
       const r = await addCommentAction({ taskId: task.id, body });
-      if (r.note) setThread((t) => [...(t ?? []), r.note!]);
-      else if (r.error) setThreadError(r.error);
+      if (r.note) {
+        // Clear the draft only once the comment is safely saved.
+        setDraft((d) => (d.trim() === body ? "" : d));
+        setThreadError(null);
+        setThread((t) => [...(t ?? []), r.note!]);
+      } else if (r.error) setThreadError(r.error);
       router.refresh();
     });
   };
@@ -186,6 +198,7 @@ export function TaskTicket({
           disabled={pending}
           className="text-destructive hover:text-destructive"
           title="Delete this task"
+          aria-label="Delete this task"
           onClick={() =>
             startTransition(async () => {
               if (!confirm(`Delete "${task.title}"?`)) return;
@@ -213,6 +226,7 @@ export function TaskTicket({
           onBlur={() => {
             const v = title.trim();
             if (v && v !== task.title) save({ id: task.id, title: v });
+            else if (!v) setTitle(task.title); // a task always keeps a title
           }}
           className="h-10 text-base font-semibold"
           aria-label="Title"
@@ -232,7 +246,7 @@ export function TaskTicket({
             ))}
           </select>
           <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-1">
-            Priority
+            <span title="Priority (1 = highest)">Priority</span>
             <input
               type="number"
               min={1}
@@ -249,7 +263,7 @@ export function TaskTicket({
             />
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5">
-            Target
+            Target date
             <DatePicker
               value={task.targetDate ? task.targetDate.slice(0, 10) : ""}
               onChange={(v) => save({ id: task.id, targetDate: v || null })}
@@ -312,8 +326,27 @@ export function TaskTicket({
         {/* Thread */}
         <div className="border-t pt-3">
           <p className="mb-2 text-sm font-semibold">Activity</p>
-          {threadError ? <p className="text-sm text-destructive">{threadError}</p> : null}
-          {thread === null ? (
+          {threadError ? (
+            <p role="alert" className="text-sm text-destructive">
+              {threadError}
+            </p>
+          ) : null}
+          {thread === null && loadError ? (
+            <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+              <span>{loadError}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setLoadError(null);
+                  void loadThread();
+                }}
+              >
+                Try again
+              </Button>
+            </div>
+          ) : thread === null ? (
             <p className="text-sm text-muted-foreground">Loading discussion…</p>
           ) : thread.length === 0 ? (
             <p className="text-sm text-muted-foreground">No activity yet — start the discussion below.</p>

@@ -6,6 +6,7 @@ import { canEditAgreements } from "@/lib/services/agreements/common";
 import { PipelineBoard } from "./pipeline-board";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Agreements pipeline" };
 
 export default async function PipelinePage() {
   await requireAuth();

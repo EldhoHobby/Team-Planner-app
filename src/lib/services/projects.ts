@@ -22,7 +22,7 @@ export async function createProject(
   const team = await prisma.team.findFirst({
     where: { id: data.teamId, orgId: scope.ctx.orgId },
   });
-  if (!team) throw new ForbiddenError("Team not found");
+  if (!team) throw new ForbiddenError("Department not found");
   const project = await prisma.project.create({
     data: {
       orgId: scope.ctx.orgId,

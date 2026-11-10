@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { History, Search } from "lucide-react";
 import { fmtEastern } from "@/lib/tz";
 
@@ -17,10 +18,10 @@ type Row = {
 const ENTITY_LABELS: Record<string, string> = {
   job: "Job",
   task: "Task",
+  techtask: "Dashboard task",
   project: "Project",
-  technician: "Person",
-  membership: "People",
-  person: "Person",
+  member: "Person",
+  invitation: "Invitation",
   timeoff: "Time off",
   data: "Data",
   email: "Email",
@@ -29,6 +30,11 @@ const ENTITY_LABELS: Record<string, string> = {
   timesheet: "Timesheet",
   workgroup: "Work group",
   team: "Department",
+  page: "Page view",
+  agreement: "Agreement",
+  sa_customer: "Customer",
+  sa_settings: "Agreement settings",
+  audit: "Audit log",
 };
 function entityLabel(e: string): string {
   return ENTITY_LABELS[e] ?? e.charAt(0).toUpperCase() + e.slice(1);
@@ -37,7 +43,16 @@ function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-export function ActivityClient({ retentionDays, rows }: { retentionDays: number; rows: Row[] }) {
+export function ActivityClient({
+  retentionDays,
+  rows,
+  showPages,
+}: {
+  retentionDays: number;
+  rows: Row[];
+  /** Page-view rows are hidden unless ?pages=1 (they'd crowd out real actions). */
+  showPages: boolean;
+}) {
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -77,7 +92,14 @@ export function ActivityClient({ retentionDays, rows }: { retentionDays: number;
         <h1 className="text-lg font-semibold">My activity</h1>
       </div>
       <p className="mb-4 text-sm text-muted-foreground">
-        Everything you&apos;ve done in the last {retentionDays} days (most recent first).
+        Everything you&apos;ve done in the last {retentionDays} days (most recent first).{" "}
+        {showPages ? "Including the pages you opened." : "Page views are hidden."}{" "}
+        <Link
+          href={showPages ? "/activity" : "/activity?pages=1"}
+          className="font-medium text-foreground underline underline-offset-2"
+        >
+          {showPages ? "Hide page views" : "Show page views"}
+        </Link>
       </p>
 
       <div className="relative mb-4">

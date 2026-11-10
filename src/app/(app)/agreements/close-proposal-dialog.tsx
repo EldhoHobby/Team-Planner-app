@@ -24,7 +24,7 @@ export function CloseProposalDialog({
   const [pending, start] = useTransition();
   const [kind, setKind] = useState<"decline" | "withdraw">("decline");
   const [reason, setReason] = useState("");
-  const [markNotRenewed, setMarkNotRenewed] = useState(true);
+  const [markNotRenewed, setMarkNotRenewed] = useState(false);
 
   const submit = () =>
     start(async () => {
@@ -50,9 +50,12 @@ export function CloseProposalDialog({
           <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} className="w-full rounded-md border bg-background p-2" />
         </label>
         {kind === "decline" && (
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={markNotRenewed} onChange={(e) => setMarkNotRenewed(e.target.checked)} />
-            Mark the customer &quot;Not renewed&quot;
+          <label className="flex items-start gap-2">
+            <input type="checkbox" className="mt-1" checked={markNotRenewed} onChange={(e) => setMarkNotRenewed(e.target.checked)} />
+            <span>
+              Also mark the customer &quot;Not renewed&quot;
+              <span className="block text-xs text-muted-foreground">Hides this customer from the default lists and renewals.</span>
+            </span>
           </label>
         )}
         <div className="flex justify-end gap-2">

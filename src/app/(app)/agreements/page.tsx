@@ -14,6 +14,7 @@ import { StartProposalButton } from "./start-proposal-button";
 import { Collapsible } from "./collapsible";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Agreements" };
 
 function Kpi({ label, value, sub, href }: { label: string; value: string; sub?: string; href?: string }) {
   const body = (

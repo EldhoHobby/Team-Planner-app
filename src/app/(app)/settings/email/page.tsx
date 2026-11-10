@@ -1,3 +1,4 @@
+import { HOME_PATH } from "@/lib/home";
 import { redirect } from "next/navigation";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
@@ -8,11 +9,12 @@ import { recordPageView } from "@/lib/services/audit";
 import { EmailClient } from "./email-client";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Email" };
 
 export default async function EmailSettingsPage() {
   await requireAuth();
   const { scope } = await requireScope();
-  if (!scope.ctx.isOrgAdmin) redirect("/schedule");
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "Email");
 
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);

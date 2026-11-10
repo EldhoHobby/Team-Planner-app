@@ -97,7 +97,7 @@ function weekStartOf(d: Date): Date {
   return s;
 }
 function weekLabel(weekStart: Date): string {
-  return `Week of ${weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })}`;
+  return `Week of ${weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
 }
 
 /**
@@ -174,12 +174,39 @@ export async function assignableOwners(scope: TenantScope): Promise<OwnerLite[]>
   return me ? [me, ...managed] : managed;
 }
 
+/** Owner themselves, anyone who manages them, or an org admin. */
 async function assertCanManageOwner(scope: TenantScope, ownerId: string): Promise<void> {
   if (ownerId === scope.ctx.userId) return;
+  if (scope.ctx.isOrgAdmin) return;
   const managedIds = await managedMemberIds(scope);
   if (!managedIds.includes(ownerId)) {
     throw new ForbiddenError("You can only manage your own tasks or those of people you manage.");
   }
+}
+
+/**
+ * Who may open / edit / comment on / delete an existing task: the owner, their
+ * managers, org admins — and the person who assigned it to the owner.
+ */
+async function assertCanEditTask(
+  scope: TenantScope,
+  task: { ownerId: string; assignedById?: string | null },
+): Promise<void> {
+  if (task.assignedById && task.assignedById === scope.ctx.userId) return;
+  await assertCanManageOwner(scope, task.ownerId);
+}
+
+/** An active member of the caller's org (task owner / reassign target), or null. */
+async function findActiveOrgPerson(scope: TenantScope, userId: string) {
+  return prisma.user.findFirst({
+    where: {
+      id: userId,
+      archived: false,
+      isActive: true,
+      memberships: { some: { orgId: scope.ctx.orgId } },
+    },
+    select: { id: true, name: true, username: true },
+  });
 }
 
 function jobBucket(t: { startDate: Date | null; tentative: boolean }): JobRow["bucket"] {
@@ -341,7 +368,7 @@ export async function listTargetedTasks(scope: TenantScope): Promise<TargetedTas
   return rows.map((r) => ({
     task: serialize(r, countMap.get(r.id) ?? 0),
     ownerName: r.owner.name ?? r.owner.username ?? r.owner.email ?? "someone",
-    editable: scope.ctx.isOrgAdmin || manageable.has(r.ownerId),
+    editable: scope.ctx.isOrgAdmin || manageable.has(r.ownerId) || r.assignedById === scope.ctx.userId,
   }));
 }
 
@@ -383,7 +410,7 @@ const NOTE_STATE_LABELS: Record<TechTaskState, string> = {
   NEW: "New", TODO: "To Do", IN_PROGRESS: "In Progress", HOLD: "Hold", DONE: "Done",
 };
 function noteDate(d: Date | null): string {
-  return d ? d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "—";
+  return d ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "—";
 }
 
 /** The EFFECTIVE user writing to a thread (id + display-name snapshot). */
@@ -429,7 +456,7 @@ function serializeNote(n: {
 export async function getTaskThread(scope: TenantScope, taskId: string): Promise<NoteRow[]> {
   const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
   if (!task) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, task.ownerId);
+  await assertCanEditTask(scope, task);
   const notes = await prisma.techTaskNote.findMany({
     where: { taskId },
     orderBy: { createdAt: "asc" },
@@ -442,7 +469,7 @@ export async function addTaskComment(scope: TenantScope, taskId: string, body: s
   if (!text) throw new ForbiddenError("Write a comment first.");
   const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
   if (!task) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, task.ownerId);
+  await assertCanEditTask(scope, task);
   const author = await noteAuthor(scope);
   const note = await prisma.techTaskNote.create({
     data: {
@@ -488,8 +515,14 @@ export async function deleteTaskComment(scope: TenantScope, noteId: string): Pro
 }
 
 export async function createTechTask(scope: TenantScope, input: CreateTechTaskInput) {
-  await assertCanManageOwner(scope, input.ownerId);
+  const title = input.title?.trim() ?? "";
+  if (!title) throw new ForbiddenError("Title is required.");
+  // Anyone in the organisation may create a task for any active person in it.
+  // A task for someone else is recorded as assigned (origin MANAGER).
   const isSelf = input.ownerId === scope.ctx.userId;
+  if (!isSelf && !(await findActiveOrgPerson(scope, input.ownerId))) {
+    throw new ForbiddenError("That person isn't an active member of your organization.");
+  }
   const state = input.state ?? "NEW";
   const task = await prisma.techTask.create({
     data: {
@@ -498,7 +531,7 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
       createdById: scope.ctx.userId,
       assignedById: isSelf ? null : scope.ctx.userId,
       origin: isSelf ? "SELF" : "MANAGER",
-      title: input.title.trim(),
+      title,
       notes: input.notes?.trim() || null,
       priority: input.priority && input.priority > 0 ? Math.floor(input.priority) : 3,
       targetDate: input.targetDate ?? null,
@@ -524,27 +557,22 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
 export async function updateTechTask(scope: TenantScope, id: string, input: UpdateTechTaskInput) {
   const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
   if (!existing) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, existing.ownerId);
+  await assertCanEditTask(scope, existing);
+  if (input.title !== undefined && !input.title.trim()) {
+    throw new ForbiddenError("Title can't be blank.");
+  }
   // Cheap early reject; the guarded updateMany below is the real (race-safe) check.
   if (input.expectedVersion !== undefined && input.expectedVersion !== existing.version) {
     throw new StaleSaveError("task");
   }
 
   // Reassignment: allowed by whoever can edit the task (owner / their managers /
-  // admins); the TARGET may be anyone active in the org — any department.
+  // admins / its assigner); the TARGET may be anyone active in the org.
   const reassigning = input.ownerId !== undefined && input.ownerId !== existing.ownerId;
   let newOwner: { id: string; name: string | null; username: string } | null = null;
   let oldOwnerName = "";
   if (reassigning) {
-    newOwner = await prisma.user.findFirst({
-      where: {
-        id: input.ownerId!,
-        archived: false,
-        isActive: true,
-        memberships: { some: { orgId: scope.ctx.orgId } },
-      },
-      select: { id: true, name: true, username: true },
-    });
+    newOwner = await findActiveOrgPerson(scope, input.ownerId!);
     if (!newOwner) throw new ForbiddenError("That person isn't an active member of your organization.");
     const old = await prisma.user.findUnique({
       where: { id: existing.ownerId },
@@ -647,7 +675,7 @@ export async function setTechTaskState(scope: TenantScope, id: string, state: Te
 export async function deleteTechTask(scope: TenantScope, id: string): Promise<void> {
   const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
   if (!existing) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, existing.ownerId);
+  await assertCanEditTask(scope, existing);
   await prisma.techTask.delete({ where: { id } });
   await writeAudit(scope, {
     entity: "techtask",

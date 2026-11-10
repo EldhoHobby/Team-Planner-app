@@ -6,7 +6,7 @@ import { History } from "lucide-react";
 import { useActionState, useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
-import { FolderOpen, Plus, X } from "lucide-react";
+import { Archive, FolderOpen, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -85,12 +85,12 @@ function NewProjectForm({
     <form action={formAction} className="space-y-4 p-6">
       <div className="space-y-2">
         <Label htmlFor="proj-name">Name</Label>
-        <Input id="proj-name" name="name" required placeholder="Sprint backlog" />
+        <Input id="proj-name" name="name" required placeholder="e.g. Plant upgrade 2026" />
       </div>
 
       {teams.length > 0 && (
         <div className="space-y-2">
-          <Label htmlFor="proj-team">Team</Label>
+          <Label htmlFor="proj-team">Department</Label>
           <select
             id="proj-team"
             name="teamId"
@@ -98,7 +98,7 @@ function NewProjectForm({
             className={selectClass}
             defaultValue={teams.length === 1 ? teams[0].id : ""}
           >
-            {teams.length > 1 && <option value="">Pick a team…</option>}
+            {teams.length > 1 && <option value="">Pick a department…</option>}
             {teams.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name}
@@ -144,6 +144,31 @@ export function ProjectsClient({
   const [createOpen, setCreateOpen] = useState(false);
   const [historyProject, setHistoryProject] = useState<ProjectRow | null>(null);
   const [history, setHistory] = useState<AuditEntry[] | null>(null);
+  const [archiving, setArchiving] = useState<string | null>(null);
+  const [archiveErrors, setArchiveErrors] = useState<Record<string, string>>({});
+
+  const archive = async (p: ProjectRow) => {
+    if (
+      !window.confirm(
+        `Archive "${p.name}"? Tasks will be preserved but the project will be hidden.`,
+      )
+    )
+      return;
+    setArchiving(p.id);
+    setArchiveErrors((m) => {
+      const next = { ...m };
+      delete next[p.id];
+      return next;
+    });
+    try {
+      const res = await archiveProjectAction({ projectId: p.id });
+      if (res.error) setArchiveErrors((m) => ({ ...m, [p.id]: res.error! }));
+    } catch {
+      setArchiveErrors((m) => ({ ...m, [p.id]: "Could not archive the project — try again." }));
+    } finally {
+      setArchiving(null);
+    }
+  };
 
   useEffect(() => {
     if (historyProject) {
@@ -160,7 +185,7 @@ export function ProjectsClient({
           <div>
             <h1 className="text-xl font-semibold">Projects</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Organise tasks into projects for each team.
+              Organise tasks into projects for each department.
             </p>
           </div>
           {teams.length > 0 && (
@@ -178,7 +203,7 @@ export function ProjectsClient({
               <p className="font-medium">No projects yet</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {teams.length === 0
-                  ? "Add a team first, then create a project."
+                  ? "Add a department first, then create a project."
                   : "Create your first project to start tracking tasks."}
               </p>
             </div>
@@ -217,27 +242,25 @@ export function ProjectsClient({
                     >
                       <History className="h-3.5 w-3.5" />
                     </button>
-                    <form action={archiveProjectAction}>
-                      <input type="hidden" name="projectId" value={p.id} />
-                      <button
-                        type="submit"
-                        onClick={(e) => {
-                          if (
-                            !window.confirm(
-                              `Archive "${p.name}"? Tasks will be preserved but the project will be hidden.`,
-                            )
-                          ) {
-                            e.preventDefault();
-                          }
-                        }}
-                        className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
-                        title="Archive project"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </form>
+                    <button
+                      type="button"
+                      disabled={archiving === p.id}
+                      onClick={() => archive(p)}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      title="Archive project"
+                      aria-label={`Archive project ${p.name}`}
+                    >
+                      <Archive className="h-3.5 w-3.5" />
+                      {archiving === p.id ? "Archiving…" : "Archive"}
+                    </button>
                   </div>
                 </div>
+
+                {archiveErrors[p.id] && (
+                  <p role="alert" className="text-xs text-destructive">
+                    {archiveErrors[p.id]}
+                  </p>
+                )}
 
                 {p.description && (
                   <p className="line-clamp-2 text-xs text-muted-foreground">

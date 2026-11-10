@@ -27,7 +27,14 @@ function todayWeekEnding(): string {
   const m = new Date(todayUtcMs());
   return ymd(new Date(m.getTime() + (6 - m.getUTCDay()) * MS_DAY));
 }
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MAX_DAY_HOURS = 24; // the server clamps to this too
 const rowTotal = (r: Record<DayKey, number>) => DAY_KEYS.reduce((a, k) => a + (Number(r[k]) || 0), 0);
+/** Hours for display: rounded to 2 decimals (float sums like 0.1 + 0.2), blank for 0. */
+function fmtHours(n: number): string {
+  const r = Math.round(n * 100) / 100;
+  return r ? String(r) : "";
+}
 // Shrink the Customer Name cell as text gets longer (mirrors the old VBA font rule, in web px).
 function custFontPx(len: number): number {
   if (len <= 10) return 14;
@@ -45,30 +52,51 @@ const txtInput = "h-8 w-full rounded bg-transparent px-1.5 text-sm focus:bg-mute
 // and pushes the parsed value up on every keystroke so totals stay live.
 // Module-level on purpose: defining it inside the page component would remount
 // the input (and drop focus) on every parent re-render.
-function HourCell({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+function HourCell({ value, onChange, label }: { value: number; onChange: (n: number) => void; label: string }) {
   const [text, setText] = useState(value ? String(value) : "");
   const [focused, setFocused] = useState(false);
+  // Brief "max 24 h" note after a value over 24 was capped on blur.
+  const [capped, setCapped] = useState(false);
   useEffect(() => {
     if (!focused) setText(value ? String(value) : "");
   }, [value, focused]);
+  useEffect(() => {
+    if (!capped) return;
+    const t = setTimeout(() => setCapped(false), 2500);
+    return () => clearTimeout(t);
+  }, [capped]);
   return (
-    <input
-      className={numInput}
-      inputMode="decimal"
-      value={text}
-      onFocus={() => setFocused(true)}
-      onBlur={() => {
-        setFocused(false);
-        setText(value ? String(value) : "");
-      }}
-      onChange={(e) => {
-        const v = e.target.value;
-        if (v !== "" && !/^\d{0,2}(\.\d{0,2})?$/.test(v)) return; // digits + one "." only
-        setText(v);
-        const n = parseFloat(v);
-        onChange(Number.isFinite(n) && n > 0 ? n : 0);
-      }}
-    />
+    <>
+      <input
+        className={numInput}
+        inputMode="decimal"
+        value={text}
+        aria-label={label}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false);
+          if (value > MAX_DAY_HOURS) {
+            onChange(MAX_DAY_HOURS);
+            setText(String(MAX_DAY_HOURS));
+            setCapped(true);
+          } else {
+            setText(value ? String(value) : "");
+          }
+        }}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v !== "" && !/^\d{0,2}(\.\d{0,2})?$/.test(v)) return; // digits + one "." only
+          setText(v);
+          const n = parseFloat(v);
+          onChange(Number.isFinite(n) && n > 0 ? n : 0);
+        }}
+      />
+      {capped ? (
+        <span role="status" className="block text-[10px] leading-tight text-amber-700 dark:text-amber-400">
+          max {MAX_DAY_HOURS} h
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -92,15 +120,38 @@ export function TimesheetClient({
   const [indirect, setIndirect] = useState<IndirectRow[]>(data.indirect);
   const [comments, setComments] = useState(data.comments);
   const [empNo, setEmpNo] = useState(initialEmpNo);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  // Unsaved edits on this week's grid (cleared by a successful save).
+  const [dirty, setDirty] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
-  // Reset the grid whenever a different week is loaded.
+  // Reset the grid only when a DIFFERENT week is loaded. Keyed on the week, not
+  // on `data`: every save / Emp No change re-renders the page with a new `data`
+  // object, which must neither wipe what is on screen nor hide "Saved.".
   useEffect(() => {
     setDirect(data.direct);
     setIndirect(data.indirect);
     setComments(data.comments);
+    setDirty(false);
     setMsg(null);
-  }, [data]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.weekEnding]);
+
+  // Warn before closing / reloading the tab with unsaved hours.
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+
+  const markDirty = () => {
+    setDirty(true);
+    setMsg((m) => (m?.kind === "ok" ? null : m));
+  };
 
   const editable = data.editable;
   const we = ymdToDate(data.weekEnding);
@@ -120,12 +171,18 @@ export function TimesheetClient({
     return { dir, ind, grand, grandT: dir.t + ind.t };
   }, [direct, indirect]);
 
-  const setDirectText = (i: number, field: "workDept" | "soNumber" | "customerName" | "issueNo", value: string) =>
+  const setDirectText = (i: number, field: "workDept" | "soNumber" | "customerName" | "issueNo", value: string) => {
+    markDirty();
     setDirect((rows) => rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
-  const setDirectDay = (i: number, k: DayKey, value: number) =>
+  };
+  const setDirectDay = (i: number, k: DayKey, value: number) => {
+    markDirty();
     setDirect((rows) => rows.map((r, idx) => (idx === i ? { ...r, [k]: value } : r)));
-  const setIndirectDay = (i: number, k: DayKey, value: number) =>
+  };
+  const setIndirectDay = (i: number, k: DayKey, value: number) => {
+    markDirty();
     setIndirect((rows) => rows.map((r, idx) => (idx === i ? { ...r, [k]: value } : r)));
+  };
 
   // S.O./Dev → Customer auto-fill (replaces the VBA VLOOKUP). Typing a code that
   // matches the template's Sheet2 table fills Customer Name with the description.
@@ -135,6 +192,7 @@ export function TimesheetClient({
   );
   const onSoChange = (i: number, v: string) => {
     const desc = soMap.get(v.trim().toUpperCase());
+    markDirty();
     setDirect((rows) =>
       rows.map((r, idx) =>
         idx === i ? { ...r, soNumber: v, ...(desc !== undefined ? { customerName: desc } : {}) } : r,
@@ -142,27 +200,68 @@ export function TimesheetClient({
     );
   };
 
-  const goWeek = (deltaWeeks: number) =>
-    router.push(`/timesheet?week=${ymd(new Date(we.getTime() + deltaWeeks * 7 * MS_DAY))}`);
+  // Moving to another week drops unsaved edits, so ask first.
+  const goToWeek = (weekEnding: string) => {
+    if (weekEnding === data.weekEnding) return;
+    if (dirty && !confirm("You have unsaved changes on this week. Leave without saving?")) return;
+    router.push(`/timesheet?week=${weekEnding}`);
+  };
+  const goWeek = (deltaWeeks: number) => goToWeek(ymd(new Date(we.getTime() + deltaWeeks * 7 * MS_DAY)));
 
+  /** Save what is on screen; true on success. */
+  const persist = async (): Promise<boolean> => {
+    const res = await saveTimesheetAction({ weekEnding: data.weekEnding, comments, direct, indirect });
+    if (res.error) {
+      setMsg({ kind: "error", text: res.error });
+      return false;
+    }
+    setDirty(false);
+    setMsg({ kind: "ok", text: "Saved." });
+    router.refresh();
+    return true;
+  };
   const save = () =>
     start(async () => {
-      const res = await saveTimesheetAction({ weekEnding: data.weekEnding, comments, direct, indirect });
-      setMsg(res.error ? res.error : "Saved.");
-      if (res.success) router.refresh();
+      await persist();
+    });
+
+  // "Generate Excel" exports what is on screen: unsaved edits are saved first
+  // (stopping if that fails). Downloaded via fetch so a failure shows inline.
+  const exportExcel = () =>
+    start(async () => {
+      setExporting(true);
+      try {
+        if (dirty && editable && !(await persist())) return;
+        const res = await fetch(`/api/timesheet/export?week=${data.weekEnding}`);
+        if (!res.ok) {
+          const text = (await res.text().catch(() => "")).trim();
+          setMsg({ kind: "error", text: text || "Could not generate the Excel file." });
+          return;
+        }
+        const blob = await res.blob();
+        const cd = res.headers.get("Content-Disposition") ?? "";
+        const filename = /filename="([^"]+)"/.exec(cd)?.[1] ?? `Timesheet-${data.weekEnding}.xlsm`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      } catch {
+        setMsg({ kind: "error", text: "Could not generate the Excel file. Check your connection and try again." });
+      } finally {
+        setExporting(false);
+      }
     });
 
   const saveEmp = () => {
     if (empNo === initialEmpNo) return;
     start(async () => {
       const res = await setEmpNoAction(empNo);
-      if (res.error) setMsg(res.error);
+      setMsg(res.error ? { kind: "error", text: res.error } : { kind: "ok", text: "Emp No saved." });
     });
-  };
-
-  const num = (v: string) => {
-    const n = parseFloat(v);
-    return Number.isFinite(n) && n > 0 ? n : 0;
   };
 
   return (
@@ -200,20 +299,20 @@ export function TimesheetClient({
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
-          <Button variant="outline" size="sm" onClick={() => router.push(`/timesheet?week=${todayWeekEnding()}`)}>
+          <Button variant="outline" size="sm" onClick={() => goToWeek(todayWeekEnding())}>
             <CalendarClock className="mr-1.5 h-4 w-4" /> This week
           </Button>
           {weeks.length > 0 ? (
             <select
               className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
               value={data.weekEnding}
-              onChange={(e) => router.push(`/timesheet?week=${e.target.value}`)}
+              onChange={(e) => goToWeek(e.target.value)}
               aria-label="Jump to a saved week"
             >
               <option value={data.weekEnding}>Week ending {data.weekEnding}</option>
               {weeks.filter((w) => w.weekEnding !== data.weekEnding).map((w) => (
                 <option key={w.weekEnding} value={w.weekEnding}>
-                  {w.weekEnding} · {w.totalHours}h
+                  {w.weekEnding} · {fmtHours(w.totalHours) || "0"}h
                 </option>
               ))}
             </select>
@@ -223,7 +322,11 @@ export function TimesheetClient({
 
       {!editable ? (
         <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          <Lock className="h-4 w-4" /> This is a past week — view only. Use “This week” to edit the current one.
+          <Lock className="h-4 w-4 shrink-0" />
+          <span>
+            Read-only: the week ending {fmtMD(we)}/{we.getUTCFullYear()} is over, and only the current week and
+            future weeks can be edited. Use “This week” to open the current week.
+          </span>
         </div>
       ) : null}
 
@@ -251,29 +354,34 @@ export function TimesheetClient({
             {direct.map((r, i) => (
               <tr key={i} className="border-t">
                 <Td className="text-center text-muted-foreground">{i + 1}</Td>
-                <Td><Field editable={editable} value={r.workDept} onChange={(v) => setDirectText(i, "workDept", v)} /></Td>
-                <Td><Field editable={editable} value={r.soNumber} onChange={(v) => onSoChange(i, v)} /></Td>
+                <Td><Field editable={editable} label={`Line ${i + 1} Work Dept`} value={r.workDept} onChange={(v) => setDirectText(i, "workDept", v)} /></Td>
+                <Td><Field editable={editable} label={`Line ${i + 1} S.O./S.C./Dev`} value={r.soNumber} onChange={(v) => onSoChange(i, v)} /></Td>
                 <Td>
                   {editable ? (
                     <input
                       className={txtInput}
                       style={{ fontSize: `${custFontPx(r.customerName.length)}px` }}
                       value={r.customerName}
+                      aria-label={`Line ${i + 1} Customer Name`}
                       onChange={(e) => setDirectText(i, "customerName", e.target.value)}
                     />
                   ) : (
                     <span style={{ fontSize: `${custFontPx(r.customerName.length)}px` }}>{r.customerName}</span>
                   )}
                 </Td>
-                <Td><Field editable={editable} value={r.issueNo} onChange={(v) => setDirectText(i, "issueNo", v)} /></Td>
-                {DAY_KEYS.map((k) => (
+                <Td><Field editable={editable} label={`Line ${i + 1} Issue No.`} value={r.issueNo} onChange={(v) => setDirectText(i, "issueNo", v)} /></Td>
+                {DAY_KEYS.map((k, di) => (
                   <Td key={k} className="text-center">
                     {editable ? (
-                      <HourCell value={r[k]} onChange={(n) => setDirectDay(i, k, n)} />
-                    ) : (r[k] || "")}
+                      <HourCell
+                        value={r[k]}
+                        label={`Line ${i + 1} ${DAY_NAMES[di]} hours`}
+                        onChange={(n) => setDirectDay(i, k, n)}
+                      />
+                    ) : fmtHours(r[k])}
                   </Td>
                 ))}
-                <Td className="text-center font-medium">{rowTotal(r) || ""}</Td>
+                <Td className="text-center font-medium">{fmtHours(rowTotal(r))}</Td>
               </tr>
             ))}
             <TotalRow label="TOTAL DIRECT HOURS" days={totals.dir.d} total={totals.dir.t} labelColSpan={5} />
@@ -302,14 +410,18 @@ export function TimesheetClient({
               <tr key={i} className="border-t">
                 <Td className="text-center text-muted-foreground">{i + 1}</Td>
                 <Td className="whitespace-nowrap">{r.functionLabel}</Td>
-                {DAY_KEYS.map((k) => (
+                {DAY_KEYS.map((k, di) => (
                   <Td key={k} className="text-center">
                     {editable ? (
-                      <HourCell value={r[k]} onChange={(n) => setIndirectDay(i, k, n)} />
-                    ) : (r[k] || "")}
+                      <HourCell
+                        value={r[k]}
+                        label={`${r.functionLabel} ${DAY_NAMES[di]} hours`}
+                        onChange={(n) => setIndirectDay(i, k, n)}
+                      />
+                    ) : fmtHours(r[k])}
                   </Td>
                 ))}
-                <Td className="text-center font-medium">{rowTotal(r) || ""}</Td>
+                <Td className="text-center font-medium">{fmtHours(rowTotal(r))}</Td>
               </tr>
             ))}
             <TotalRow label="TOTAL INDIRECT HOURS" days={totals.ind.d} total={totals.ind.t} labelColSpan={2} />
@@ -320,11 +432,15 @@ export function TimesheetClient({
 
       {/* Comments */}
       <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">Comments</label>
+        <label htmlFor="timesheet-comments" className="text-xs font-medium text-muted-foreground">Comments</label>
         <textarea
+          id="timesheet-comments"
           className="min-h-[64px] w-full rounded-md border border-input bg-transparent p-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={comments}
-          onChange={(e) => setComments(e.target.value)}
+          onChange={(e) => {
+            markDirty();
+            setComments(e.target.value);
+          }}
           disabled={!editable}
           placeholder="Explain 'Other' indirect time, etc."
         />
@@ -334,13 +450,19 @@ export function TimesheetClient({
       <div className="flex flex-wrap items-center gap-2">
         {editable ? (
           <Button onClick={save} disabled={pending}>
-            <Save className="mr-1.5 h-4 w-4" /> {pending ? "Saving…" : "Save"}
+            <Save className="mr-1.5 h-4 w-4" /> {pending && !exporting ? "Saving…" : "Save"}
           </Button>
         ) : null}
-        <Button variant="outline" onClick={() => { window.location.href = `/api/timesheet/export?week=${data.weekEnding}`; }}>
-          <Download className="mr-1.5 h-4 w-4" /> Generate Excel
+        <Button variant="outline" onClick={exportExcel} disabled={pending}>
+          <Download className="mr-1.5 h-4 w-4" /> {exporting ? "Generating…" : "Generate Excel"}
         </Button>
-        {msg ? <span className="text-sm text-muted-foreground">{msg}</span> : null}
+        {msg?.kind === "error" ? (
+          <span role="alert" className="text-sm text-destructive">{msg.text}</span>
+        ) : msg ? (
+          <span role="status" className="text-sm text-muted-foreground">{msg.text}</span>
+        ) : dirty && editable ? (
+          <span className="text-sm text-muted-foreground">Unsaved changes</span>
+        ) : null}
       </div>
     </div>
   );
@@ -360,16 +482,16 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
 function Td({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <td className={`border px-1.5 py-1 ${className}`}>{children}</td>;
 }
-function Field({ editable, value, onChange }: { editable: boolean; value: string; onChange: (v: string) => void }) {
+function Field({ editable, value, onChange, label }: { editable: boolean; value: string; onChange: (v: string) => void; label: string }) {
   if (!editable) return <span className="text-sm">{value}</span>;
-  return <input className={txtInput} value={value} onChange={(e) => onChange(e.target.value)} />;
+  return <input className={txtInput} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />;
 }
 function TotalRow({ label, days, total, labelColSpan, strong }: { label: string; days: Record<DayKey, number>; total: number; labelColSpan: number; strong?: boolean }) {
   return (
     <tr className={`border-t ${strong ? "bg-muted/60 font-bold" : "bg-muted/30 font-semibold"}`}>
       <td colSpan={labelColSpan} className="border px-2 py-1 text-right text-xs">{label}:</td>
-      {DAY_KEYS.map((k) => <td key={k} className="border px-1 py-1 text-center">{days[k] || ""}</td>)}
-      <td className="border px-1 py-1 text-center">{total || ""}</td>
+      {DAY_KEYS.map((k) => <td key={k} className="border px-1 py-1 text-center">{fmtHours(days[k])}</td>)}
+      <td className="border px-1 py-1 text-center">{fmtHours(total)}</td>
     </tr>
   );
 }

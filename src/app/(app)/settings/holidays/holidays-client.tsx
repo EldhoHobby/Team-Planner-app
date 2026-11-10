@@ -1,6 +1,6 @@
 "use client";
 
-import { fmtEastern } from "@/lib/tz";
+import { fmtDateOnly, fmtEastern } from "@/lib/tz";
 import { useActionState, useEffect, useTransition, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -31,37 +31,60 @@ function AddButton() {
 function HolidayItem({ row, onViewHistory }: { row: HolidayRow; onViewHistory: (h: HolidayRow) => void }) {
   const router = useRouter();
   const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const label = `${row.name} (${fmtDateOnly(row.date)})`;
+
+  const remove = () => {
+    if (!window.confirm(`Remove the holiday "${label}"?`)) return;
+    start(async () => {
+      setError(null);
+      try {
+        const res = await deleteHolidayAction({ id: row.id });
+        if (res.error) {
+          setError(res.error);
+          return;
+        }
+        router.refresh();
+      } catch {
+        setError("Could not remove the holiday.");
+      }
+    });
+  };
+
   return (
-    <li className="flex items-center justify-between gap-2 py-2 text-sm">
-      <div>
-        <span className="font-medium">{row.date}</span>{" "}
-        <span className="text-muted-foreground">{row.name}</span>
+    <li className="py-2 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <span className="font-medium">{fmtDateOnly(row.date)}</span>{" "}
+          <span className="text-muted-foreground">{row.name}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onViewHistory(row)}
+            className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
+            title="View history"
+            aria-label={`View history for ${label}`}
+          >
+            <History className="h-4 w-4" />
+          </button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={pending}
+            className="text-destructive hover:text-destructive"
+            title="Remove holiday"
+            aria-label={`Remove holiday ${label}`}
+            onClick={remove}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
-      <div className="flex items-center gap-1">
-        <button
-          type="button"
-          onClick={() => onViewHistory(row)}
-          className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
-          title="View history"
-        >
-          <History className="h-4 w-4" />
-        </button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={pending}
-          className="text-destructive hover:text-destructive"
-          onClick={() =>
-            start(async () => {
-              await deleteHolidayAction({ id: row.id });
-              router.refresh();
-            })
-          }
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </div>
+      {error ? (
+        <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>
+      ) : null}
     </li>
   );
 }
@@ -102,8 +125,11 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
         <CardContent>
           <form action={formAction} className="flex items-end gap-3">
             <div className="space-y-1">
-              <Label>Date</Label>
-              <DatePicker name="date" />
+              <Label id="holiday-date-label">Date</Label>
+              {/* DatePicker takes no id/aria props — label it via the group. */}
+              <div role="group" aria-labelledby="holiday-date-label">
+                <DatePicker name="date" />
+              </div>
             </div>
             <div className="flex-1 space-y-1">
               <Label htmlFor="name">Name</Label>
@@ -138,8 +164,8 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={() => setHistoryHoliday(null)}>
           <div className="relative w-full max-w-md rounded-xl border bg-background shadow-lg" onMouseDown={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b px-6 py-4">
-              <h2 className="text-base font-semibold">History: {historyHoliday.name} ({historyHoliday.date})</h2>
-              <button type="button" onClick={() => setHistoryHoliday(null)} className="rounded-sm text-muted-foreground hover:text-foreground">
+              <h2 className="text-base font-semibold">History: {historyHoliday.name} ({fmtDateOnly(historyHoliday.date)})</h2>
+              <button type="button" onClick={() => setHistoryHoliday(null)} className="rounded-sm text-muted-foreground hover:text-foreground" aria-label="Close history" title="Close">
                 <X className="h-4 w-4" />
               </button>
             </div>

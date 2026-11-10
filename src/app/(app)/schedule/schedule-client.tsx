@@ -164,6 +164,7 @@ export function ScheduleClient({
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   // Board overlays: undo toast, right-click menu, conflict popover, quick search,
   // and the id of a job currently being edge-resized (drag is disabled on it).
@@ -441,6 +442,9 @@ export function ScheduleClient({
     (t) => t.active && (fTechSel === null || fTechSel.has(t.id)),
   );
 
+  // "Showing N of M people" chip while a people filter is active.
+  const activeTechCount = technicians.filter((t) => t.active).length;
+
   const overbooked = visibleTechs.filter(
     (t) => (capacity.get(t.id) ?? 0) > capacityDenom,
   ).length;
@@ -478,7 +482,11 @@ export function ScheduleClient({
     if (opts.startDate === null) {
       patch.startDate = null;
       patch.endDate = null;
-      patch.jobStatus = "UNCONFIRMED";
+      // In Progress / Completed survive a trip to the backlog (server does the same).
+      patch.jobStatus =
+        job.jobStatus === "IN_PROGRESS" || job.jobStatus === "COMPLETED"
+          ? job.jobStatus
+          : "UNCONFIRMED";
     } else if (opts.startDate) {
       const s = toUtcMidnight(opts.startDate);
       patch.startDate = ymd(s);
@@ -544,7 +552,8 @@ export function ScheduleClient({
   const moveDate = (jobId: string, date: Date | null) => doMove(jobId, { startDate: date });
 
   // Restore a job to a prior snapshot (used by the Undo toast). Optimistic +
-  // persisted; rescheduleJob re-derives end/status from start + duration + tech.
+  // persisted; rescheduleJob re-derives the end date from start + duration and
+  // stores the snapshot's status as-is (so Undo brings back e.g. Completed).
   const revertTo = (jobId: string, snap: JobSnapshot) => {
     setJobs((js) => js.map((j) => (j.id === jobId ? { ...j, ...snap } : j)));
     startTransition(async () => {
@@ -553,6 +562,7 @@ export function ScheduleClient({
         startDate: snap.startDate,
         technicianId: snap.technicianId,
         durationDays: snap.durationDays ?? undefined,
+        jobStatus: snap.jobStatus,
       });
       if (res?.error) setWarning(res.error);
       router.refresh();
@@ -628,15 +638,49 @@ export function ScheduleClient({
     if (job.startDate) setAnchor(parseYmd(job.startDate));
   };
 
+  // Every drop clears the drag flag itself: after an optimistic move the dragged
+  // element is usually unmounted, so its dragend never reaches the root and the
+  // 60-second auto-refresh would otherwise stay paused.
   const onDropCell = (e: DragEvent, techId: string | null, date: Date) => {
     e.preventDefault();
+    draggingRef.current = false;
     const jobId = e.dataTransfer.getData("text/plain");
     if (jobId) move(jobId, techId, date);
   };
   const onDropBacklog = (e: DragEvent) => {
     e.preventDefault();
+    draggingRef.current = false;
     const jobId = e.dataTransfer.getData("text/plain");
     if (jobId) moveDate(jobId, null); // unschedule, keep technician + duration
+  };
+
+  // Excel export: fetch → blob, so a failure shows inline in the warning bar
+  // instead of navigating the whole window to a bare error page.
+  const exportXlsx = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch("/api/schedule/export");
+      if (!res.ok) {
+        const msg = (await res.text().catch(() => "")).trim().slice(0, 200);
+        setWarning(`Export failed: ${msg || `server returned ${res.status}`}`);
+        return;
+      }
+      const blob = await res.blob();
+      const name =
+        /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "schedule.xlsx";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setWarning("Export failed — check your connection and try again.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   // Shown in the header AND on the print-only title line.
@@ -651,6 +695,7 @@ export function ScheduleClient({
       className="flex h-full flex-col print:h-auto"
       onDragStart={() => { draggingRef.current = true; }}
       onDragEnd={() => { draggingRef.current = false; }}
+      onDrop={() => { draggingRef.current = false; }}
     >
       {/* Header */}
       <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 print:hidden">
@@ -703,8 +748,8 @@ export function ScheduleClient({
           <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
             <Upload className="mr-1.5 h-4 w-4" /> Import
           </Button>
-          <Button variant="outline" size="sm" onClick={() => { window.location.href = "/api/schedule/export"; }}>
-            <Download className="mr-1.5 h-4 w-4" /> Export
+          <Button variant="outline" size="sm" disabled={exporting} onClick={exportXlsx}>
+            <Download className="mr-1.5 h-4 w-4" /> {exporting ? "Exporting…" : "Export"}
           </Button>
           <Button variant="outline" size="sm" title="Print the current view (landscape)" onClick={() => window.print()}>
             <Printer className="mr-1.5 h-4 w-4" /> Print
@@ -737,6 +782,19 @@ export function ScheduleClient({
               className={`${selectClass} w-52 pl-7`}
             />
           </div>
+          {fTechSel !== null ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-background px-2 py-0.5">
+              Showing {visibleTechs.length} of {activeTechCount} people
+              <span aria-hidden>·</span>
+              <button
+                type="button"
+                onClick={() => setFTechSel(null)}
+                className="font-medium text-primary underline-offset-2 hover:underline"
+              >
+                Show everyone
+              </button>
+            </span>
+          ) : null}
           <TechFilter technicians={technicians} selected={fTechSel} onChange={setFTechSel} />
           <select className={selectClass} value={fType} onChange={(e) => setFType(e.target.value)} aria-label="Filter job type">
             <option value="ALL">All types</option>
@@ -823,10 +881,10 @@ export function ScheduleClient({
               </select>
             </div>
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-              <PanelSection title="Scheduled" jobs={panelGroups.scheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="No scheduled jobs." />
-              <PanelSection title="Tentative" amber jobs={panelGroups.tentative} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="None to confirm." />
-              <PanelSection title="Unscheduled" jobs={panelGroups.unscheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="Nothing in the backlog." hint="Drag onto the schedule to book." />
-              <PanelSection title="Completed" jobs={panelGroups.completed} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="No completed jobs." />
+              <PanelSection title="Scheduled" jobs={panelGroups.scheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText={q ? "No jobs match your search." : "No scheduled jobs."} />
+              <PanelSection title="Tentative" amber jobs={panelGroups.tentative} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText={q ? "No jobs match your search." : "None to confirm."} />
+              <PanelSection title="Unscheduled" jobs={panelGroups.unscheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText={q ? "No jobs match your search." : "Nothing in the backlog."} hint="Drag onto the schedule to book." />
+              <PanelSection title="Completed" jobs={panelGroups.completed} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText={q ? "No jobs match your search." : "No completed jobs."} />
             </div>
           </aside>
         ) : (
@@ -855,7 +913,10 @@ export function ScheduleClient({
               targetedTasks={targetedTasks}
               todayYmd={todayYmd}
               onOpenJob={setSelected}
-              onDropDay={moveDate}
+              onDropDay={(jobId, date) => {
+                draggingRef.current = false;
+                moveDate(jobId, date);
+              }}
               onOpenDayTasks={openDayTasks}
               onShiftWeeks={(n) => setAnchor((a) => addDays(a, n * 7))}
               onOpenMenu={openMenu}
@@ -890,6 +951,18 @@ export function ScheduleClient({
                 })}
               </div>
 
+              {rows.length === 0 ? (
+                <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+                  No people match the current filter.{" "}
+                  <button
+                    type="button"
+                    onClick={() => setFTechSel(null)}
+                    className="font-medium text-primary underline-offset-2 hover:underline"
+                  >
+                    Show everyone
+                  </button>
+                </div>
+              ) : null}
               {rows.map((row) => {
                 const laneJobs = scheduled.filter((j) => j.technicianId === row.id && inWeek(j));
                 const packed = packLanes(laneJobs);

@@ -15,6 +15,7 @@ import {
   LOGIN_EMAIL_LIMIT,
 } from "@/lib/auth/rate-limit";
 import { writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
+import { HOME_PATH } from "@/lib/home";
 import type { LoginState } from "./types";
 
 const LoginSchema = z.object({
@@ -30,6 +31,11 @@ function getDummyHash(): Promise<string> {
   return (dummyHash ??= hashPassword("timing-equalizer-not-a-real-password"));
 }
 
+function retryMinutes(retryAfterSec: number): string {
+  const m = Math.max(1, Math.ceil(retryAfterSec / 60));
+  return `${m} minute${m === 1 ? "" : "s"}`;
+}
+
 export async function signIn(
   _prev: LoginState,
   formData: FormData,
@@ -40,7 +46,7 @@ export async function signIn(
   // Throttle brute-force by IP before doing any work.
   const ipLimit = isRateLimited(ipKey, LOGIN_IP_LIMIT, WINDOW_MS);
   if (ipLimit.limited) {
-    return { error: `Too many attempts. Try again in ${Math.ceil(ipLimit.retryAfterSec / 60)} minute(s).` };
+    return { error: `Too many attempts. Try again in ${retryMinutes(ipLimit.retryAfterSec)}.` };
   }
 
   const parsed = LoginSchema.safeParse({
@@ -53,10 +59,15 @@ export async function signIn(
 
   const identifier = parsed.data.identifier.trim().toLowerCase();
   const { password } = parsed.data;
-  const emailKey = `login:id:${identifier}`;
-  const emailLimit = isRateLimited(emailKey, LOGIN_EMAIL_LIMIT, WINDOW_MS);
-  if (emailLimit.limited) {
-    return { error: "Too many attempts for this account. Try again later." };
+  // Per-account limiter is keyed on account + client IP, so someone else on the
+  // network can't lock a colleague out by typing wrong passwords for them (the
+  // per-IP limit above still caps guessing from any one address).
+  const accountKey = `login:id:${identifier}:${ip}`;
+  const accountLimit = isRateLimited(accountKey, LOGIN_EMAIL_LIMIT, WINDOW_MS);
+  if (accountLimit.limited) {
+    return {
+      error: `Too many attempts for this account. Try again in ${retryMinutes(accountLimit.retryAfterSec)}.`,
+    };
   }
 
   // The sign-in screen asks for a username only. An email address is still
@@ -74,22 +85,25 @@ export async function signIn(
   if (!user || !user.isActive || !passwordOk) {
     // Count failures only, so normal logins never trip the limit.
     registerFailure(ipKey, WINDOW_MS);
-    registerFailure(emailKey, WINDOW_MS);
+    registerFailure(accountKey, WINDOW_MS);
     const orgId = await resolveAuthOrgId(user?.id);
     if (orgId) {
+      // Only echo the typed identifier when it matched a real account — an
+      // unmatched one may be a password typed into the username box.
+      const who = user ? `"${identifier}"` : "an unknown username";
       await writeAuthAudit(orgId, {
         actorId: user?.id ?? null,
-        actorEmail: identifier,
+        actorEmail: user ? (user.email ?? user.username) : null,
         entityId: user?.id,
         action: "login-failed",
-        summary: `Failed sign-in for "${identifier}" from ${ip}${user && !user.isActive ? " (account disabled)" : ""}.`,
+        summary: `Failed sign-in for ${who} from ${ip}${user && !user.isActive ? " (account disabled)" : ""}.`,
       });
     }
     return { error: "Invalid username or password." };
   }
 
   // Success — reset this account's counter.
-  clearRateLimit(emailKey);
+  clearRateLimit(accountKey);
   await createSession(user.id);
   const orgId = await resolveAuthOrgId(user.id);
   if (orgId) {
@@ -100,5 +114,5 @@ export async function signIn(
       summary: `${user.name ?? user.username} signed in from ${ip}.`,
     });
   }
-  redirect("/tasks");
+  redirect(HOME_PATH);
 }

@@ -8,6 +8,7 @@ import { ResetCard } from "./reset-card";
 import { WorkbookCard } from "./workbook-card";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Agreement settings" };
 
 export default async function AgreementSettingsPage() {
   await requireAuth();

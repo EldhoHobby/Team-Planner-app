@@ -44,10 +44,21 @@
     --accent-foreground: 210 40% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 40% 98%;
+    /* Destructive TEXT (form errors, delete icons). --destructive stays dark red
+       for button backgrounds, but as text on the near-black background it is
+       ~2:1 — this lighter red (Tailwind red-400) is ~7:1. */
+    --destructive-text: 0 91.1% 71.2%;
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
   }
+}
+
+/* Readable destructive text in dark mode (outside @layer so it follows — and,
+   being more specific, beats — the `text-destructive` utility). */
+.dark .text-destructive,
+.dark .hover\:text-destructive:hover {
+  color: hsl(var(--destructive-text));
 }
 
 @layer base {
@@ -117,6 +128,7 @@
     --accent-foreground: 222.2 47.4% 11.2%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
+    --destructive-text: 0 84.2% 60.2%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;

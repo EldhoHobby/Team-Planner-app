@@ -16,7 +16,7 @@ import { resetAgreements } from "@/lib/services/agreements/import";
 import { checkConfirmPassword } from "@/lib/services/full-backup";
 import { importAgreementsWorkbook } from "@/lib/services/agreements/workbook";
 import type { SaAgreement } from "@/lib/agreements/constants";
-import type { ActionResult, BulkResult, WorkbookImportResult } from "./types";
+import { WORKBOOK_MAX_BYTES, type ActionResult, type BulkResult, type WorkbookImportResult } from "./types";
 
 function fail(e: unknown, fallback: string): ActionResult {
   if (e instanceof StaleSaveError) return { error: e.message, stale: true };
@@ -111,10 +111,12 @@ export async function proposalTransitionAction(input: {
   action: ProposalAction;
   reason?: string;
   markNotRenewed?: boolean;
+  restoreActive?: boolean;
 }) {
   return run("Could not update the proposal.", (scope) =>
     transitionProposal(scope, input.id, input.action, {
       expectedVersion: version(input.version), reason: input.reason, markNotRenewed: !!input.markNotRenewed,
+      restoreActive: !!input.restoreActive,
     }),
   );
 }
@@ -162,7 +164,8 @@ export async function importWorkbookAction(formData: FormData): Promise<Workbook
   try {
     const file = formData.get("file");
     if (!(file instanceof File) || file.size === 0) return { error: "Choose the exported workbook first." };
-    if (file.size > 15 * 1024 * 1024) return { error: "That file is larger than 15 MB." };
+    // Server actions accept at most 10 MB per request (next.config bodySizeLimit), so check below that.
+    if (file.size > WORKBOOK_MAX_BYTES) return { error: "That file is larger than 9.5 MB — the most the app can take in one upload." };
     const apply = formData.get("apply") === "true";
     const summary = await importAgreementsWorkbook(scope, Buffer.from(await file.arrayBuffer()), apply);
     if (apply) refresh();

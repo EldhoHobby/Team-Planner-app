@@ -36,7 +36,8 @@ export function AcceptForm({ token, email }: { token: string; email: string }) {
       </div>
       <div className="space-y-2">
         <Label htmlFor="password">Password</Label>
-        <Input id="password" name="password" type="password" required minLength={8} autoComplete="new-password" />
+        <Input id="password" name="password" type="password" required minLength={8} autoComplete="new-password" aria-describedby="password-hint" />
+        <p id="password-hint" className="text-xs text-muted-foreground">At least 8 characters.</p>
       </div>
       <div className="space-y-2">
         <Label htmlFor="confirmPassword">Confirm password</Label>

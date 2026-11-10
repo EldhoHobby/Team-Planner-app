@@ -1,11 +1,13 @@
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { getProposal, type ProposalDetail } from "@/lib/services/agreements/proposals";
+import { getSettings } from "@/lib/services/agreements/common";
 import { todayYmd } from "@/lib/tz";
 import { PrintToolbar } from "./print-toolbar";
 import { ProposalSheet } from "../proposal-sheet";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Print proposals" };
 
 /** ?ids=a,b,c — one landscape, black-and-white page per proposal. ?title=YYYY-MM names the PDF. */
 export default async function PrintProposals({ searchParams }: { searchParams: Promise<{ ids?: string; title?: string }> }) {
@@ -13,7 +15,8 @@ export default async function PrintProposals({ searchParams }: { searchParams: P
   const { scope } = await requireScope();
   const sp = await searchParams;
   const ids = (sp.ids ?? "").split(",").filter(Boolean).slice(0, 300);
-  const all = await Promise.all(ids.map((id) => getProposal(scope, id)));
+  const rules = await getSettings(scope); // once for the whole batch, not once per proposal
+  const all = await Promise.all(ids.map((id) => getProposal(scope, id, rules)));
   const list = all.filter((d): d is ProposalDetail => d !== null).sort((a, b) => a.customer.name.localeCompare(b.customer.name));
   const title = sp.title && /^\d{4}-\d{2}$/.test(sp.title)
     ? `Proposals ending ${sp.title}`

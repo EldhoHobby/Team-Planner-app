@@ -6,7 +6,7 @@ import { Download, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fmtEastern } from "@/lib/tz";
 import { importWorkbookAction } from "../actions";
-import type { WorkbookImportSummary } from "../types";
+import { WORKBOOK_MAX_BYTES, type WorkbookImportSummary } from "../types";
 
 /** Editors: download the monthly workbook, and bring an edited copy back (preview → apply). */
 export function WorkbookCard() {
@@ -21,6 +21,9 @@ export function WorkbookCard() {
       setError(null);
       const file = fileRef.current?.files?.[0];
       if (!file) return setError("Choose the exported workbook first.");
+      if (file.size > WORKBOOK_MAX_BYTES) {
+        return setError(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB — the most the app can take in one upload is 9.5 MB.`);
+      }
       if (apply && !confirm("Apply the workbook's changes to the live data? Rows that changed in the app since the export are skipped.")) return;
       const fd = new FormData();
       fd.set("file", file);
@@ -32,6 +35,18 @@ export function WorkbookCard() {
     });
 
   const total = summary ? Object.values(summary.sheets).reduce((a, c) => a + c.created + c.updated + c.deleted, 0) : 0;
+  const failed = summary?.errors.length ?? 0;
+  const applied = summary ? Math.max(0, summary.changes.length - failed) : 0;
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const headline = !summary
+    ? ""
+    : summary.applied
+      ? failed
+        ? `Applied ${plural(applied, "change")}, ${failed} failed (listed below).`
+        : `Applied ${plural(applied, "change")}.`
+      : total
+        ? "Preview — nothing written yet:"
+        : "No changes found in this workbook.";
 
   return (
     <section id="workbook" className="space-y-3 rounded-lg border bg-card p-5 text-sm">
@@ -54,7 +69,11 @@ export function WorkbookCard() {
 
       <div className="space-y-2 border-t pt-3">
         <p className="text-xs font-medium">Bring changes back</p>
-        <input ref={fileRef} type="file" accept=".xlsm,.xlsx" className="block text-xs" onChange={() => setSummary(null)} />
+        <input ref={fileRef} type="file" accept=".xlsm,.xlsx" className="block text-xs" onChange={(e) => {
+            setSummary(null);
+            const f = e.target.files?.[0];
+            setError(f && f.size > WORKBOOK_MAX_BYTES ? `That file is ${(f.size / 1024 / 1024).toFixed(1)} MB — the most the app can take in one upload is 9.5 MB.` : null);
+          }} />
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={pending} onClick={() => run(false)}>
             <Upload className="h-4 w-4" /> Preview changes
@@ -69,8 +88,8 @@ export function WorkbookCard() {
       {error && <p role="alert" className="text-destructive">{error}</p>}
       {summary && (
         <div className="space-y-2 rounded-md bg-muted/50 p-3">
-          <p className="font-medium">
-            {summary.applied ? "Applied." : total ? "Preview — nothing written yet:" : "No changes found in this workbook."}
+          <p className={failed ? "font-medium text-destructive" : "font-medium"}>
+            {headline}
             {summary.exportedAt && (
               <span className="ml-1 font-normal text-muted-foreground">
                 (exported {fmtEastern(summary.exportedAt, { dateStyle: "medium", timeStyle: "short" })})

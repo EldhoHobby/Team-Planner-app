@@ -6,6 +6,7 @@ import { canEditAgreements } from "@/lib/services/agreements/common";
 import { ProposalsClient, type ProposalSort } from "./proposals-client";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Proposals" };
 
 const SORT_KEYS = ["customer", "total", "end", "changed"] as const;
 

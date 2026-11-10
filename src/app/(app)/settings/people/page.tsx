@@ -1,3 +1,4 @@
+import { HOME_PATH } from "@/lib/home";
 import { redirect } from "next/navigation";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
@@ -8,11 +9,12 @@ import { recordPageView } from "@/lib/services/audit";
 import { PeopleClient } from "./people-client";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "People" };
 
 export default async function PeoplePage() {
   await requireAuth();
   const { scope } = await requireScope();
-  if (!scope.ctx.isOrgAdmin) redirect("/schedule");
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "People");
 
   const [departments, people, workGroups, timeOff] = await Promise.all([

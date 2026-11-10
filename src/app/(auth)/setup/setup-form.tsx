@@ -33,7 +33,7 @@ export function SetupForm() {
         <p className="text-sm font-medium text-muted-foreground">Owner account</p>
         <div className="space-y-2">
           <Label htmlFor="name">Your name</Label>
-          <Input id="name" name="name" placeholder="Eldho Hobby" required />
+          <Input id="name" name="name" placeholder="Jane Doe" required />
         </div>
         <div className="space-y-2">
           <Label htmlFor="email">Email</Label>
@@ -45,7 +45,8 @@ export function SetupForm() {
         </div>
         <div className="space-y-2">
           <Label htmlFor="password">Password</Label>
-          <Input id="password" name="password" type="password" required minLength={8} />
+          <Input id="password" name="password" type="password" required minLength={8} autoComplete="new-password" aria-describedby="password-hint" />
+          <p id="password-hint" className="text-xs text-muted-foreground">At least 8 characters.</p>
         </div>
         <div className="space-y-2">
           <Label htmlFor="confirmPassword">Confirm password</Label>

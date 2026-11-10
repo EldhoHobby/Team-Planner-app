@@ -50,6 +50,10 @@ export function LoginForm() {
       ) : null}
 
       <SubmitButton />
+
+      <p className="text-center text-xs text-muted-foreground">
+        Forgot your username or password? Ask an admin for a new set-password link.
+      </p>
     </form>
   );
 }

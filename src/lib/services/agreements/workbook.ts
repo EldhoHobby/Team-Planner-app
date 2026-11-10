@@ -33,6 +33,7 @@ import {
   type SaAgreement, type SaCustomerStatus, type SaLineStatus, type SaProposalStatus, type SaSoftware,
 } from "@/lib/agreements/constants";
 import { dateCell, num, text, type Cell } from "@/lib/agreements/import-parse";
+import { formatChange, formatChangeValue } from "@/lib/agreements/history-format";
 import { FIXED_PRICE_AGREEMENTS, POLICY_PRICE_HINTS } from "@/lib/agreements/pricing";
 import { assertCanEdit, audit, getSettings, history, updateSettings, ymd, HISTORY_ENTITY } from "./common";
 import { addContractLine, createCustomer, deleteContractLine, saveCalls, updateContractLine, updateCustomer, type CustomerInput } from "./customers";
@@ -531,7 +532,8 @@ export async function buildAgreementsWorkbook(scope: TenantScope): Promise<Buffe
   // ── Activity (last 31 days, snapshot) ──
   const aws = sheets[S.activity]!;
   masterSheet(aws, [{ header: "When (Eastern)", width: 20 }, { header: "Who", width: 18 }, { header: "Customer", width: 30 }, { header: "SO #", width: 10 }, { header: "What", width: 34 }, { header: "From", width: 30 }, { header: "To", width: 40 }], 2);
-  activity.forEach((h, i) => {
+  activity.forEach((raw, i) => {
+    const h = formatChange(raw); // readable field names / values, as on the Activity tab
     [fmtEastern(h.createdAt, { year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", minute: "2-digit" }), h.actorName, nameOf.get(h.entityId) ?? "", soOf.get(h.entityId) ?? "", h.field, h.oldValue, h.newValue]
       .forEach((v, ci) => (aws.getCell(i + 2, ci + 1).value = (v ?? null) as ExcelJS.CellValue));
   });
@@ -1440,6 +1442,9 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
       const target = statusLabel ? (parseProposalStatus(statusLabel) as SaProposalStatus | null) : "DRAFT";
       if (!target) { skip(S.proposals, row, `new ${so} ${year} proposal: unknown Status "${statusLabel}"`); continue; }
       newProps.delete(`${so}|${year}`);
+      if (target === "DRAFT" && dateCell(row.get("Sent date"))) {
+        summary.skipped.push(`${S.proposals} row ${row.line}: new ${so} ${year} proposal — Sent date ignored: it is created as a Draft (set Status to Sent to record it)`);
+      }
       planNewProposal(g, {
         status: target, endDate: dateCell(row.get("End date")), notes: t(row.get("Notes")),
         sent: dateCell(row.get("Sent date")), signed: dateCell(row.get("Signed date")), closed: dateCell(row.get("Closed date")), reason: t(row.get("Decline reason")),
@@ -1454,7 +1459,11 @@ export async function importAgreementsWorkbook(scope: TenantScope, data: Buffer,
     if (!target) { skip(S.proposals, row, `${label}: unknown Status "${statusLabel}"`); continue; }
     const endDate = dateCell(row.get("End date"));
     const notes = t(row.get("Notes"));
-    const sent = dateCell(row.get("Sent date"));
+    let sent = dateCell(row.get("Sent date"));
+    if (target === "DRAFT" && sent && !same(sent, ymd(db.sentDate))) {
+      summary.skipped.push(`${S.proposals} row ${row.line}: ${label} — Sent date ignored: the proposal stays a Draft (set Status to Sent to record it)`);
+      sent = ymd(db.sentDate);
+    }
     const signed = dateCell(row.get("Signed date"));
     const closed = dateCell(row.get("Closed date"));
     const reason = t(row.get("Decline reason"));
@@ -1522,7 +1531,8 @@ async function moveProposal(
   }
   const fr = await prisma.saProposal.findUniqueOrThrow({ where: { id } });
   const want = {
-    sentDate: sent ?? ymd(fr.sentDate),
+    // A Draft has not been sent: a Sent date typed on a row that stays Draft is ignored (noted in the preview).
+    sentDate: fr.status === "DRAFT" ? ymd(fr.sentDate) : sent ?? ymd(fr.sentDate),
     signedDate: fr.status === "SIGNED" ? signed ?? ymd(fr.signedDate) : ymd(fr.signedDate),
     closedDate: fr.status === "DECLINED" || fr.status === "WITHDRAWN" ? closed ?? ymd(fr.closedDate) : ymd(fr.closedDate),
     declineReason: reason ?? fr.declineReason,
@@ -1543,6 +1553,11 @@ async function moveProposal(
     }
     await history(tx, scope, fr.customerId, changes);
   });
+  const cust = await prisma.saCustomer.findFirst({ where: { id: fr.customerId, orgId: scope.ctx.orgId }, select: { name: true } });
+  await audit(
+    scope, fr.customerId, "proposal_dates",
+    `${cust?.name ?? "Customer"} ${fr.year} proposal (workbook): ${changes.map((c) => `${c.field.replace(`${fr.year} proposal `, "")} ${formatChangeValue(c.field, c.oldValue) ?? "(none)"} → ${formatChangeValue(c.field, c.newValue) ?? "(none)"}`).join(", ")}`,
+  );
 }
 
 /** Settings sheet → one version-checked updateSettings() when anything differs from the app. */

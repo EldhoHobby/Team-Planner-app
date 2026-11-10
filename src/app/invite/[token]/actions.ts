@@ -4,7 +4,14 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { acceptInvitation } from "@/lib/invitations/service";
 import { createSession } from "@/lib/auth/session";
+import { HOME_PATH } from "@/lib/home";
 import type { AcceptState } from "./types";
+
+// The invitation service's own user-facing messages — anything else is logged.
+const SAFE_MESSAGES = new Set([
+  "This invitation is no longer valid.",
+  "An account with this email already exists. Please sign in.",
+]);
 
 const AcceptSchema = z
   .object({
@@ -39,9 +46,12 @@ export async function acceptInviteAction(
     const user = await acceptInvitation(token, { name, password });
     userId = user.id;
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Could not accept the invitation." };
+    const msg = e instanceof Error ? e.message : "";
+    if (SAFE_MESSAGES.has(msg)) return { error: msg };
+    console.error("[invite] could not accept the invitation:", e);
+    return { error: "Could not accept the invitation. Please try again, or ask an admin for a new link." };
   }
 
   await createSession(userId);
-  redirect("/");
+  redirect(HOME_PATH);
 }

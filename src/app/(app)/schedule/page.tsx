@@ -14,12 +14,15 @@ import { ScheduleClient } from "./schedule-client";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Schedule" };
 
 /**
  * Personal default for the technician filter (user can change it freely):
  * - org OWNER/ADMIN → null (= all technicians)
  * - department MANAGER → self + everyone in their department(s) incl. sub-teams
  * - plain member → just themselves
+ * Non-admin defaults always include the "UNASSIGNED" lane, so open unassigned
+ * work (incl. a job they just created without a technician) stays visible.
  */
 async function defaultTechIdsFor(userId: string, orgId: string, isOrgAdmin: boolean): Promise<string[] | null> {
   if (isOrgAdmin) return null;
@@ -28,7 +31,7 @@ async function defaultTechIdsFor(userId: string, orgId: string, isOrgAdmin: bool
     where: { userId, role: "MANAGER", team: { orgId } },
     select: { teamId: true },
   });
-  if (!mgrTeams.length) return [userId];
+  if (!mgrTeams.length) return [userId, "UNASSIGNED"];
 
   // Expand managed teams with all their descendants (rollup, like the dashboard).
   const all = await prisma.team.findMany({ where: { orgId }, select: { id: true, parentTeamId: true } });
@@ -48,7 +51,7 @@ async function defaultTechIdsFor(userId: string, orgId: string, isOrgAdmin: bool
     where: { teamId: { in: [...teamIds] } },
     select: { userId: true },
   });
-  return [...new Set([userId, ...members.map((m) => m.userId)])];
+  return [...new Set([userId, ...members.map((m) => m.userId)]), "UNASSIGNED"];
 }
 
 export default async function SchedulePage({

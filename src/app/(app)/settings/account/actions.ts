@@ -2,11 +2,11 @@
 
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
-import { requireUser } from "@/lib/auth/current-user";
+import { requireScope, requireUser } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/db/client";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { destroyAllSessions, getSessionActor } from "@/lib/auth/session";
-import { writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
+import { writeAudit, writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 
 const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required"),
@@ -74,7 +74,58 @@ export async function changePasswordAction(
     });
   }
 
-  revalidatePath("/settings/account");
-
+  // No revalidatePath here: every session (this one included) was just revoked,
+  // so re-rendering the page would bounce straight to /login before the success
+  // panel ("Sign in again") could show.
   return { success: true };
+}
+
+const DisplayNameSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "Name can't be empty")
+    .max(80, "Name must be 80 characters or fewer"),
+});
+
+export type DisplayNameState = {
+  error?: string;
+  success?: boolean;
+  name?: string;
+};
+
+/** A person edits their OWN display name (username / email stay admin-managed). */
+export async function updateDisplayNameAction(
+  _prev: DisplayNameState,
+  formData: FormData,
+): Promise<DisplayNameState> {
+  const actor = await getSessionActor();
+  if (!actor) return { error: "Your session has ended. Sign in again." };
+  // "View as" guard (same rule as the password change): never edit the
+  // impersonated person's profile.
+  if (actor.impersonating) {
+    return { error: "Your name can't be changed while using View as. Exit View as first." };
+  }
+
+  const parsed = DisplayNameSchema.safeParse({ name: formData.get("name") ?? "" });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  const name = parsed.data.name;
+
+  const { user, scope } = await requireScope();
+  const before = user.name;
+  if (before === name) return { success: true, name };
+
+  await prisma.user.update({ where: { id: user.id }, data: { name } });
+  await writeAudit(scope, {
+    entity: "member",
+    entityId: user.id,
+    action: "updated",
+    summary: `${before ?? user.username} changed their display name to "${name}"${before ? ` (was "${before}")` : ""}.`,
+  });
+
+  // The sidebar footer and people lists show the name.
+  revalidatePath("/", "layout");
+  return { success: true, name };
 }

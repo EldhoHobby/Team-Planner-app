@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { prisma } from "@/lib/db/client";
 import { hashToken } from "@/lib/auth/tokens";
 import { AcceptForm } from "./accept-form";
@@ -10,6 +11,7 @@ import {
 } from "@/components/ui/card";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Accept invitation" };
 
 export default async function AcceptInvitePage({
   params,

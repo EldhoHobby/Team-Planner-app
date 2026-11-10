@@ -252,12 +252,28 @@ export function ProposalsClient({
       )}
 
       {error && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
-      {result && (
-        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm">
-          Created {result.filter((r) => r.proposalId).length} draft proposals for agreements ending {fmtMonth(bulkMonth)}. They&apos;re listed below — select them to print.
-          <button type="button" className="ml-2 underline" onClick={() => setResult(null)}>Dismiss</button>
-        </div>
-      )}
+      {result && (() => {
+        const made = result.reduce((a, r) => a + (r.created ?? 0), 0);
+        const failed = result.filter((r) => r.error);
+        return (
+          <div
+            role={failed.length ? "alert" : "status"}
+            className={cn("rounded-md border p-3 text-sm", failed.length ? "border-amber-500/40 bg-amber-500/10" : "border-emerald-500/40 bg-emerald-500/10")}
+          >
+            Created {made} draft proposal{made === 1 ? "" : "s"} for agreements ending {fmtMonth(bulkMonth)}.
+            {made > 0 && " They're listed below — select them to print."}
+            {failed.length > 0 && (
+              <>
+                {" "}<b>{failed.length} failed:</b>
+                <ul className="mt-1 list-disc pl-5">
+                  {failed.map((r) => <li key={r.customerId}>{r.name} — {r.error}</li>)}
+                </ul>
+              </>
+            )}
+            <button type="button" className="ml-2 underline" onClick={() => setResult(null)}>Dismiss</button>
+          </div>
+        );
+      })()}
 
       <div className="flex flex-wrap items-center gap-2">
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or SO #" className="w-56" aria-label="Search proposals" />

@@ -2,11 +2,13 @@
 
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { hashPassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
 import { isBootstrapped, slugify } from "@/lib/auth/bootstrap";
 import { uniqueUsername } from "@/lib/auth/username";
+import { HOME_PATH } from "@/lib/home";
 import type { SetupState } from "./types";
 
 const SetupSchema = z
@@ -65,12 +67,17 @@ export async function createOwnerAccount(
       return user;
     });
     ownerId = owner.id;
-  } catch {
-    // Unique-constraint or similar — surface a safe, generic message.
-    return { error: "Could not create the account. The email may already be in use." };
+  } catch (e) {
+    // Prisma unique-constraint violation (P2002) — the only case where "already
+    // in use" is the honest explanation. Anything else is logged for the admin.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      return { error: "Could not create the account. That email or organization name is already in use." };
+    }
+    console.error("[setup] could not create the owner account:", e);
+    return { error: "Could not create the account. Please try again; if it keeps failing, check the server logs." };
   }
 
   // Log the new owner straight in, then send them to the app.
   await createSession(ownerId);
-  redirect("/");
+  redirect(HOME_PATH);
 }

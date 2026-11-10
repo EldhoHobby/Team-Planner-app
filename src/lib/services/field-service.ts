@@ -412,6 +412,9 @@ export interface RescheduleInput {
   startDate?: Date | null; // null clears → back to unscheduled backlog
   durationDays?: number | null;
   technicianId?: string | null;
+  /** Explicit status to store as-is (the board's Undo restores the snapshot's
+   *  status). Omitted = keep In Progress / Completed, otherwise derive. */
+  jobStatus?: JobStatus;
 }
 
 /** Move/resize/reassign a job. Used by drag-drop and the dropdown editors. */
@@ -435,16 +438,18 @@ export async function rescheduleJob(
   const nextTech =
     input.technicianId !== undefined ? input.technicianId : job.technicianId;
 
-  const { start, end, duration, status } = deriveSchedule({
+  const { start, end, duration, status: derived } = deriveSchedule({
     startDate: nextStart,
     durationDays: nextDuration,
     technicianId: nextTech,
-    // Keep an in-progress/completed status; otherwise let derive set it.
+    // Keep an in-progress/completed status — also when the job is moved to the
+    // backlog (start cleared) — otherwise let derive set it.
     jobStatus:
       job.jobStatus === "IN_PROGRESS" || job.jobStatus === "COMPLETED"
         ? job.jobStatus
         : undefined,
   });
+  const status: JobStatus = input.jobStatus ?? derived;
 
   // Preserve the day-count even when unscheduled, so a trip through the backlog
   // doesn't silently reset a multi-day job back to 1 day. Keep 0 ("days TBD").
@@ -457,7 +462,9 @@ export async function rescheduleJob(
       endDate: end,
       durationDays: storedDuration,
       technicianId: nextTech || null,
-      jobStatus: start ? status : "UNCONFIRMED",
+      // deriveSchedule already falls back to UNCONFIRMED for an undated job
+      // unless it was In Progress / Completed (those keep their status).
+      jobStatus: status,
     },
     include: JOB_INCLUDE,
   });
@@ -476,6 +483,9 @@ export async function rescheduleJob(
   }
   if ((job.technicianId ?? null) !== (nextTech ?? null)) {
     parts.push(`Assigned to ${updated.technician?.name ?? "Unassigned"}`);
+  }
+  if (input.jobStatus !== undefined && job.jobStatus !== updated.jobStatus) {
+    parts.push(`Status ${lbl(STATUS_LABEL, job.jobStatus)} → ${lbl(STATUS_LABEL, updated.jobStatus)}`);
   }
   const summary = `${jobRef(updated)}: ${parts.length ? parts.join(" · ") : "updated"}`;
 

@@ -11,6 +11,7 @@ import { recordPageView } from "@/lib/services/audit";
 import { TimesheetClient } from "./timesheet-client";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Timesheet" };
 
 export default async function TimesheetPage({
   searchParams,

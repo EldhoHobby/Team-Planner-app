@@ -6,6 +6,7 @@ import { canEditAgreements } from "@/lib/services/agreements/common";
 import { CustomersTable, type CustomerListRow } from "./customers-table";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Agreement customers" };
 
 export default async function CustomersPage({ searchParams }: { searchParams: Promise<{ status?: string; renewal?: string }> }) {
   await requireAuth();

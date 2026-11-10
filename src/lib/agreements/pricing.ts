@@ -99,11 +99,16 @@ export interface ProposedLine {
  * - A standard price entered in Settings (fixedPrices) replaces last year's price.
  * - Everything else keeps last year's price.
  * - After Hours: $0 when the PROPOSED SCADA Software price ≥ afterHoursWaiveAt.
+ *   When SCADA Software is not in `last` (bulk by end month, or agreements that
+ *   renew in different years), pass `opts.scadaPrice` = the customer's SCADA
+ *   Software price for the same year (signed, in a live proposal, or its policy
+ *   price) so the waiver matches the monthly workbook's Customer View.
  */
 export function proposePrices(
   last: Partial<Record<SaAgreement, number>>,
   software: SaSoftware | null,
   rules: PricingRules,
+  opts: { scadaPrice?: number | null } = {},
 ): ProposedLine[] {
   const out: ProposedLine[] = [];
   for (const [agreement, lastPrice] of Object.entries(last) as [SaAgreement, number | undefined][]) {
@@ -127,9 +132,9 @@ export function proposePrices(
     out.push({ agreement, lastPrice, price, pct: pctBetween(lastPrice, price), rule });
   }
   if (rules.autoWaiveAfterHours) {
-    const scada = out.find((l) => l.agreement === "SCADA_SOFTWARE");
+    const scada = out.find((l) => l.agreement === "SCADA_SOFTWARE")?.price ?? opts.scadaPrice ?? null;
     const ah = out.find((l) => l.agreement === "AFTER_HOURS");
-    if (scada && ah && scada.price >= rules.afterHoursWaiveAt) {
+    if (scada !== null && ah && scada >= rules.afterHoursWaiveAt) {
       ah.price = 0;
       ah.pct = pctBetween(ah.lastPrice, 0);
       ah.rule = "waived";

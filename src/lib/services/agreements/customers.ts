@@ -9,6 +9,7 @@ import {
   type SaAgreement, type SaCustomerStatus, type SaLineStatus, type SaSoftware,
 } from "@/lib/agreements/constants";
 import { customerRenewal, priceHistory, type CustomerRenewal, type ProposalLite } from "@/lib/agreements/renewal";
+import { formatChange } from "@/lib/agreements/history-format";
 import {
   HISTORY_ENTITY, assertCanEdit, audit, dateOf, getSettings, history, loadCustomer, toLineLite, toProposalLite, ymd,
 } from "./common";
@@ -85,7 +86,8 @@ export async function getCustomerDetail(scope: TenantScope, id: string) {
     })),
     proposals: proposals.map((p) => ({ ...p, createdAt: c.proposals.find((x) => x.id === p.id)!.createdAt.toISOString() })),
     calls: c.calls.map((r) => ({ id: r.id, version: r.version, year: r.year, calls: r.calls, repairs: r.repairs })),
-    changes: changes.map((h) => ({
+    // Readable labels / values ($4,500, Active, Nov 14, 2026) for old and new rows alike.
+    changes: changes.map((h) => formatChange({
       id: h.id, at: h.createdAt.toISOString(), actor: h.actorName, field: h.field, oldValue: h.oldValue, newValue: h.newValue,
     })),
   };
@@ -209,6 +211,8 @@ export async function addContractLine(
 ) {
   await assertCanEdit(scope);
   checkPrice(input.price);
+  // Whole dollars, like proposal prices (so totals match the lines people see).
+  input = { ...input, price: Math.round(input.price) };
   if (!Number.isInteger(input.year) || input.year < 1990 || input.year > 2100) throw new ForbiddenError("Year looks wrong.");
   const c = await loadCustomer(scope, customerId);
   const dup = await prisma.saContractLine.findFirst({ where: { customerId, year: input.year, agreement: input.agreement } });
@@ -232,6 +236,8 @@ export async function updateContractLine(scope: TenantScope, id: string, input: 
   const l = await prisma.saContractLine.findFirst({ where: { id, orgId: scope.ctx.orgId }, include: { customer: { select: { name: true } } } });
   if (!l) throw new ForbiddenError("Agreement line not found.");
   if (l.version !== expectedVersion) throw new StaleSaveError("agreement line");
+  // Whole dollars, like proposal prices. An untouched price (e.g. an old imported one with cents) is kept as is.
+  if (input.price !== Number(l.price)) input = { ...input, price: Math.round(input.price) };
   const label = `${l.year} ${AGREEMENT_LABELS[l.agreement]}`;
   await prisma.$transaction(async (tx) => {
     const res = await tx.saContractLine.updateMany({

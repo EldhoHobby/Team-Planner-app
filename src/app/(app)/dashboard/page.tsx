@@ -5,6 +5,7 @@ import { recordPageView } from "@/lib/services/audit";
 import { DashboardClient } from "./dashboard-client";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
   await requireAuth();

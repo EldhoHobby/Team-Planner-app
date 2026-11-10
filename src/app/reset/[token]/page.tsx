@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/card";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Set password" };
 
 export default async function ResetPasswordPage({
   params,

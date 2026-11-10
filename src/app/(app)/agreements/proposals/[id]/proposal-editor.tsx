@@ -18,7 +18,7 @@ import {
   addLineAction, deleteProposalAction, proposalTransitionAction, removeLineAction, setLinePriceAction, updateProposalHeaderAction,
 } from "../../actions";
 
-type Run = (fn: () => Promise<{ error?: string }>, ok?: string) => void;
+type Run = (fn: () => Promise<{ error?: string; stale?: boolean }>, ok?: string) => void;
 
 function daysBetween(from: string, to: string) {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
@@ -40,8 +40,10 @@ export function ProposalEditor({
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
+  const [msg, setMsg] = useState<{ text: string; error?: boolean; stale?: boolean } | null>(null);
   const [closing, setClosing] = useState(false);
+  // Reopening a proposal of a "Not renewed" customer asks whether the customer goes back to Active.
+  const [reopening, setReopening] = useState(false);
   const [printing, setPrinting] = useState(false);
   const p = data.proposal;
   const c = data.customer;
@@ -57,14 +59,16 @@ export function ProposalEditor({
     return () => clearTimeout(t);
   }, [msg]);
 
+  // Every save refreshes the page data, so the next edit sends the proposal's / line's NEW version
+  // (a price edit bumps the proposal's version too).
   const run: Run = (fn, ok) =>
     start(async () => {
       const r = await fn();
-      setMsg(r.error ? { text: r.error, error: true } : ok ? { text: ok } : null);
+      setMsg(r.error ? { text: r.error, error: true, stale: r.stale } : ok ? { text: ok } : null);
       router.refresh();
     });
-  const transition = (action: "send" | "unsend" | "sign" | "reopen", ok: string) =>
-    run(() => proposalTransitionAction({ id: p.id, version: p.version, action }), ok);
+  const transition = (action: "send" | "unsend" | "sign" | "reopen", ok: string, extra: { restoreActive?: boolean } = {}) =>
+    run(() => proposalTransitionAction({ id: p.id, version: p.version, action, ...extra }), ok);
 
   return (
     <div className="space-y-4 print:space-y-0">
@@ -144,10 +148,47 @@ export function ProposalEditor({
               </Button>
             )}
             {canEdit && (p.status === "DECLINED" || p.status === "WITHDRAWN") && (
-              <Button size="sm" variant="outline" disabled={pending} onClick={() => transition("reopen", "Reopened as a draft.")}><RotateCcw className="h-4 w-4" /> Reopen</Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={pending}
+                onClick={() => (c.status === "NOT_RENEWED" ? setReopening(true) : transition("reopen", "Reopened as a draft."))}
+              >
+                <RotateCcw className="h-4 w-4" /> Reopen
+              </Button>
             )}
           </div>
         </div>
+
+        {reopening && (
+          <div role="group" aria-label="Reopen proposal" className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+            <span className="mr-auto">
+              {c.name} is marked <b>Not renewed</b>, which hides it from the default lists and renewals. Set it back to Active too?
+            </span>
+            <Button
+              size="sm"
+              disabled={pending}
+              onClick={() => {
+                setReopening(false);
+                transition("reopen", "Reopened as a draft; the customer is Active again.", { restoreActive: true });
+              }}
+            >
+              Reopen and set Active
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() => {
+                setReopening(false);
+                transition("reopen", "Reopened as a draft.");
+              }}
+            >
+              Reopen only
+            </Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setReopening(false)}>Cancel</Button>
+          </div>
+        )}
 
         {/* Key figures */}
         <dl className="mt-4 grid grid-cols-2 gap-3 border-t pt-4 sm:grid-cols-4">
@@ -183,6 +224,20 @@ export function ProposalEditor({
         {msg && (
           <p role={msg.error ? "alert" : "status"} className={cn("rounded-md border px-3 py-2 text-sm", msg.error ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-emerald-500/40 bg-emerald-500/10")}>
             {msg.text}
+            {msg.stale && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-2 h-7"
+                disabled={pending}
+                onClick={() => {
+                  setMsg(null);
+                  router.refresh();
+                }}
+              >
+                Reload latest
+              </Button>
+            )}
           </p>
         )}
       </div>
@@ -224,7 +279,8 @@ export function ProposalEditor({
 function Timeline({ p }: { p: ProposalDetail["proposal"] }) {
   const steps: { label: string; date: string | null; done: boolean; bad?: boolean }[] = [
     { label: `Created${p.createdBy ? ` by ${p.createdBy}` : ""}`, date: ymdEastern(p.createdAt), done: true },
-    { label: "Sent", date: p.sentDate, done: !!p.sentDate },
+    // A Draft is never "sent", even if a stray sent date came in from the workbook.
+    { label: "Sent", date: p.status === "DRAFT" ? null : p.sentDate, done: p.status !== "DRAFT" && !!p.sentDate },
     p.status === "DECLINED" || p.status === "WITHDRAWN"
       ? { label: p.status === "DECLINED" ? "Declined" : "Withdrawn", date: p.closedDate, done: true, bad: true }
       : { label: "Signed", date: p.signedDate, done: !!p.signedDate },

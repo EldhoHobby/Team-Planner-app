@@ -35,13 +35,16 @@ function fmt(iso: string): string {
 /** Colour the action badge by what kind of event it is. */
 function actionCls(action: string): string {
   if (action === "login-failed") return "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300";
-  if (["deleted", "revoked", "reset", "archived"].includes(action))
+  if (["deleted", "revoked", "reset", "archived", "cleared"].includes(action))
     return "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300";
-  if (["created", "imported", "invite-accepted"].includes(action))
+  // Whole-dataset operations (backup restore, Excel import/export).
+  if (["restored", "imported", "exported"].includes(action))
+    return "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300";
+  if (["created", "invite-accepted"].includes(action))
     return "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300";
-  if (["login", "logout", "password-changed", "reset-link-created", "reset-completed", "view-as-started", "view-as-stopped"].includes(action))
+  if (["login", "logout", "password-changed", "reset-link-created", "reset-completed", "view-as-started", "view-as-stopped", "check-now"].includes(action))
     return "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300";
-  if (["updated", "rescheduled", "status"].includes(action))
+  if (["updated", "rescheduled", "status", "commented"].includes(action))
     return "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300";
   return "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
 }
@@ -152,9 +155,9 @@ export function AuditClient({
         </p>
       ) : null}
 
-      {/* 30-day statistics */}
+      {/* Statistics over the retention window */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Events (30 days)" value={stats.total} />
+        <Stat label={`Events (${retentionDays} days)`} value={stats.total} />
         <Stat label="Sign-ins" value={stats.signIns} />
         <Stat label="Data changes" value={stats.changes} />
         <Stat label="Failed sign-ins" value={stats.failed} tone={stats.failed ? "bad" : undefined} />
@@ -212,6 +215,7 @@ export function AuditClient({
         />
         <Input
           placeholder="Search descriptions…"
+          aria-label="Search descriptions"
           className="h-9 w-52"
           value={q}
           onChange={(e) => setQ(e.target.value)}

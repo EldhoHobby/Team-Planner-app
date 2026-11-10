@@ -3,16 +3,26 @@ import type { Prisma } from "@prisma/client";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/db/client";
+import type { Metadata } from "next";
 import { pruneAuditLog, AUDIT_RETENTION_DAYS } from "@/lib/services/audit";
+import { easternDayEndUtc, easternDayStartUtc } from "@/lib/tz";
+import { HOME_PATH } from "@/lib/home";
 import { AuditClient } from "./audit-client";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Audit" };
 
+/** The From/To filters are Eastern calendar days (times on the page are shown in Eastern). */
 function parseDay(raw: string | undefined, endOfDay = false): Date | undefined {
   if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return undefined;
-  const d = new Date(`${raw}T${endOfDay ? "23:59:59.999" : "00:00:00"}`);
+  const d = endOfDay ? easternDayEndUtc(raw) : easternDayStartUtc(raw);
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
+
+// The page refreshes every 10 s while open; prune at most once an hour from
+// here (the daily timer in instrumentation.ts covers servers nobody visits).
+const PRUNE_EVERY_MS = 60 * 60 * 1000;
+let lastPruneAt = 0;
 
 export default async function AuditPage({
   searchParams,
@@ -21,11 +31,13 @@ export default async function AuditPage({
 }) {
   await requireAuth();
   const { scope } = await requireScope();
-  if (!scope.ctx.isOrgAdmin) redirect("/schedule");
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
 
-  // Belt-and-braces retention: prune on every admin visit (a daily timer in
-  // instrumentation.ts covers servers nobody visits).
-  await pruneAuditLog();
+  // Belt-and-braces retention, throttled (see PRUNE_EVERY_MS).
+  if (Date.now() - lastPruneAt >= PRUNE_EVERY_MS) {
+    lastPruneAt = Date.now();
+    await pruneAuditLog();
+  }
 
   const sp = await searchParams;
   const filters = {

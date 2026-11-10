@@ -8,7 +8,7 @@ import type { CreateProjectState } from "./types";
 
 const CreateSchema = z.object({
   name: z.string().min(1, "Name is required").max(80, "Name too long"),
-  teamId: z.string().min(1, "Team is required"),
+  teamId: z.string().min(1, "Department is required"),
   description: z.string().max(500, "Description too long").optional(),
 });
 
@@ -36,15 +36,19 @@ export async function createProjectAction(
   }
 }
 
-export async function archiveProjectAction(formData: FormData): Promise<void> {
+export async function archiveProjectAction(input: {
+  projectId: string;
+}): Promise<{ error?: string }> {
   const { scope } = await requireScope();
-  const id = String(formData.get("projectId") ?? "");
-  if (!id) return;
+  const id = String(input?.projectId ?? "");
+  if (!id) return { error: "Missing project id." };
   try {
     await archiveProject(scope, id);
     revalidatePath("/projects");
     revalidatePath("/tasks");
-  } catch {
-    // swallow — forbidden/not-found is a no-op in the UI
+    return {};
+  } catch (e) {
+    if (e instanceof ForbiddenError) return { error: e.message };
+    return { error: "Could not archive the project." };
   }
 }

@@ -248,6 +248,7 @@ function AgreementsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boole
         <ContractEditor
           customerId={data.customer.id}
           line={editing === "new" ? null : editing}
+          latest={editing === "new" ? null : data.contracts.find((l) => l.id === editing.id) ?? null}
           defaultYear={r.currentYear ?? Number(todayYmd().slice(0, 4))}
           onClose={() => setEditing(null)}
         />
@@ -256,10 +257,19 @@ function AgreementsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boole
   );
 }
 
-function ContractEditor({ customerId, line, defaultYear, onClose }: { customerId: string; line: ContractRow | null; defaultYear: number; onClose: () => void }) {
+function ContractEditor({
+  customerId, line, latest, defaultYear, onClose,
+}: {
+  customerId: string;
+  line: ContractRow | null;
+  /** The same line as the page currently shows it (after refreshes) — used by "Reload latest". */
+  latest: ContractRow | null;
+  defaultYear: number;
+  onClose: () => void;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ text: string; stale?: boolean } | null>(null);
   const [year, setYear] = useState(String(line?.year ?? defaultYear));
   const [agreement, setAgreement] = useState<SaAgreement>(line?.agreement ?? "SCADA_SOFTWARE");
   const [price, setPrice] = useState(line ? String(line.price) : "");
@@ -269,17 +279,36 @@ function ContractEditor({ customerId, line, defaultYear, onClose }: { customerId
   const [checked, setChecked] = useState(line?.checked ?? false);
   const [invoicedDate, setInvoicedDate] = useState(line?.invoicedDate ?? "");
   const [notes, setNotes] = useState(line?.notes ?? "");
+  // The version the form's values are based on (from opening, or from "Reload latest").
+  const [version, setVersion] = useState(line?.version);
+
+  const reloadLatest = () => {
+    if (!latest) {
+      setError({ text: "This line was deleted by someone else." });
+      return;
+    }
+    setPrice(String(latest.price));
+    setStatus(latest.status);
+    setEndDate(latest.endDate ?? "");
+    setSignedDate(latest.signedDate ?? "");
+    setChecked(latest.checked);
+    setInvoicedDate(latest.invoicedDate ?? "");
+    setNotes(latest.notes ?? "");
+    setVersion(latest.version);
+    setError(null);
+    router.refresh();
+  };
 
   const save = () =>
     start(async () => {
       const p = Number(price.replace(/[$,\s]/g, ""));
-      if (!price.trim() || !Number.isFinite(p)) return setError("Enter a price.");
+      if (!price.trim() || !Number.isFinite(p)) return setError({ text: "Enter a price." });
       const data = { price: p, status, endDate: endDate || null, signedDate: signedDate || null, checked, invoicedDate: invoicedDate || null, notes: notes || null };
       const r = line
-        ? await saveContractLineAction({ id: line.id, version: line.version, customerId, data })
+        ? await saveContractLineAction({ id: line.id, version, customerId, data })
         : await saveContractLineAction({ customerId, create: { year: Number(year), agreement }, data });
       if (r.error) {
-        setError(r.error);
+        setError({ text: r.error, stale: r.stale });
         if (r.stale) router.refresh();
         return;
       }
@@ -290,8 +319,12 @@ function ContractEditor({ customerId, line, defaultYear, onClose }: { customerId
   const remove = () =>
     start(async () => {
       if (!line || !confirm(`Delete ${line.year} ${AGREEMENT_LABELS[line.agreement]}? This is recorded in the activity log.`)) return;
-      const r = await deleteContractLineAction({ id: line.id, version: line.version });
-      if (r.error) return setError(r.error);
+      const r = await deleteContractLineAction({ id: line.id, version: version ?? line.version });
+      if (r.error) {
+        setError({ text: r.error, stale: r.stale });
+        if (r.stale) router.refresh();
+        return;
+      }
       router.refresh();
       onClose();
     });
@@ -332,7 +365,16 @@ function ContractEditor({ customerId, line, defaultYear, onClose }: { customerId
         <label className="flex items-center gap-2 self-end pb-2 text-sm"><input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} /> Checked</label>
         <label className={cn(field, "col-span-2")}><span className={lbl}>Notes</span><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
       </div>
-      {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="mt-3 text-sm text-destructive">
+          {error.text}
+          {error.stale && line && (
+            <Button size="sm" variant="outline" className="ml-2 h-7" disabled={pending} onClick={reloadLatest}>
+              Reload latest
+            </Button>
+          )}
+        </p>
+      )}
       <div className="mt-4 flex items-center justify-between">
         {line ? <Button variant="ghost" className="text-destructive" disabled={pending} onClick={remove}>Delete</Button> : <span />}
         <div className="flex gap-2">
@@ -432,7 +474,7 @@ function ProposalsTab({ data }: { data: CustomerDetail }) {
           <span className="text-sm tabular-nums">{fmtMoney(p.total)}</span>
           <span className="text-sm text-muted-foreground">{p.agreements.map((a) => AGREEMENT_LABELS[a]).join(", ")}</span>
           <span className="ml-auto text-xs text-muted-foreground">
-            {p.signedDate ? `Signed ${fmtDate(p.signedDate)}` : p.sentDate ? `Sent ${fmtDate(p.sentDate)}` : p.closedDate ? `Closed ${fmtDate(p.closedDate)}` : `Created ${fmtDate(ymdEastern(p.createdAt))}`}
+            {p.signedDate ? `Signed ${fmtDate(p.signedDate)}` : p.sentDate && p.status !== "DRAFT" ? `Sent ${fmtDate(p.sentDate)}` : p.closedDate ? `Closed ${fmtDate(p.closedDate)}` : `Created ${fmtDate(ymdEastern(p.createdAt))}`}
           </span>
         </li>
       ))}

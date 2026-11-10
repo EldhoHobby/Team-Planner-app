@@ -30,7 +30,7 @@ const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
-  TODO: "Todo",
+  TODO: "To Do",
   IN_PROGRESS: "In Progress",
   BLOCKED: "Blocked",
   DONE: "Done",
@@ -237,9 +237,19 @@ function TaskForm({
   );
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
-  const availableAssignees = teamMembers.filter(
+  const departmentMembers = teamMembers.filter(
     (m) => m.teamId === selectedProject?.teamId,
   );
+  // Keep existing assignees from OTHER departments visible (and ticked) —
+  // saving rewrites assignments from these checkboxes, so a hidden assignee
+  // would otherwise be silently dropped.
+  const outsideAssignees = (initialTask?.assignees ?? [])
+    .filter((a) => !departmentMembers.some((m) => m.userId === a.id))
+    .map((a) => ({ userId: a.id, name: a.name, email: a.email, outside: true }));
+  const availableAssignees = [
+    ...departmentMembers.map((m) => ({ userId: m.userId, name: m.name, email: m.email, outside: false })),
+    ...outsideAssignees,
+  ];
   const currentAssigneeIds = new Set(
     initialTask?.assignees.map((a) => a.id) ?? [],
   );
@@ -307,7 +317,7 @@ function TaskForm({
               className={selectClass}
               defaultValue={initialTask?.status ?? "TODO"}
             >
-              <option value="TODO">Todo</option>
+              <option value="TODO">To Do</option>
               <option value="IN_PROGRESS">In Progress</option>
               <option value="BLOCKED">Blocked</option>
               <option value="DONE">Done</option>
@@ -423,6 +433,11 @@ function TaskForm({
                     {m.name && (
                       <span className="ml-1 text-muted-foreground">
                         ({m.email})
+                      </span>
+                    )}
+                    {m.outside && (
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        · other department
                       </span>
                     )}
                   </span>
@@ -642,7 +657,7 @@ function FilterBar({
         className={filterSelect}
       >
         <option value="">All statuses</option>
-        <option value="TODO">Todo</option>
+        <option value="TODO">To Do</option>
         <option value="IN_PROGRESS">In Progress</option>
         <option value="BLOCKED">Blocked</option>
         <option value="DONE">Done</option>
@@ -698,16 +713,19 @@ export function TasksClient({
   teams,
   teamMembers,
   currentUserId,
+  initialProjectId = "",
 }: {
   tasks: TaskRow[];
   projects: ProjectOption[];
   teams: { id: string; name: string }[];
   teamMembers: TeamMember[];
   currentUserId: string;
+  /** From /tasks?project=<id> (validated server-side); "" = all projects. */
+  initialProjectId?: string;
 }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
-  const [projectFilter, setProjectFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState(initialProjectId);
   const [originFilter, setOriginFilter] = useState("");
   const [mine, setMine] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);

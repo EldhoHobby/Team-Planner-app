@@ -8,11 +8,18 @@ import { TasksClient } from "./tasks-client";
 import type { TaskRow, ProjectOption, TeamMember } from "./types";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Tasks" };
 
-export default async function TasksPage() {
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ project?: string | string[] }>;
+}) {
   const user = await requireAuth();
   const { scope } = await requireScope();
   await recordPageView(scope, "Tasks");
+  const params = await searchParams;
+  const projectParam = Array.isArray(params.project) ? params.project[0] : params.project;
 
   const teamWhere = scope.ctx.isOrgAdmin
     ? { orgId: scope.ctx.orgId }
@@ -72,6 +79,11 @@ export default async function TasksPage() {
     email: tm.user.email ?? tm.user.username,
   }));
 
+  // Deep link from the Projects page (/tasks?project=<id>); an id that is not
+  // one of the caller's projects is ignored.
+  const initialProjectId =
+    projectParam && projectOptions.some((p) => p.id === projectParam) ? projectParam : "";
+
   return (
     <TasksClient
       tasks={taskRows}
@@ -79,6 +91,7 @@ export default async function TasksPage() {
       teams={teams}
       teamMembers={members}
       currentUserId={user.id}
+      initialProjectId={initialProjectId}
     />
   );
 }

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Team Planner",
+  title: { default: "Team Planner", template: "%s · Team Planner" },
   description: "Self-hosted team planning",
 };
 

@@ -1,6 +1,7 @@
 "use server";
 
-import { requireUser } from "@/lib/auth/current-user";
+import { UnauthorizedError } from "@/lib/auth/current-user";
+import { getSessionActor } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/client";
 
 /**
@@ -10,6 +11,10 @@ import { prisma } from "@/lib/db/client";
  */
 export async function setThemeAction(theme: "light" | "dark"): Promise<void> {
   if (theme !== "light" && theme !== "dark") return;
-  const user = await requireUser();
-  await prisma.user.update({ where: { id: user.id }, data: { theme } });
+  const actor = await getSessionActor();
+  if (!actor) throw new UnauthorizedError();
+  // "View as": the toggle still switches this browser, but never rewrites the
+  // impersonated person's saved preference.
+  if (actor.impersonating) return;
+  await prisma.user.update({ where: { id: actor.user.id }, data: { theme } });
 }

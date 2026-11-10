@@ -43,12 +43,19 @@ const UpdateSchema = z.object({
   title: z.string().min(1, "Title is required").max(200),
   status: z.enum(STATUSES),
   priority: z.enum(PRIORITIES),
-  description: z.string().max(2000).optional(),
+  // null = the field was emptied in the form → cleared in the DB.
+  description: z.string().max(2000).nullable(),
   dueDate: z.string().optional(),
-  estimateHrs: z.coerce.number().positive().optional(),
+  estimateHrs: z.coerce.number().positive().nullable(),
   assigneeIds: z.array(z.string()).default([]),
-  location: z.string().max(200).optional(),
+  location: z.string().max(200).nullable(),
 });
+
+/** A form text value, or null when blank (so clearing a field clears it). */
+const blankToNull = (v: FormDataEntryValue | null): string | null => {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s ? s : null;
+};
 
 export async function createTaskAction(
   _prev: TaskFormState,
@@ -95,11 +102,11 @@ export async function updateTaskAction(
     title: formData.get("title"),
     status: formData.get("status"),
     priority: formData.get("priority"),
-    description: formData.get("description") || undefined,
+    description: blankToNull(formData.get("description")),
     dueDate: formData.get("dueDate") || undefined,
-    estimateHrs: formData.get("estimateHrs") || undefined,
+    estimateHrs: blankToNull(formData.get("estimateHrs")),
     assigneeIds: formData.getAll("assigneeIds"),
-    location: formData.get("location") || undefined,
+    location: blankToNull(formData.get("location")),
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
@@ -244,20 +251,52 @@ export async function updateJobAction(input: {
   }
 }
 
+// A real calendar day as YYYY-MM-DD (rejects "2026-02-31" and other junk).
+const YmdSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Enter a valid date.")
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00.000Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, "Enter a valid date.");
+
+const RescheduleJobSchema = z.object({
+  jobId: z.string().min(1),
+  startDate: YmdSchema.nullable().optional(),
+  // Same 0..60 bound as create/update (0 = "days TBD").
+  durationDays: z
+    .number({ invalid_type_error: "Duration must be a whole number of days." })
+    .int("Duration must be a whole number of days.")
+    .min(0, "Duration must be between 0 and 60 days.")
+    .max(60, "Duration must be between 0 and 60 days.")
+    .nullable()
+    .optional(),
+  technicianId: z.string().min(1).nullable().optional(),
+  jobStatus: z.enum(JOB_STATUSES, { errorMap: () => ({ message: "Invalid status." }) }).optional(),
+});
+
 export async function rescheduleJobAction(input: {
   jobId: string;
   startDate?: string | null;
   durationDays?: number | null;
   technicianId?: string | null;
+  /** Restore an exact status (the board's Undo). */
+  jobStatus?: (typeof JOB_STATUSES)[number];
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
+  const parsed = RescheduleJobSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  const data = parsed.data;
   try {
-    await rescheduleJob(scope, input.jobId, {
-      ...(input.startDate !== undefined
-        ? { startDate: input.startDate ? new Date(input.startDate) : null }
+    await rescheduleJob(scope, data.jobId, {
+      ...(data.startDate !== undefined
+        ? { startDate: data.startDate ? new Date(`${data.startDate}T00:00:00.000Z`) : null }
         : {}),
-      ...(input.durationDays !== undefined ? { durationDays: input.durationDays } : {}),
-      ...(input.technicianId !== undefined ? { technicianId: input.technicianId } : {}),
+      ...(data.durationDays !== undefined ? { durationDays: data.durationDays } : {}),
+      ...(data.technicianId !== undefined ? { technicianId: data.technicianId } : {}),
+      ...(data.jobStatus !== undefined ? { jobStatus: data.jobStatus } : {}),
     });
     revalidatePath("/schedule");
     return { success: true };
@@ -267,14 +306,22 @@ export async function rescheduleJobAction(input: {
   }
 }
 
+const SetJobStatusSchema = z.object({
+  jobId: z.string().min(1),
+  jobStatus: z.enum(JOB_STATUSES, { errorMap: () => ({ message: "Invalid status." }) }),
+});
+
 export async function setJobStatusAction(input: {
   jobId: string;
   jobStatus: (typeof JOB_STATUSES)[number];
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
-  if (!JOB_STATUSES.includes(input.jobStatus)) return { error: "Invalid status." };
+  const parsed = SetJobStatusSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid status." };
+  }
   try {
-    await setJobStatus(scope, input.jobId, input.jobStatus);
+    await setJobStatus(scope, parsed.data.jobId, parsed.data.jobStatus);
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {

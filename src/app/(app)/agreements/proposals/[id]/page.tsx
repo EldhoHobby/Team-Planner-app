@@ -8,6 +8,7 @@ import { todayYmd } from "@/lib/tz";
 import { ProposalEditor } from "./proposal-editor";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Proposal" };
 
 /** Filter params of the Proposals list that `?back=` may carry (see proposals-client.tsx). */
 const LIST_PARAMS = ["q", "status", "month", "customer", "sort"] as const;

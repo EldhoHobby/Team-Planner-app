@@ -29,6 +29,10 @@ const db = vi.hoisted(() => {
     techTaskNote: {
       create: async ({ data }: { data: Row }) => { state.notes.push(data); },
     },
+    // managedMemberIds(): the caller manages nobody in these tests.
+    teamMembership: { findMany: async () => [] },
+    managerLink: { findMany: async () => [] },
+    team: { findMany: async () => [] },
     $transaction: async (fn: (tx: unknown) => unknown) => fn(client),
   };
   return client;
@@ -105,5 +109,32 @@ describe("updateTechTask optimistic locking (template)", () => {
   it("no-op saves record no history", async () => {
     await updateTechTask(scope, "t1", { title: "Fix pump", expectedVersion: 1 });
     expect(db.state.history).toEqual([]);
+  });
+
+  it("rejects a blank title and writes nothing", async () => {
+    await expect(updateTechTask(scope, "t1", { title: "   ", expectedVersion: 1 })).rejects.toThrow(/blank/);
+    expect(db.state.task!.title).toBe("Fix pump");
+    expect(db.state.task!.version).toBe(1);
+  });
+});
+
+describe("updateTechTask edit permission", () => {
+  const scopeFor = (userId: string, isOrgAdmin = false) =>
+    ({ ctx: { userId, orgId: "org1", teamIds: [], isOrgAdmin } }) as unknown as TenantScope;
+
+  it("refuses someone who is not the owner, a manager, an admin or the assigner", async () => {
+    await expect(updateTechTask(scopeFor("u2"), "t1", { priority: 1 })).rejects.toThrow();
+    expect(db.state.task!.version).toBe(1);
+  });
+
+  it("lets an org admin edit anyone's task", async () => {
+    const t = await updateTechTask(scopeFor("admin", true), "t1", { priority: 1 });
+    expect(t.priority).toBe(1);
+  });
+
+  it("lets the person who assigned the task edit it", async () => {
+    db.state.task = { ...db.state.task!, assignedById: "u3" };
+    const t = await updateTechTask(scopeFor("u3"), "t1", { priority: 2 });
+    expect(t.priority).toBe(2);
   });
 });

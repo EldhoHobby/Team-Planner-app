@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, useTransition, type FormEvent, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Plus, X, Trash2, ChevronDown, ChevronRight, CalendarClock, AlertTriangle, List, LayoutGrid, MessageSquare } from "lucide-react";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
-import { fmtEastern, todayUtcMs } from "@/lib/tz";
+import { daysFromToday, fmtEastern } from "@/lib/tz";
 import {
   createTechTaskAction,
   updateTechTaskAction,
@@ -70,7 +70,8 @@ const CELL_INPUT =
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, {
+  // Fixed locale + UTC: stored dates are UTC-midnight date-only values.
+  return new Date(iso).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -79,17 +80,20 @@ function fmtDate(iso: string | null): string {
 }
 
 export type DueStatus = "overdue" | "soon" | "none";
+/** Due-status filter driven by the header chips (null = show everything). */
+export type DueFilter = "overdue" | "soon" | null;
 /** Compare calendar days: overdue if target < today, "soon" if within 2 days.
  *  "Today" is the Eastern date, so the server and browser renders agree. */
 export function dueStatus(targetIso: string | null, state: TechTaskState): DueStatus {
   if (!targetIso || state === "DONE") return "none";
-  const todayUTC = todayUtcMs();
-  const t = new Date(targetIso);
-  const targetUTC = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
-  const diffDays = Math.round((targetUTC - todayUTC) / 86_400_000);
+  const diffDays = daysFromToday(targetIso);
   if (diffDays < 0) return "overdue";
   if (diffDays <= 2) return "soon";
   return "none";
+}
+/** True when a task passes the active due filter. */
+export function matchesDueFilter(t: TechTaskRow, filter: DueFilter): boolean {
+  return !filter || dueStatus(t.targetDate, t.state) === filter;
 }
 
 // ── Column sorting (per person section) ──
@@ -119,12 +123,15 @@ function SortHeader({
   sort,
   onSort,
   className = "",
+  fullLabel,
 }: {
   label: string;
   k: SortKey;
   sort: SortSpec;
   onSort: (s: SortSpec) => void;
   className?: string;
+  /** Spelled-out column name for the tooltip / screen readers (e.g. "Priority (1 = highest)"). */
+  fullLabel?: string;
 }) {
   const active = sort.key === k;
   const next = () =>
@@ -134,7 +141,8 @@ function SortHeader({
       <button
         onClick={next}
         className={`inline-flex items-center gap-0.5 hover:text-foreground ${active ? "font-semibold text-foreground" : ""}`}
-        title="Sort (click again to reverse; third click resets)"
+        title={`${fullLabel ? `${fullLabel} — sort` : "Sort"} (click again to reverse; third click resets)`}
+        aria-label={fullLabel ? `Sort by ${fullLabel}` : undefined}
       >
         {label}
         {active ? (sort.dir === 1 ? "▲" : "▼") : null}
@@ -208,13 +216,13 @@ export function DashboardClient({
 
   const hasTeam = data.groups.length > 1;
 
-  // Due summary across everyone's open items.
+  // Due summary across everyone's open tasks. The chips toggle a filter that
+  // applies to both the List and the Board.
   const allOpen = data.groups.flatMap((g) => g.open);
   const overdueCount = allOpen.filter((t) => dueStatus(t.targetDate, t.state) === "overdue").length;
   const soonCount = allOpen.filter((t) => dueStatus(t.targetDate, t.state) === "soon").length;
-  const scrollToDue = (kind: "overdue" | "soon") => {
-    document.querySelector(`[data-due="${kind}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  };
+  const [dueFilter, setDueFilter] = useState<DueFilter>(null);
+  const toggleDue = (kind: "overdue" | "soon") => setDueFilter((f) => (f === kind ? null : kind));
 
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-4">
@@ -222,7 +230,8 @@ export function DashboardClient({
         <div>
           <h1 className="text-xl font-semibold">Dashboard</h1>
           <p className="text-sm text-muted-foreground">
-            Open items{hasTeam ? " for you and your team" : ""} — edit any cell inline.
+            Open tasks{hasTeam ? " for you and your team" : ""} — change priority, target date and state
+            right in the list; click a task to edit its details and discuss it.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -247,22 +256,44 @@ export function DashboardClient({
               <LayoutGrid className="h-3.5 w-3.5" /> Board
             </button>
           </div>
-          {overdueCount > 0 ? (
+          {overdueCount > 0 || dueFilter === "overdue" ? (
             <button
-              onClick={() => scrollToDue("overdue")}
-              className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300"
-              title="Jump to the first overdue item"
+              type="button"
+              onClick={() => toggleDue("overdue")}
+              aria-pressed={dueFilter === "overdue"}
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                dueFilter === "overdue"
+                  ? "bg-red-600 text-white ring-2 ring-red-300 hover:bg-red-700 dark:ring-red-800"
+                  : "bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300"
+              }`}
+              title={dueFilter === "overdue" ? "Showing only overdue tasks — click to show all" : "Show only overdue tasks"}
             >
               <AlertTriangle className="h-3.5 w-3.5" /> {overdueCount} overdue
             </button>
           ) : null}
-          {soonCount > 0 ? (
+          {soonCount > 0 || dueFilter === "soon" ? (
             <button
-              onClick={() => scrollToDue("soon")}
-              className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300"
-              title="Jump to the first item due soon"
+              type="button"
+              onClick={() => toggleDue("soon")}
+              aria-pressed={dueFilter === "soon"}
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                dueFilter === "soon"
+                  ? "bg-amber-500 text-white ring-2 ring-amber-300 hover:bg-amber-600 dark:ring-amber-800"
+                  : "bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300"
+              }`}
+              title={dueFilter === "soon" ? "Showing only tasks due soon — click to show all" : "Show only tasks due soon"}
             >
               <CalendarClock className="h-3.5 w-3.5" /> {soonCount} due soon
+            </button>
+          ) : null}
+          {dueFilter ? (
+            <button
+              type="button"
+              onClick={() => setDueFilter(null)}
+              className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              title="Clear the filter and show all tasks"
+            >
+              <X className="h-3 w-3" /> Show all
             </button>
           ) : null}
           {view === "list" ? (
@@ -278,16 +309,33 @@ export function DashboardClient({
           ) : null}
           <Button size="sm" onClick={() => openNew(currentUserId)}>
             <Plus className="mr-1.5 h-4 w-4" />
-            New item
+            New task
           </Button>
         </div>
       </div>
 
+      {dueFilter ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Showing only tasks {dueFilter === "overdue" ? "that are overdue" : "due in the next 2 days"}.{" "}
+          <button type="button" onClick={() => setDueFilter(null)} className="font-medium text-foreground underline">
+            Show all tasks
+          </button>
+        </p>
+      ) : null}
+
       {view === "board" ? (
-        <KanbanBoard groups={data.groups} onOpenTask={setTicketId} />
+        <KanbanBoard groups={data.groups} onOpenTask={setTicketId} dueFilter={dueFilter} />
       ) : (
         data.groups.map((g) => (
-          <OwnerSection key={g.owner.id} group={g} showDone={showDone} onAdd={openNew} refresh={refresh} onOpenTask={setTicketId} />
+          <OwnerSection
+            key={g.owner.id}
+            group={g}
+            showDone={showDone}
+            dueFilter={dueFilter}
+            onAdd={openNew}
+            refresh={refresh}
+            onOpenTask={setTicketId}
+          />
         ))
       )}
 
@@ -298,7 +346,9 @@ export function DashboardClient({
 
       {createOpen ? (
         <CreateModal
-          owners={data.owners}
+          // Anyone may create a task for any active person in the org.
+          owners={data.people}
+          currentUserId={currentUserId}
           defaultOwner={createOwner}
           onClose={() => setCreateOpen(false)}
           onSaved={() => {
@@ -325,12 +375,14 @@ export function DashboardClient({
 function OwnerSection({
   group,
   showDone,
+  dueFilter,
   onAdd,
   refresh,
   onOpenTask,
 }: {
   group: OwnerGroup;
   showDone: boolean;
+  dueFilter: DueFilter;
   onAdd: (ownerId: string) => void;
   refresh: () => void;
   onOpenTask: (taskId: string) => void;
@@ -358,7 +410,7 @@ function OwnerSection({
 
   // Sortable columns (default: server order = priority → target date).
   const [sort, setSort] = useState<SortSpec>({ key: null, dir: 1 });
-  const sortedOpen = sortTasks(g.open, sort);
+  const sortedOpen = sortTasks(g.open.filter((t) => matchesDueFilter(t, dueFilter)), sort);
 
   // Per-person health chips — a manager can scan team state without expanding.
   const overdue = g.open.filter((t) => dueStatus(t.targetDate, t.state) === "overdue").length;
@@ -404,7 +456,12 @@ function OwnerSection({
             ) : null}
           </span>
         </button>
-        <Button variant="ghost" size="sm" onClick={() => onAdd(g.owner.id)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onAdd(g.owner.id)}
+          aria-label={`Add a task for ${g.owner.isSelf ? "me" : g.owner.name ?? g.owner.email ?? "this person"}`}
+        >
           <Plus className="mr-1 h-3.5 w-3.5" />
           Add
         </Button>
@@ -412,16 +469,32 @@ function OwnerSection({
 
       {collapsed ? null : (
         <>
-          {g.open.length === 0 ? (
-            <p className="px-4 py-4 text-center text-sm text-muted-foreground">Nothing open.</p>
+          {g.open.length === 0 && g.owner.isSelf && !dueFilter ? (
+            // First-run / all-clear empty state for the viewer's own section.
+            <div className="space-y-3 px-4 py-6 text-center">
+              <p className="mx-auto max-w-md text-sm text-muted-foreground">
+                This is your list of open tasks. Tasks show up here when you add them yourself or
+                when someone assigns one to you.
+              </p>
+              <Button size="sm" onClick={() => onAdd(g.owner.id)}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                {g.completedWeeks.length ? "Add a task" : "Add your first task"}
+              </Button>
+            </div>
+          ) : g.open.length === 0 ? (
+            <p className="px-4 py-4 text-center text-sm text-muted-foreground">No open tasks.</p>
+          ) : sortedOpen.length === 0 ? (
+            <p className="px-4 py-4 text-center text-sm text-muted-foreground">
+              No {dueFilter === "overdue" ? "overdue tasks" : "tasks due soon"} here.
+            </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="border-b bg-muted/20 text-xs text-muted-foreground">
-                    <SortHeader label="Pri" k="priority" sort={sort} onSort={setSort} className="w-16 text-center" />
+                    <SortHeader label="Pri" fullLabel="Priority (1 = highest)" k="priority" sort={sort} onSort={setSort} className="w-16 text-center" />
                     <SortHeader label="Task" k="title" sort={sort} onSort={setSort} />
-                    <SortHeader label="Target" k="target" sort={sort} onSort={setSort} className="w-40" />
+                    <SortHeader label="Target date" k="target" sort={sort} onSort={setSort} className="w-40" />
                     <SortHeader label="State" k="state" sort={sort} onSort={setSort} className="w-32" />
                     <th className="w-9 px-1 py-1.5"></th>
                   </tr>
@@ -437,8 +510,8 @@ function OwnerSection({
 
           {g.jobs.length > 0 ? <JobList title="Scheduled jobs" jobs={g.jobs} /> : null}
 
-          {showDone && g.completedWeeks.length > 0 ? (
-            <CompletedWeeks weeks={g.completedWeeks} refresh={refresh} />
+          {showDone && !dueFilter && g.completedWeeks.length > 0 ? (
+            <CompletedWeeks weeks={g.completedWeeks} refresh={refresh} onOpenTask={onOpenTask} />
           ) : null}
         </>
       )}
@@ -448,32 +521,57 @@ function OwnerSection({
 
 function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: () => void; onOpen: () => void }) {
   const [pending, startTransition] = useTransition();
+  const taskTarget = task.targetDate ? task.targetDate.slice(0, 10) : "";
   const [priority, setPriority] = useState(String(task.priority));
-  const [target, setTarget] = useState(task.targetDate ? task.targetDate.slice(0, 10) : "");
+  const [target, setTarget] = useState(taskTarget);
+  const [error, setError] = useState<string | null>(null);
 
-  const save = (patch: Parameters<typeof updateTechTaskAction>[0]) =>
+  // Re-sync with the server when the task changes elsewhere (the ticket, the
+  // board, another person) — but never while the user is typing in the cell.
+  const priorityFocused = useRef(false);
+  useEffect(() => {
+    if (!priorityFocused.current) setPriority(String(task.priority));
+  }, [task.priority]);
+  useEffect(() => {
+    setTarget(taskTarget);
+  }, [taskTarget]);
+
+  const save = (patch: Parameters<typeof updateTechTaskAction>[0], revert?: () => void) =>
     startTransition(async () => {
-      await updateTechTaskAction(patch);
+      const res = await updateTechTaskAction(patch);
+      if (res.error) {
+        setError(res.error);
+        revert?.();
+      } else {
+        setError(null);
+      }
       refresh();
     });
 
   const commitPriority = () => {
-    const n = Number(priority) || task.priority;
-    if (n !== task.priority) save({ id: task.id, priority: n });
+    priorityFocused.current = false;
+    const n = Number(priority);
+    if (!Number.isInteger(n) || n < 1) {
+      setPriority(String(task.priority));
+      return;
+    }
+    if (n !== task.priority) save({ id: task.id, priority: n }, () => setPriority(String(task.priority)));
   };
   const commitTarget = (v: string) => {
     setTarget(v);
-    save({ id: task.id, targetDate: v || null });
+    save({ id: task.id, targetDate: v || null }, () => setTarget(taskTarget));
   };
   const changeState = (state: TechTaskState) =>
     startTransition(async () => {
-      await setTechTaskStateAction({ id: task.id, state });
+      const res = await setTechTaskStateAction({ id: task.id, state });
+      setError(res.error ?? null);
       refresh();
     });
   const remove = () =>
     startTransition(async () => {
       if (!confirm(`Delete "${task.title}"?`)) return;
-      await deleteTechTaskAction({ id: task.id });
+      const res = await deleteTechTaskAction({ id: task.id });
+      setError(res.error ?? null);
       refresh();
     });
 
@@ -483,7 +581,6 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
 
   return (
     <tr
-      data-due={due !== "none" ? due : undefined}
       className={`group border-b align-top last:border-0 hover:bg-muted/20 ${STATE_ROW_TINT[task.state]} ${pending ? "opacity-60" : ""}`}
     >
       <td className={`px-1 py-1.5 ${barClass}`}>
@@ -491,19 +588,23 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
           type="number"
           min={1}
           value={priority}
+          onFocus={() => {
+            priorityFocused.current = true;
+          }}
           onChange={(e) => setPriority(e.target.value)}
           onBlur={commitPriority}
           onKeyDown={editKeys(() => setPriority(String(task.priority)))}
           // Spinner arrows hidden so up to 3 digits stay fully visible.
           className={`${CELL_INPUT} min-w-14 text-center tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
-          aria-label="Priority"
+          aria-label="Priority (1 = highest)"
+          title="Priority (1 = highest)"
         />
       </td>
       <td className="px-1 py-1.5">
         <button
           type="button"
           onClick={onOpen}
-          title="Open ticket — details, comments & history"
+          title="Open task — details, comments & history"
           className="w-full rounded px-1.5 py-1 text-left text-sm font-medium hover:bg-muted/40 hover:underline"
         >
           {task.title}
@@ -526,6 +627,11 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
         {task.notes ? (
           <p className="whitespace-pre-wrap break-words px-1.5 pt-0.5 text-xs text-muted-foreground">
             {task.notes}
+          </p>
+        ) : null}
+        {error ? (
+          <p role="alert" className="px-1.5 pt-0.5 text-xs text-destructive">
+            {error}
           </p>
         ) : null}
       </td>
@@ -560,8 +666,8 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
         <button
           onClick={remove}
           className="rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100"
-          title="Delete item"
-          aria-label="Delete item"
+          title="Delete task"
+          aria-label={`Delete task "${task.title}"`}
         >
           <Trash2 className="h-4 w-4" />
         </button>
@@ -570,7 +676,15 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
   );
 }
 
-function CompletedWeeks({ weeks, refresh }: { weeks: OwnerGroup["completedWeeks"]; refresh: () => void }) {
+function CompletedWeeks({
+  weeks,
+  refresh,
+  onOpenTask,
+}: {
+  weeks: OwnerGroup["completedWeeks"];
+  refresh: () => void;
+  onOpenTask: (taskId: string) => void;
+}) {
   const [collapsed, setCollapsed] = useState(false);
   return (
     <div className="border-t bg-muted/10">
@@ -589,20 +703,7 @@ function CompletedWeeks({ weeks, refresh }: { weeks: OwnerGroup["completedWeeks"
               </p>
               <ul className="divide-y">
                 {w.tasks.map((t) => (
-                  <li key={t.id} className="flex items-center gap-2 py-1.5 text-sm">
-                    <input
-                      type="checkbox"
-                      checked
-                      onChange={() => startReopen(t.id, refresh)}
-                      className="h-4 w-4 accent-primary"
-                      title="Reopen"
-                    />
-                    <span className="tabular-nums text-xs text-muted-foreground">#{t.priority}</span>
-                    <span className="flex-1 text-muted-foreground line-through">{t.title}</span>
-                    {t.completedAt ? (
-                      <span className="text-xs text-muted-foreground">{t.completedAt ? fmtEastern(t.completedAt, { month: "short", day: "numeric", year: "numeric" }) : "—"}</span>
-                    ) : null}
-                  </li>
+                  <CompletedRow key={t.id} task={t} refresh={refresh} onOpen={() => onOpenTask(t.id)} />
                 ))}
               </ul>
             </div>
@@ -612,10 +713,53 @@ function CompletedWeeks({ weeks, refresh }: { weeks: OwnerGroup["completedWeeks"
   );
 }
 
-// Reopen a completed item (checkbox in the completed list). Kept outside the
-// component so it can be called from the map without a per-row transition hook.
-function startReopen(id: string, refresh: () => void) {
-  void setTechTaskStateAction({ id, state: "TODO" }).then(refresh);
+// One completed task: the title opens the ticket; the labelled checkbox reopens it.
+function CompletedRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: () => void; onOpen: () => void }) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const reopen = () =>
+    startTransition(async () => {
+      const res = await setTechTaskStateAction({ id: task.id, state: "TODO" });
+      setError(res.error ?? null);
+      refresh();
+    });
+
+  return (
+    <li className={`py-1.5 text-sm ${pending ? "opacity-60" : ""}`}>
+      <div className="flex items-center gap-2">
+        <label className="flex shrink-0 cursor-pointer items-center gap-1 text-xs text-muted-foreground" title="Reopen this task">
+          <input
+            type="checkbox"
+            checked={!pending}
+            disabled={pending}
+            onChange={reopen}
+            className="h-4 w-4 accent-primary"
+            aria-label={`Reopen "${task.title}"`}
+          />
+          {pending ? "Reopening…" : "Reopen"}
+        </label>
+        <span className="tabular-nums text-xs text-muted-foreground" title="Priority (1 = highest)">#{task.priority}</span>
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Open task — details, comments & history"
+          className="flex-1 rounded px-1 text-left text-muted-foreground line-through hover:bg-muted/40 hover:text-foreground"
+        >
+          {task.title}
+        </button>
+        {task.completedAt ? (
+          <span className="text-xs text-muted-foreground">
+            {fmtEastern(task.completedAt, { month: "short", day: "numeric", year: "numeric" })}
+          </span>
+        ) : null}
+      </div>
+      {error ? (
+        <p role="alert" className="pl-6 pt-0.5 text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </li>
+  );
 }
 
 function JobList({ title, jobs }: { title: string; jobs: JobRow[] }) {
@@ -716,11 +860,13 @@ function JobPoolSection({ pool }: { pool: JobRow[] }) {
 
 function CreateModal({
   owners,
+  currentUserId,
   defaultOwner,
   onClose,
   onSaved,
 }: {
   owners: OwnerLite[];
+  currentUserId: string;
   defaultOwner: string;
   onClose: () => void;
   onSaved: () => void;
@@ -734,8 +880,32 @@ function CreateModal({
   const [location, setLocation] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const uid = useId();
+  const fid = (name: string) => `${uid}-${name}`;
 
-  const save = () =>
+  // Me first, then everyone else (server order: by name).
+  const me = owners.find((o) => o.id === currentUserId);
+  const ordered = me ? [me, ...owners.filter((o) => o.id !== currentUserId)] : owners;
+
+  // Escape / backdrop click: never silently discard what was typed.
+  const dirty = Boolean(title.trim() || notes.trim() || location.trim() || targetDate);
+  const requestClose = () => {
+    if (dirty && !confirm("Discard this new task?")) return;
+    onClose();
+  };
+  const requestCloseRef = useRef(requestClose);
+  requestCloseRef.current = requestClose;
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") requestCloseRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    if (pending || !title.trim()) return;
     startTransition(async () => {
       setError(null);
       const res = await createTechTaskAction({
@@ -750,39 +920,52 @@ function CreateModal({
       if (res.error) setError(res.error);
       else onSaved();
     });
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
-      <div className="w-full max-w-lg rounded-xl border bg-background shadow-lg" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={requestClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={fid("heading")}
+        className="w-full max-w-lg rounded-xl border bg-background shadow-lg"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between border-b px-5 py-3">
-          <h2 className="text-base font-semibold">New item</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <h2 id={fid("heading")} className="text-base font-semibold">New task</h2>
+          <button type="button" onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="space-y-4 p-5">
+        <form onSubmit={save} className="space-y-4 p-5">
           <div className="space-y-2">
-            <Label>For</Label>
-            <select className={SELECT_CLASS} value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
-              {owners.map((o) => (
+            <Label htmlFor={fid("owner")}>For</Label>
+            <select id={fid("owner")} className={SELECT_CLASS} value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+              {ordered.map((o) => (
                 <option key={o.id} value={o.id}>
-                  {o.id === defaultOwner ? `${o.name ?? o.email} (me)` : o.name ?? o.email}
+                  {o.id === currentUserId ? `${o.name ?? o.email} (me)` : o.name ?? o.email}
                 </option>
               ))}
             </select>
           </div>
           <div className="space-y-2">
-            <Label>Task</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing?" autoFocus />
+            <Label htmlFor={fid("title")}>Task</Label>
+            <Input id={fid("title")} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing?" autoFocus />
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-2">
-              <Label>Priority</Label>
-              <Input type="number" min={1} value={priority} onChange={(e) => setPriority(Number(e.target.value) || 1)} />
+              <Label htmlFor={fid("priority")}>Priority (1 = highest)</Label>
+              <Input
+                id={fid("priority")}
+                type="number"
+                min={1}
+                value={priority}
+                onChange={(e) => setPriority(Number(e.target.value) || 1)}
+              />
             </div>
             <div className="space-y-2">
-              <Label>State</Label>
-              <select className={SELECT_CLASS} value={state} onChange={(e) => setState(e.target.value as TechTaskState)}>
+              <Label htmlFor={fid("state")}>State</Label>
+              <select id={fid("state")} className={SELECT_CLASS} value={state} onChange={(e) => setState(e.target.value as TechTaskState)}>
                 {STATES.map((s) => (
                   <option key={s} value={s}>
                     {STATE_LABELS[s]}
@@ -791,35 +974,42 @@ function CreateModal({
               </select>
             </div>
             <div className="space-y-2">
-              <Label>Target</Label>
+              {/* DatePicker renders a button, not a labelable input. */}
+              <Label>Target date</Label>
               <DatePicker value={targetDate} onChange={setTargetDate} placeholder="Optional" />
             </div>
           </div>
           <div className="space-y-2">
-            <Label>
+            <Label htmlFor={fid("contact")}>
               Contact / other details <span className="font-normal text-muted-foreground">(optional)</span>
             </Label>
-            <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Site contact, phone, PO number…" />
+            <Input id={fid("contact")} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Site contact, phone, PO number…" />
           </div>
           <div className="space-y-2">
-            <Label>Notes</Label>
+            <Label htmlFor={fid("details")}>Details</Label>
             <textarea
+              id={fid("details")}
               rows={3}
               className="w-full rounded-md border border-input bg-transparent p-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
+              placeholder="What's this task about?"
             />
           </div>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
           <div className="flex items-center gap-2">
-            <Button onClick={save} disabled={pending || !title.trim()} className="flex-1">
-              {pending ? "Saving…" : "Create"}
+            <Button type="submit" disabled={pending || !title.trim()} className="flex-1">
+              {pending ? "Saving…" : "Create task"}
             </Button>
             <Button variant="outline" onClick={onClose} type="button">
               Cancel
             </Button>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );

@@ -175,7 +175,8 @@ export async function pruneAuditLog(): Promise<void> {
   try {
     const cutoff = new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
     await prisma.auditLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
-  } catch {
-    /* ignore — next run retries */
+  } catch (e) {
+    // Never throws — the next run retries — but leave a trace for the admin.
+    console.error("[audit] could not prune the audit log:", e);
   }
 }

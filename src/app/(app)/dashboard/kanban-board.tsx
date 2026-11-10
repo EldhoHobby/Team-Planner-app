@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, type DragEvent } from "react";
+import { useEffect, useState, useTransition, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CalendarClock, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 import { setTechTaskStateAction, updateTechTaskAction } from "./actions";
@@ -10,6 +10,8 @@ import {
   STATE_COLORS,
   STATE_LABELS,
   dueStatus,
+  matchesDueFilter,
+  type DueFilter,
 } from "./dashboard-client";
 import type { OwnerGroup, TechTaskRow, TechTaskState } from "@/lib/services/tech-tasks";
 
@@ -26,21 +28,29 @@ interface CardTask extends TechTaskRow {
 
 function fmtShort(iso: string | null): string {
   if (!iso) return "";
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 export function KanbanBoard({
   groups,
   onOpenTask,
+  dueFilter = null,
 }: {
   groups: OwnerGroup[];
   onOpenTask: (taskId: string) => void;
+  /** Header chip filter: show only overdue / due-soon cards. */
+  dueFilter?: DueFilter;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
-  // Optimistic overrides (state and/or owner), keyed by task id. Server refresh
-  // makes an override redundant (same values) rather than stale.
+  // Optimistic overrides (state and/or owner), keyed by task id. Dropped as
+  // soon as refreshed server data arrives, so a card can never stick in a
+  // column the server disagrees with.
   const [moves, setMoves] = useState<Record<string, { state: TechTaskState; ownerId: string }>>({});
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setMoves({});
+  }, [groups]);
   const [dragOver, setDragOver] = useState<string | null>(null); // `${ownerId}|${state}`
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -51,7 +61,7 @@ export function KanbanBoard({
       .flatMap((w) => w.tasks)
       .filter((t) => t.completedAt && new Date(t.completedAt).getTime() >= weekAgo)
       .map((t) => ({ ...t, isSelf: g.owner.isSelf }));
-    return [...open, ...doneRecent];
+    return [...open, ...doneRecent].filter((t) => matchesDueFilter(t, dueFilter));
   });
 
   const stateOf = (t: CardTask): TechTaskState => moves[t.id]?.state ?? t.state;
@@ -68,11 +78,15 @@ export function KanbanBoard({
     const sameOwner = ownerOf(card) === laneOwnerId;
     if (sameState && sameOwner) return;
     setMoves((m) => ({ ...m, [id]: { state, ownerId: laneOwnerId } })); // optimistic
+    setError(null);
     startTransition(async () => {
       const res = sameOwner
         ? await setTechTaskStateAction({ id, state })
         : await updateTechTaskAction({ id, state, ownerId: laneOwnerId }); // reassign + state
-      if (res?.error) setMoves((m) => { const rest = { ...m }; delete rest[id]; return rest; });
+      if (res?.error) {
+        setMoves((m) => { const rest = { ...m }; delete rest[id]; return rest; });
+        setError(`Couldn't move "${card.title}": ${res.error}`);
+      }
       router.refresh();
     });
   };
@@ -113,7 +127,7 @@ export function KanbanBoard({
               ))}
               {colCards.length === 0 ? (
                 <p className="px-1 pt-1.5 text-center text-xs text-muted-foreground">
-                  {state === "DONE" ? "Nothing this week." : "Drop cards here."}
+                  {dueFilter ? "No matching tasks." : state === "DONE" ? "Nothing this week." : "Drop cards here."}
                 </p>
               ) : null}
             </div>
@@ -123,13 +137,28 @@ export function KanbanBoard({
     </div>
   );
 
+  const errorBanner = error ? (
+    <p role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      <span className="flex-1">{error}</span>
+      <button type="button" onClick={() => setError(null)} className="text-xs underline">
+        Dismiss
+      </button>
+    </p>
+  ) : null;
+
   if (!swimlanes) {
     // Solo view — just the columns, no lane chrome.
-    return renderColumns(groups[0]?.owner.id ?? "");
+    return (
+      <div className="space-y-3">
+        {errorBanner}
+        {renderColumns(groups[0]?.owner.id ?? "")}
+      </div>
+    );
   }
 
   return (
     <div className="space-y-4">
+      {errorBanner}
       <p className="text-xs text-muted-foreground">
         Drag a card to another column to change its state — or into another person&apos;s lane to reassign it.
       </p>
@@ -181,14 +210,14 @@ function Card({ task, done, onOpen }: { task: CardTask; done: boolean; onOpen: (
       draggable
       onDragStart={(e) => e.dataTransfer.setData("text/plain", task.id)}
       onClick={onOpen}
-      title="Open ticket — details, comments & history (drag to move)"
+      title="Open task — details, comments & history (drag to move)"
       className={`cursor-grab rounded-md border bg-card p-2 text-sm shadow-sm hover:border-primary/40 active:cursor-grabbing ${edge} ${
         done ? "opacity-70" : ""
       }`}
     >
       <p className={`font-medium leading-snug ${done ? "text-muted-foreground line-through" : ""}`}>{task.title}</p>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span className="rounded bg-muted px-1 font-semibold tabular-nums" title="Priority">#{task.priority}</span>
+        <span className="rounded bg-muted px-1 font-semibold tabular-nums" title="Priority (1 = highest)">#{task.priority}</span>
         {task.origin !== "SELF" ? <span className="rounded-full bg-muted px-1.5 py-0.5">{ORIGIN_LABELS[task.origin]}</span> : null}
         {task.commentCount > 0 ? (
           <span className="inline-flex items-center gap-0.5 text-blue-700 dark:text-blue-300">

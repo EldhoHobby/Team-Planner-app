@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { isBootstrapped } from "@/lib/auth/bootstrap";
 import { SetupForm } from "./setup-form";
@@ -12,6 +13,7 @@ import {
 // First-run setup. Once the instance is bootstrapped this route is closed and
 // redirects to sign-in (registration is invite-only thereafter).
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Set up" };
 
 export default async function SetupPage() {
   if (await isBootstrapped()) {
@@ -24,8 +26,8 @@ export default async function SetupPage() {
         <CardHeader>
           <CardTitle className="text-xl">Welcome — let&apos;s set up Team Planner</CardTitle>
           <CardDescription>
-            Create your organization and the owner account. You can invite your
-            team once you&apos;re in.
+            Create your organization and the owner account. Add your people
+            under Settings → People once you&apos;re in.
           </CardDescription>
         </CardHeader>
         <CardContent>

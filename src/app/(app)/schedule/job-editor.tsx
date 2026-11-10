@@ -92,6 +92,9 @@ export function JobEditor({
   // early return) so hook order stays stable if the editor ever renders
   // without a job — a conditional useState would break the rules of hooks.
   const [closeError, setCloseError] = useState<string | null>(null);
+  // Last rejected save (validation, duplicate SO + title, server error…). Shown
+  // in the alert area; cleared by the next successful save or another job.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Controlled form state so edits stay consistent (the inputs reflect each other
   // immediately). Reset whenever a different job is opened.
@@ -132,6 +135,8 @@ export function JobEditor({
       setAskReason(false);
       setReason("");
       setNoteError(null);
+      setSaveError(null);
+      setCloseError(null);
       // Clear the PREVIOUS job's thread/history immediately (otherwise its
       // comments stay on screen — with live Edit/Delete — under the new job,
       // e.g. after Duplicate swaps the editor over), and ignore responses that
@@ -158,15 +163,49 @@ export function JobEditor({
   if (!job) return null;
 
   // Every field save funnels through here, so it's where we mark the session
-  // dirty (drives the "why did you change this?" prompt on close). Delete passes
-  // close=true and calls onClose() directly, so it never prompts.
-  const run = (fn: () => Promise<unknown>, close = false) =>
+  // dirty (drives the "why did you change this?" prompt on close). A rejected
+  // save shows its error, puts the field back to the saved value (`revert`) and
+  // does NOT count as a change.
+  const run = (fn: () => Promise<{ error?: string }>, revert?: () => void) =>
     startTransition(async () => {
-      await fn();
+      let res: { error?: string };
+      try {
+        res = await fn();
+      } catch {
+        res = { error: "Could not save the change — check your connection and try again." };
+      }
+      if (res?.error) {
+        setSaveError(res.error);
+        revert?.();
+        router.refresh();
+        return;
+      }
+      setSaveError(null);
       setDirty(true);
       router.refresh();
-      if (close) onClose();
     });
+
+  // Delete asks first (it also removes the whole comment thread) and only
+  // closes the editor once the server confirmed the delete.
+  const removeJob = () => {
+    const name = [job.soNumber, job.customerName, job.title].filter(Boolean).join(" · ");
+    const n = thread.length;
+    if (
+      !window.confirm(
+        `Delete “${name}” and its ${n} note${n === 1 ? "" : "s"}? This cannot be undone.`,
+      )
+    )
+      return;
+    startTransition(async () => {
+      const res = await deleteJobAction({ jobId: job.id });
+      if (res.error) {
+        setSaveError(res.error);
+        return;
+      }
+      router.refresh();
+      onClose();
+    });
+  };
 
   const closeNow = () => {
     setAskReason(false);
@@ -221,16 +260,22 @@ Changed: ${changed.join("; ")}`;
     if (!body) return;
     startTransition(async () => {
       const res = await editJobCommentAction({ noteId, body });
+      if (res.error) return setNoteError(res.error);
       if (res.note) {
         setThread((t) => t.map((n) => (n.id === noteId ? res.note! : n)));
         setEditingNoteId(null);
+        setNoteError(null);
       }
     });
   };
   const removeComment = (noteId: string) => {
     startTransition(async () => {
       const res = await deleteJobCommentAction({ noteId });
-      if (res.ok) setThread((t) => t.filter((n) => n.id !== noteId));
+      if (res.error) return setNoteError(res.error);
+      if (res.ok) {
+        setThread((t) => t.filter((n) => n.id !== noteId));
+        setNoteError(null);
+      }
     });
   };
 
@@ -239,6 +284,10 @@ Changed: ${changed.join("; ")}`;
   const duplicate = () =>
     startTransition(async () => {
       const res = await duplicateJobAction({ jobId: job.id });
+      if (res.error) {
+        setSaveError(res.error);
+        return;
+      }
       router.refresh();
       if (res.jobId) onDuplicated(res.jobId);
     });
@@ -307,6 +356,11 @@ Changed: ${changed.join("; ")}`;
             {closeError}
           </p>
         ) : null}
+        {saveError ? (
+          <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {saveError}
+          </p>
+        ) : null}
         <div className="space-y-2">
           <Label htmlFor="ed-title">Title</Label>
           <Input
@@ -319,7 +373,13 @@ Changed: ${changed.join("; ")}`;
             }}
             onBlur={(e) => {
               const v = e.target.value.trim();
-              if (v && v !== job.title) run(() => updateJobAction({ jobId: job.id, title: v }));
+              // A job needs a title — emptying the field puts the saved one back.
+              if (!v) setForm((f) => ({ ...f, title: job.title }));
+              else if (v !== job.title)
+                run(
+                  () => updateJobAction({ jobId: job.id, title: v }),
+                  () => setForm((f) => ({ ...f, title: job.title })),
+                );
             }}
           />
         </div>
@@ -335,7 +395,10 @@ Changed: ${changed.join("; ")}`;
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v !== (job.soNumber ?? ""))
-                  run(() => updateJobAction({ jobId: job.id, soNumber: v || null }));
+                  run(
+                    () => updateJobAction({ jobId: job.id, soNumber: v || null }),
+                    () => setForm((f) => ({ ...f, soNumber: job.soNumber ?? "" })),
+                  );
               }}
             />
           </div>
@@ -349,7 +412,10 @@ Changed: ${changed.join("; ")}`;
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v !== (job.customerName ?? ""))
-                  run(() => updateJobAction({ jobId: job.id, customerName: v || null }));
+                  run(
+                    () => updateJobAction({ jobId: job.id, customerName: v || null }),
+                    () => setForm((f) => ({ ...f, customerName: job.customerName ?? "" })),
+                  );
               }}
             />
           </div>
@@ -367,7 +433,10 @@ Changed: ${changed.join("; ")}`;
             onBlur={(e) => {
               const v = e.target.value.trim();
               if (v !== (job.description ?? ""))
-                run(() => updateJobAction({ jobId: job.id, description: v || null }));
+                run(
+                  () => updateJobAction({ jobId: job.id, description: v || null }),
+                  () => setForm((f) => ({ ...f, description: job.description ?? "" })),
+                );
             }}
           />
         </div>
@@ -383,7 +452,10 @@ Changed: ${changed.join("; ")}`;
               onChange={(e) => {
                 const v = e.target.value as any;
                 setForm((f) => ({ ...f, jobType: v }));
-                run(() => updateJobAction({ jobId: job.id, jobType: v || null }));
+                run(
+                  () => updateJobAction({ jobId: job.id, jobType: v || null }),
+                  () => setForm((f) => ({ ...f, jobType: job.jobType ?? "" })),
+                );
               }}
             >
               <option value="">—</option>
@@ -404,7 +476,10 @@ Changed: ${changed.join("; ")}`;
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v !== (job.hardwareTarget ?? ""))
-                  run(() => updateJobAction({ jobId: job.id, hardwareTarget: v || null }));
+                  run(
+                    () => updateJobAction({ jobId: job.id, hardwareTarget: v || null }),
+                    () => setForm((f) => ({ ...f, hardwareTarget: job.hardwareTarget ?? "" })),
+                  );
               }}
             />
           </div>
@@ -421,7 +496,10 @@ Changed: ${changed.join("; ")}`;
               onChange={(e) => {
                 const v = e.target.value;
                 setForm((f) => ({ ...f, technicianId: v }));
-                run(() => rescheduleJobAction({ jobId: job.id, technicianId: v || null }));
+                run(
+                  () => rescheduleJobAction({ jobId: job.id, technicianId: v || null }),
+                  () => setForm((f) => ({ ...f, technicianId: job.technicianId ?? "" })),
+                );
               }}
             >
               <option value="">Unassigned</option>
@@ -440,7 +518,10 @@ Changed: ${changed.join("; ")}`;
               onChange={(e) => {
                 const v = e.target.value as JobStatus;
                 setForm((f) => ({ ...f, jobStatus: v }));
-                run(() => setJobStatusAction({ jobId: job.id, jobStatus: v }));
+                run(
+                  () => setJobStatusAction({ jobId: job.id, jobStatus: v }),
+                  () => setForm((f) => ({ ...f, jobStatus: job.jobStatus })),
+                );
               }}
             >
               {(Object.keys(STATUS_LABELS) as JobStatus[]).map((s) => (
@@ -455,8 +536,10 @@ Changed: ${changed.join("; ")}`;
               onChange={(v) => {
                 const clearTentative = !v && form.tentative;
                 setForm((f) => ({ ...f, startDate: v, tentative: v ? f.tentative : false }));
-                run(() => rescheduleJobAction({ jobId: job.id, startDate: v || null }));
-                if (clearTentative) run(() => setJobTentativeAction({ jobId: job.id, tentative: false }));
+                const revertDate = () =>
+                  setForm((f) => ({ ...f, startDate: job.startDate ?? "", tentative: job.tentative }));
+                run(() => rescheduleJobAction({ jobId: job.id, startDate: v || null }), revertDate);
+                if (clearTentative) run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
               }}
             />
           </div>
@@ -476,7 +559,10 @@ Changed: ${changed.join("; ")}`;
                 setForm((f) => ({ ...f, durationDays: raw }));
                 const n = Number(raw);
                 if (raw !== "" && Number.isInteger(n) && n >= 0 && n <= 60) {
-                  run(() => rescheduleJobAction({ jobId: job.id, durationDays: n }));
+                  run(
+                    () => rescheduleJobAction({ jobId: job.id, durationDays: n }),
+                    () => setForm((f) => ({ ...f, durationDays: String(job.durationDays ?? 1) })),
+                  );
                 }
               }}
               onBlur={() => {
@@ -500,7 +586,10 @@ Changed: ${changed.join("; ")}`;
             onChange={(e) => {
               const v = e.target.checked;
               setForm((f) => ({ ...f, tentative: v }));
-              run(() => setJobTentativeAction({ jobId: job.id, tentative: v }));
+              run(
+                () => setJobTentativeAction({ jobId: job.id, tentative: v }),
+                () => setForm((f) => ({ ...f, tentative: job.tentative })),
+              );
             }}
           />
           Tentative date (pencilled-in — hatched on the board)
@@ -516,8 +605,10 @@ Changed: ${changed.join("; ")}`;
             onClick={() => {
               const clearTentative = form.tentative;
               setForm((f) => ({ ...f, startDate: "", tentative: false }));
-              run(() => rescheduleJobAction({ jobId: job.id, startDate: null }));
-              if (clearTentative) run(() => setJobTentativeAction({ jobId: job.id, tentative: false }));
+              const revertDate = () =>
+                setForm((f) => ({ ...f, startDate: job.startDate ?? "", tentative: job.tentative }));
+              run(() => rescheduleJobAction({ jobId: job.id, startDate: null }), revertDate);
+              if (clearTentative) run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
             }}
           >
             <Inbox className="mr-1.5 h-4 w-4" /> Move to backlog
@@ -528,7 +619,7 @@ Changed: ${changed.join("; ")}`;
             size="sm"
             disabled={pending}
             className="text-destructive hover:text-destructive"
-            onClick={() => run(() => deleteJobAction({ jobId: job.id }), true)}
+            onClick={removeJob}
           >
             <Trash2 className="mr-1.5 h-4 w-4" /> Delete
           </Button>
