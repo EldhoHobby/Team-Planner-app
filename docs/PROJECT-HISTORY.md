@@ -16,7 +16,7 @@ progress, uncommitted; deployment config: `LAN_IP`, compose `ai` profile)._
 | **GitHub `main`** | v0.0.10 | tagged up to `v0.0.10`; v0.0.11–v0.0.40 live on `feature/service-agreements`, v0.0.41–v0.0.43 on `improve/ux-review` (not merged, not tagged yet) |
 | **Production — new PC `10.210.6.233`** | **v0.0.10** | since **2026-11-06**. Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Locally edited Caddyfile (new IP) until the next update switches it to `LAN_IP` in `.env` (`DEPLOY.md` 1.3). Email ingest off. Data moved from SCADA with an in-container `pg_dump` + `docker compose cp` + `pg_restore --clean --if-exists --no-owner`. Auto sign-in (Sysinternals Autologon) planned. See `DEPLOY.md` section 1 |
 | **Old SCADA PC `10.210.4.65`** | v0.0.8 last deployed (stopped) | **retired** 2026-11-06; stack stopped but the PC is kept as a fallback for now. Don't start it while the new PC is live (data would diverge) |
-| **Dev PC `10.210.4.130`** | v0.0.43 | branch **`improve/ux-review`** (on top of `feature/service-agreements`), `planner.localhost`, `docker-compose.yml`. Phase 3 of the UX review is in the working tree, not committed. The dev DB holds the only copy of the service-agreements data |
+| **Dev PC `10.210.4.130`** | v0.0.44 | branch **`improve/ux-review`** (on top of `feature/service-agreements`), `planner.localhost`, `docker-compose.yml`. Phases 0–3 of the UX review are committed (v0.0.41–v0.0.44); not merged or deployed yet. The dev DB holds the only copy of the service-agreements data |
 
 ---
 

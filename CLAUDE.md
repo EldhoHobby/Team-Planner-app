@@ -331,7 +331,7 @@ host normally has no npm — Docker is the supported path).
   (People page → `/reset/[token]`), sign-in/reset rate-limiting, and personal
   **Account Settings** (password change, own display name). The old
   `/invite/[token]` flow + `src/lib/invitations/` are deleted in the
-  uncommitted Phase 3 working tree (the `Invitation` model is still in the
+  v0.0.44 clean-up (the `Invitation` model is still in the
   schema) — confirm before relying on either.
 - **Generic tasks/projects:** done — CRUD, status/priority/due date/estimate,
   multi-assignee. Tasks also carry an **origin** (`SELF` / `MANAGER`-assigned /
@@ -517,7 +517,7 @@ host normally has no npm — Docker is the supported path).
   landing; grouped sidebar (Work / Admin); per-page titles; login limiter on account + IP;
   daily session purge + `cache()` session lookup; the shared UI layer, `log.ts` error
   pattern and loading / error / not-found pages (Architecture above); task rules (above).
-- **Phase 3 — in the working tree, NOT committed or released at the time of writing**
+- **Phase 3 — committed as v0.0.44 on `improve/ux-review` (not yet merged or deployed)**
   (verify in code before relying on it): **Dashboard** "Needs attention" strip (overdue /
   due soon / unassigned jobs / double-booked jobs — each chip is the page filter) and an
   "Assigned by me" section (tasks you handed to people outside your dashboard).
