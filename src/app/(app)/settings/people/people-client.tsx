@@ -579,7 +579,9 @@ function PeopleTable({
             <FormMessage tone="success">{flash}</FormMessage>
           </div>
         ) : null}
-        <div className="overflow-x-auto">
+        {/* relative: keeps the table's screen-reader-only labels (position:absolute)
+            inside this scroll box — otherwise they widen the whole page on a phone. */}
+        <div className="relative overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-y bg-muted/20 text-xs text-muted-foreground">

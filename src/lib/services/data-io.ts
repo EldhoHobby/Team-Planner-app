@@ -635,6 +635,12 @@ async function importTeams(scope: TenantScope, rows: Record<string, string>[], a
   return res;
 }
 
+/** Text equality that ignores Windows vs Unix line breaks (Excel rewrites them). */
+function sameText(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (s: string | null | undefined) => (s ?? "").split(String.fromCharCode(13)).join("");
+  return norm(a) === norm(b);
+}
+
 async function importProjects(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
   const res: SheetResult = { sheet: SHEET.projects, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   const teams = await prisma.team.findMany({ where: { orgId: scope.ctx.orgId }, select: { id: true, name: true } });
@@ -775,7 +781,8 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           ex.title === data.title &&
           (ex.soNumber ?? "") === (data.soNumber ?? "") &&
           (ex.customerName ?? "") === (data.customerName ?? "") &&
-          (ex.description ?? "") === (data.description ?? "") &&
+          // Excel drops the CR of Windows line breaks — that is not a change.
+          sameText(ex.description, data.description) &&
           (ex.jobType ?? null) === (data.jobType ?? null) &&
           (ex.hardwareTarget ?? "") === (data.hardwareTarget ?? "") &&
           ex.priority === data.priority &&
