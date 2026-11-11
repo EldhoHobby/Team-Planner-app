@@ -1,6 +1,6 @@
 "use client";
 
-import { fmtEastern, todayYmd, ymdEastern } from "@/lib/tz";
+import { fmtDateOnly, fmtEastern, todayYmd, ymdEastern } from "@/lib/tz";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -79,7 +79,8 @@ export function CustomerView({
     ["Software", [c.software ? SOFTWARE_LABELS[c.software] : null, c.softwareVersion].filter(Boolean).join(" ") || "—"],
     ["WV / PE", c.wvPeVersion || "—"],
     ["Server", c.server || "—"],
-    ["Server install", c.serverInstall || "—"],
+    // Free text in the source data; show it as a date when it is one.
+    ["Server install", c.serverInstall ? (/^\d{4}-\d{2}-\d{2}$/.test(c.serverInstall) ? fmtDateOnly(c.serverInstall) : c.serverInstall) : "—"],
     ["Last server SO #", c.lastServerSo || "—"],
     ["QWEB licenses", c.qwebLicenses?.toString() ?? "—"],
   ];

@@ -364,7 +364,8 @@ export function ContextMenu({
           type="button"
           role="menuitem"
           className={item}
-          disabled={!job.startDate}
+          disabled={!job.startDate || job.jobStatus === "COMPLETED"}
+          title={job.jobStatus === "COMPLETED" ? "A completed job can't go back to the backlog — change its status first." : undefined}
           onClick={() => { onUnschedule(job); closeAndRestore(); }}
         >
           <Inbox className="h-4 w-4" aria-hidden /> Move to backlog

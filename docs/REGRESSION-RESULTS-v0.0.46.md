@@ -12,7 +12,7 @@ Plan: [REGRESSION-TEST-PLAN.md](REGRESSION-TEST-PLAN.md) (232 cases).
 | Checks run | 49 groups of checks, covering about 95 of the 232 plan cases |
 | Pass | 49 |
 | Fail (fixed) | 2 |
-| Minor findings (not fixed) | 5 |
+| Minor findings (fixed in v0.0.48) | 5 |
 | Not run | about 135 plan cases — listed at the end |
 
 This was a first pass aimed at the riskiest features, not the whole plan. Clicks,
@@ -26,15 +26,19 @@ synthetic drag events, not a human hand on a mouse.
 | F3 | Schedule Excel import | Re-importing an untouched export said "2 to update". Two jobs have Scope text with Windows line breaks; Excel drops the carriage return, so the importer saw a change, rewrote the rows and bumped their versions. | `data-io.ts`: Scope comparison ignores CR (`sameText`). |
 | F4 | Phone layout, Settings → People | The page was 906 px wide on a 375 px screen. Screen-reader-only labels inside the people table escaped its scroll box. | `people-client.tsx`: scroll wrapper is `relative`. Verified live. |
 
-## Minor findings (not fixed — your call)
+## Minor findings — fixed in v0.0.48
 
-| # | Area | What happened |
-|---|---|---|
-| F1 | Schedule job editor | "Notes & changes" does not list changes made while the editor is open; they appear after closing and reopening it. |
-| F2 | Schedule | "Move to backlog" on a Completed job leaves it Completed with no date. It leaves the board and the panel groups and is only reachable through the "completed" chip. |
-| N1 | People | Pressing Enter in the Add-person name field does nothing; only "Create person" submits. |
-| N2 | Agreements customer page | "Server install" shows `2015-04-23` instead of "Apr 23, 2015". |
-| N3 | Phone, Schedule | Header, summary chips and the per-person "This week" chips fill the first screen; the board starts below it. |
+Each fix was checked live on a fresh throwaway copy.
+
+| # | Area | What happened | Fix |
+|---|---|---|---|
+| F1 | Schedule job editor | "Notes & changes" did not list changes made while the editor was open. | The list reloads after each save (count went 0 to 1 live). |
+| F2 | Schedule | "Move to backlog" on a Completed job left it Completed with no date, off the board and the panel. | The action is disabled for Completed jobs, in the editor and the actions menu, with a tooltip saying to change the status first. |
+| N1 | People | Enter in the Add-person name field did nothing. | Enter in any text box of that panel creates the person. |
+| N2 | Agreements customer page | "Server install" showed `2015-04-23`. | Shown as "Apr 23, 2015" when the stored text is a date. |
+| N3 | Phone, Schedule | Header and chips filled the first screen. | The per-person chips are one line that scrolls sideways; the board now starts at 546 px instead of about 730 px on an 812 px screen. |
+
+Also changed: the Schedule import dialog's column list now names `workGroup` and `version`.
 
 The plan's author also flagged, from reading the code (not yet tested): Help and the
 People tooltip say a restored person stays off the schedule, but the code puts them

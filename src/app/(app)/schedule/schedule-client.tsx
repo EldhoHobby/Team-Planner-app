@@ -1118,14 +1118,15 @@ export function ScheduleClient({
           days (time off + holidays leave the denominator, shown as "· N off").
           One rule (board.ts capacityLevel): amber when exactly full, red when
           over. A VISUAL indicator only — it never blocks assignment. */}
-      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 md:px-5 print:hidden">
-        <span className="text-xs font-medium text-muted-foreground">
+      {/* Phone: one line that scrolls sideways, so the board isn't pushed off the first screen. */}
+      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:whitespace-nowrap md:px-5 print:hidden">
+        <span className="shrink-0 text-xs font-medium text-muted-foreground">
           {view === "calendar" ? "This month:" : "This week:"}
         </span>
         {visibleTechs.map((t) => {
           const c = capacity.get(t.id) ?? { booked: 0, available: capacityDays.length, off: 0, level: "ok" as const };
           return (
-            <span key={t.id} className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs" title={capacityTitle(t.name, c)}>
+            <span key={t.id} className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs" title={capacityTitle(t.name, c)}>
               <span className="h-2 w-2 rounded-full" style={dotStyle(t.color)} />
               {t.name}:{" "}
               <span className={c.level === "over" ? "font-semibold text-red-600" : c.level === "full" ? "font-semibold text-amber-600" : ""}>

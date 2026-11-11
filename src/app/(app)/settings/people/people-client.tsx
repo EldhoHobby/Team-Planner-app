@@ -451,7 +451,18 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
         </div>
       </CardHeader>
       {open ? (
-        <CardContent className="space-y-4">
+        <CardContent
+          className="space-y-4"
+          // Enter in a text box creates the person, like a form would.
+          onKeyDown={(e) => {
+            const el = e.target as HTMLElement;
+            const textBox = el.tagName === "INPUT" && !["checkbox", "color"].includes((el as HTMLInputElement).type);
+            if (e.key === "Enter" && textBox && !pending && name.trim()) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label htmlFor="add-name">Name</Label>

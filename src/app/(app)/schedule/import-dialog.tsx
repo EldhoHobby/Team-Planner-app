@@ -151,9 +151,10 @@ function OpenImportDialog({ onClose }: { onClose: () => void }) {
         </div>
         <p className="text-xs text-muted-foreground">
           Columns on the <span className="font-medium">Jobs</span> sheet: id, soNumber, customer, title, scope,
-          jobType, jobStatus, hardware, priority, technician, project, startDate, durationDays, tentative.
-          Title is required; put the person&apos;s name in the technician column. The end date is computed from
-          startDate + durationDays.
+          jobType, jobStatus, hardware, priority, technician, workGroup, project, startDate, durationDays,
+          tentative, version. Title is required; put the person&apos;s name in the technician column. The end
+          date is computed from startDate + durationDays. Leave version as exported — it stops an old file
+          from overwriting a job that was changed in the app since.
         </p>
 
         {busy === "preview" ? <FormMessage tone="info">Reading the workbook…</FormMessage> : null}

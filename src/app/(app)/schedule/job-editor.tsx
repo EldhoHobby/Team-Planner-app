@@ -158,6 +158,10 @@ export function JobEditor({
   // than this are what THIS editing session changed (server timestamps, so no
   // client-clock skew).
   const [historyMarker, setHistoryMarker] = useState<string | null>(null);
+  // The job on screen right now — a history reload that answers after the
+  // editor moved to another job is dropped.
+  const jobIdRef = useRef<string | undefined>(job?.id);
+  jobIdRef.current = job?.id;
   // Declared with the other hooks (i.e. BEFORE the `if (!job) return null`
   // early return) so hook order stays stable if the editor ever renders
   // without a job — a conditional useState would break the rules of hooks.
@@ -269,6 +273,12 @@ export function JobEditor({
       }
       dirtyRef.current = true;
       router.refresh();
+      // Keep "Notes & changes" current: show this save's change line right away
+      // (the session marker stays put, so the reason note still lists it).
+      const id = job.id;
+      void listJobHistoryAction({ jobId: id })
+        .then((rows) => { if (jobIdRef.current === id) setHistory(rows); })
+        .catch(() => {});
       return true;
     })();
     inflight.current.add(p);
@@ -766,7 +776,10 @@ Changed: ${changed.join("; ")}`;
             type="button"
             variant="outline"
             size="sm"
-            disabled={!job.startDate}
+            // A completed job stays where it was done — moving it to the backlog
+            // would leave it Completed with no date, off the board and the panel.
+            disabled={!job.startDate || job.jobStatus === "COMPLETED"}
+            title={job.jobStatus === "COMPLETED" ? "A completed job can't go back to the backlog — change its status first." : undefined}
             onClick={() => {
               const clearTentative = form.tentative;
               setForm((f) => ({ ...f, startDate: "", tentative: false }));
