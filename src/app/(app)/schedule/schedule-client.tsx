@@ -8,29 +8,8 @@ import {
   useTransition,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
-  type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import {
-  ChevronLeft,
-  ChevronRight,
-  ChevronDown,
-  Plus,
-  AlertTriangle,
-  Upload,
-  Download,
-  CalendarDays,
-  LocateFixed,
-  MoreHorizontal,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Plane,
-  Printer,
-  Search,
-  Trash2,
-  X,
-} from "lucide-react";
 import {
   startOfWeekSunday,
   addDays,
@@ -39,7 +18,6 @@ import {
   workingDaysOfWeek,
   workingDaysOfMonth,
   endFromDuration,
-  MS_PER_DAY,
   type JobLite,
 } from "@/lib/scheduling/calc";
 import {
@@ -48,9 +26,8 @@ import {
   dropStartMs,
   grabOffsetDays,
   groupJobs,
-  type PersonCapacity,
 } from "@/lib/scheduling/board";
-import { barStyle, dotStyle, softStyle, hatchStyle } from "@/lib/scheduling/colors";
+import { barStyle, dotStyle, hatchStyle } from "@/lib/scheduling/colors";
 import {
   rescheduleJobAction,
   setJobStatusAction,
@@ -76,75 +53,41 @@ import {
   type JobSnapshot,
 } from "./schedule-overlays";
 import { JobBar } from "./job-bar";
-import type { BoardLane, JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
+import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 import type { OwnerLite, TargetedTask } from "@/lib/services/tech-tasks";
 import { TaskTicket } from "../dashboard/task-ticket";
-import { Modal } from "@/components/ui/modal";
 import { PrintSheet } from "./print-sheet";
 import { NewJobDialog } from "./new-job-dialog";
 import { JobEditor } from "./job-editor";
 import { ImportDialog } from "./import-dialog";
 import { MonthCalendar } from "./month-calendar";
-import { fmtDateOnly, todayYmd } from "@/lib/tz";
-import { PageHeader } from "@/components/ui/page-header";
-import { FormMessage } from "@/components/ui/form-message";
-import { Button } from "@/components/ui/button";
-
-const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const JOB_TYPE_LABELS: Record<string, string> = {
-  COMMISSIONING: "Commissioning",
-  TRAINING: "Training",
-  ANNUAL_MAINTENANCE: "Annual Maintenance",
-  EMERGENCY_SUPPORT: "Emergency Support",
-};
-const STATUS_LABELS: Record<string, string> = {
-  UNCONFIRMED: "Unconfirmed",
-  SCHEDULED: "Scheduled",
-  IN_PROGRESS: "In Progress",
-  COMPLETED: "Completed",
-};
-const selectClass =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+import { fmtDateOnly } from "@/lib/tz";
+import {
+  buildLanes,
+  buildPrintNote,
+  dayIndex,
+  localTodayYmd,
+  packLanes,
+  parseYmd,
+  ymd,
+} from "./schedule-helpers";
+import {
+  useBoardNotice,
+  usePersistedView,
+  usePoliteAutoRefresh,
+  useSidebarOpen,
+  useTechFilterSelection,
+} from "./schedule-hooks";
+import { ScheduleToolbar } from "./schedule-toolbar";
+import { BoardMessages, CapacityStrip, JobFilters, JobStats } from "./schedule-filters";
+import { JobsPanel } from "./jobs-panel";
+import { QueueCard } from "./jobs-panel-parts";
+import { LaneDayCells, WeekHeader } from "./week-timeline";
+import { DayTasksModal } from "./day-tasks-modal";
 
 /** After a drag or an edge-resize ends, clicks are ignored for this long so the
  *  release can never also "click" a bar open. */
 const CLICK_GUARD_MS = 250;
-
-function ymd(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-/**
- * Today's date in US Eastern time (not UTC, and not the rendering machine's
- * zone). The board's dates are UTC midnights; the server renders in UTC and the
- * browser in local time, so the zone must be fixed or the evening renders
- * disagree on which day is "today".
- */
-const localTodayYmd = todayYmd;
-function parseYmd(s: string): Date {
-  return new Date(`${s}T00:00:00.000Z`);
-}
-function dayIndex(date: Date, weekStart: Date): number {
-  return Math.round((toUtcMidnight(date).getTime() - weekStart.getTime()) / MS_PER_DAY);
-}
-
-function packLanes(jobs: JobRow[]): { job: JobRow; lane: number }[] {
-  const sorted = [...jobs].sort((a, b) => (a.startDate! < b.startDate! ? -1 : 1));
-  const laneEnds: number[] = [];
-  const out: { job: JobRow; lane: number }[] = [];
-  for (const job of sorted) {
-    const start = parseYmd(job.startDate!).getTime();
-    const end = parseYmd(job.endDate ?? job.startDate!).getTime();
-    let lane = laneEnds.findIndex((e) => e < start);
-    if (lane === -1) {
-      lane = laneEnds.length;
-      laneEnds.push(end);
-    } else {
-      laneEnds[lane] = end;
-    }
-    out.push({ job, lane });
-  }
-  return out;
-}
 
 export function ScheduleClient({
   jobs: propJobs,
@@ -201,21 +144,7 @@ export function ScheduleClient({
   const [binOpen, setBinOpen] = useState(false);
 
   // Persisted view — restored after mount (avoids SSR hydration mismatch).
-  const [view, setView] = useState<"timeline" | "calendar">("timeline");
-  const restored = useRef(false);
-  useEffect(() => {
-    const v = localStorage.getItem("schedule.view");
-    if (v === "calendar" || v === "timeline") setView(v);
-    restored.current = true;
-  }, []);
-  useEffect(() => {
-    if (!restored.current) return;
-    try {
-      localStorage.setItem("schedule.view", view);
-    } catch {
-      /* ignore */
-    }
-  }, [view]);
+  const [view, setView] = usePersistedView();
   const [anchor, setAnchor] = useState<Date>(() => parseYmd(initialDate || localTodayYmd()));
   const [newOpen, setNewOpen] = useState(false);
   // Pre-fill for the New job dialog (double-click / Enter on an empty day).
@@ -225,14 +154,7 @@ export function ScheduleClient({
   // Board messages: a server error (red) stays until dismissed or the next
   // successful change; a "Heads up" note (amber) dismisses itself after ~8 s.
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
-  const noticeSeq = useRef(0);
-  const showNotice = (text: string) => setNotice({ id: ++noticeSeq.current, text });
-  useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice((n) => (n?.id === notice.id ? null : n)), 8000);
-    return () => clearTimeout(t);
-  }, [notice]);
+  const { notice, setNotice, showNotice } = useBoardNotice();
   // Every server-confirmed board change clears a stale error.
   const settled = (res: { error?: string } | undefined): boolean => {
     if (res?.error) {
@@ -293,24 +215,9 @@ export function ScheduleClient({
     }
   }, [pendingSelectId, propJobs]);
 
-  // Filters. Technician filter is a checkbox multi-select: null = everyone;
-  // otherwise a set of technician ids (plus "UNASSIGNED"). Initialised to the
-  // viewer's personal scope (self for members, team for managers) — changeable.
-  const [fTechSel, setFTechSel] = useState<Set<string> | null>(() =>
-    defaultTechIds ? new Set(defaultTechIds) : null,
-  );
-  // When the personal default CHANGES (e.g. "View as" switched to another person,
-  // whose scope the server recomputes), re-apply it. Manual filter changes are
-  // left alone otherwise — we only react to a different default arriving.
-  const defaultKey = defaultTechIds ? [...defaultTechIds].sort().join(",") : "__ALL__";
-  const lastDefaultKey = useRef(defaultKey);
-  useEffect(() => {
-    if (lastDefaultKey.current !== defaultKey) {
-      lastDefaultKey.current = defaultKey;
-      setFTechSel(defaultTechIds ? new Set(defaultTechIds) : null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultKey]);
+  // Filters. The people filter (null = everyone) starts at the viewer's personal
+  // scope and re-applies it when that default changes (see the hook).
+  const [fTechSel, setFTechSel] = useTechFilterSelection(defaultTechIds);
   const [fType, setFType] = useState<string>("ALL");
   const [fSo, setFSo] = useState<string>("ALL");
   const [fStatus, setFStatus] = useState<string>("ALL");
@@ -320,12 +227,8 @@ export function ScheduleClient({
   const [panelStatus, setPanelStatus] = useState<string>("ALL");
   // "Completed" starts collapsed — it's a historical pile, not active work.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["Completed"]));
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  // On a phone the Jobs panel starts hidden (it would squeeze the board). The
-  // server can't know the width, so decide after mount (no hydration mismatch).
-  useEffect(() => {
-    if (window.matchMedia("(max-width: 767px)").matches) setSidebarOpen(false);
-  }, []);
+  // On a phone the Jobs panel starts hidden (decided after mount).
+  const [sidebarOpen, setSidebarOpen] = useSidebarOpen();
 
   const weekStart = useMemo(() => startOfWeekSunday(anchor), [anchor]);
   const weekMonday = useMemo(() => addDays(weekStart, 1), [weekStart]);
@@ -333,29 +236,10 @@ export function ScheduleClient({
   // Real-time-ish sync: refetch every 60s so other users' changes appear without
   // churning the board. Paused while dragging, a dialog is open, or the tab is
   // in the background, so it never interrupts active work or forces focus.
-  const draggingRef = useRef(false);
-  const busyRef = useRef(false);
-  busyRef.current = newOpen || importOpen || selected !== null || binOpen;
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (!draggingRef.current && !busyRef.current && document.visibilityState === "visible") {
-        router.refresh();
-      }
-    }, 60000);
-
-    // Refresh immediately when returning to the tab (if not busy).
-    const onVisible = () => {
-      if (document.visibilityState === "visible" && !draggingRef.current && !busyRef.current) {
-        router.refresh();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-
-    return () => {
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [router]);
+  const draggingRef = usePoliteAutoRefresh(
+    router,
+    newOpen || importOpen || selected !== null || binOpen,
+  );
 
   // ── Click vs drag ──
   // A bar drag records where in the job it was grabbed (in days) so a drop moves
@@ -559,37 +443,7 @@ export function ScheduleClient({
   // Lanes: active people, then greyed lanes for anyone else who holds visible
   // dated jobs (not schedulable, archived, or not found at all) so their work
   // never vanishes from the board, then Unassigned.
-  const holderIds = new Set(dated.map((j) => j.technicianId).filter((id): id is string => !!id));
-  let rows: BoardLane[] = [
-    ...activeTechs.map((t) => ({ id: t.id, name: t.name, color: t.color, droppable: true })),
-    ...technicians
-      .filter((t) => !t.active && holderIds.has(t.id))
-      .map((t) => ({
-        id: t.id,
-        name: `${t.name} (${t.archived ? "archived" : "inactive"})`,
-        color: t.color,
-        droppable: false,
-        inactive: true,
-        archived: !!t.archived,
-      })),
-    ...[...holderIds]
-      .filter((id) => !techById.has(id))
-      .map((id) => {
-        const j = dated.find((x) => x.technicianId === id);
-        return {
-          id,
-          name: `${j?.technicianName ?? "Unknown person"} (archived)`,
-          color: j?.technicianColor ?? "slate",
-          droppable: false,
-          inactive: true,
-          archived: true,
-        };
-      }),
-    { id: null, name: "Unassigned", color: "slate", droppable: true },
-  ];
-  if (fTechSel !== null) {
-    rows = rows.filter((r) => (r.id === null ? fTechSel.has("UNASSIGNED") : fTechSel.has(r.id)));
-  }
+  const rows = buildLanes(activeTechs, technicians, techById, dated, fTechSel);
 
   // ── Optimistic move ──
   const doMove = (
@@ -932,33 +786,11 @@ export function ScheduleClient({
       : `${fmtDateOnly(weekDays[0], { month: "short", day: "numeric" })} – ${fmtDateOnly(weekEnd)}`;
 
   // Printout note: what the header filters narrow down + that Completed is left out.
-  const printNote = (() => {
-    const parts: string[] = [];
-    if (fTechSel !== null) {
-      const names = [...fTechSel]
-        .map((id) => (id === "UNASSIGNED" ? "Unassigned" : techById.get(id)?.name ?? null))
-        .filter((n): n is string => !!n);
-      parts.push(
-        `People: ${names.length === 0 ? "none" : names.length <= 4 ? names.join(", ") : `${names.length} selected`}`,
-      );
-    }
-    if (fType !== "ALL") parts.push(`Type: ${JOB_TYPE_LABELS[fType] ?? fType}`);
-    if (fSo !== "ALL") parts.push(`SO: ${fSo}`);
-    if (fStatus !== "ALL") parts.push(`Status: ${fStatus === "TENTATIVE" ? "Tentative" : STATUS_LABELS[fStatus] ?? fStatus}`);
-    const completedHidden = groups.completed.length > 0;
-    if (!parts.length && !completedHidden) return null;
-    if (!parts.length) return "Completed jobs not shown";
-    return `Filters: ${parts.join(" · ")}${completedHidden ? " · completed jobs not shown" : ""}`;
-  })();
+  const printNote = buildPrintNote(fTechSel, techById, fType, fSo, fStatus, groups.completed.length > 0);
 
   // Holders of jobs who are not active — selectable in the people filter so
   // their (archived / inactive) lanes can be included in a narrowed view.
   const otherHolders = technicians.filter((t) => !t.active && jobs.some((j) => j.technicianId === t.id));
-
-  const capacityTitle = (name: string, c: PersonCapacity) =>
-    `${name}: ${c.booked} of ${c.available} available working day${c.available === 1 ? "" : "s"} booked` +
-    (c.off ? ` (${c.off} day${c.off === 1 ? "" : "s"} off — time off or holiday)` : "") +
-    (c.level === "over" ? " — over capacity" : c.level === "full" ? " — fully booked" : "");
 
   return (
     <div
@@ -969,291 +801,85 @@ export function ScheduleClient({
       onDrop={() => { draggingRef.current = false; }}
     >
       {/* Header */}
-      <PageHeader
-        className="mb-0 items-center border-b px-3 py-3 md:px-5 print:hidden"
-        icon={<CalendarDays className="h-5 w-5 text-muted-foreground" />}
-        title="Schedule"
-        actions={
-        <>
-          <div className="flex items-center rounded-md border text-xs">
-            <button
-              type="button"
-              aria-pressed={view === "timeline"}
-              onClick={() => setView("timeline")}
-              className={`px-2.5 py-1 font-medium ${view === "timeline" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
-            >
-              Timeline
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === "calendar"}
-              onClick={() => setView("calendar")}
-              className={`px-2.5 py-1 font-medium ${view === "calendar" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
-            >
-              Calendar
-            </button>
-          </div>
-          {/* Standalone Today */}
-          <Button variant="outline" size="sm" onClick={() => setAnchor(parseYmd(localTodayYmd()))}>
-            Today
-          </Button>
-          {/* Arrows framing the date label: [ < ]  Month Year  [ > ] */}
-          <div className="flex items-center gap-1">
-            <button type="button" aria-label={view === "calendar" ? "Previous month" : "Previous week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(-1)}>
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="min-w-[10rem] text-center text-sm font-medium">{rangeLabel}</span>
-            <button type="button" aria-label={view === "calendar" ? "Next month" : "Next week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(1)}>
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-          {/* Jump to a specific date (moves the view to that week/month). */}
-          <input
-            type="date"
-            aria-label="Jump to date"
-            title="Jump to date"
-            value={ymd(anchor)}
-            onChange={(e) => { if (e.target.value) setAnchor(parseYmd(e.target.value)); }}
-            className={selectClass}
-          />
-          {/* Secondary buttons: icon-only on a phone (label kept for screen readers). */}
-          <Button variant="outline" size="sm" title="Import jobs from Excel" onClick={() => setImportOpen(true)}>
-            <Upload className="h-4 w-4 sm:mr-1.5" aria-hidden /> <span className="sr-only sm:not-sr-only">Import</span>
-          </Button>
-          <Button variant="outline" size="sm" title="Export jobs to Excel" disabled={exporting} onClick={exportXlsx}>
-            <Download className="h-4 w-4 sm:mr-1.5" aria-hidden />{" "}
-            <span className="sr-only sm:not-sr-only">{exporting ? "Exporting…" : "Export"}</span>
-          </Button>
-          <Button variant="outline" size="sm" title="Print the current view (landscape)" onClick={() => window.print()}>
-            <Printer className="h-4 w-4 sm:mr-1.5" aria-hidden /> <span className="sr-only sm:not-sr-only">Print</span>
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            title="Jobs deleted in the last 30 days — restore one"
-            onClick={() => setBinOpen(true)}
-          >
-            <Trash2 className="h-4 w-4 sm:mr-1.5" aria-hidden /> <span className="sr-only sm:not-sr-only">Recently deleted</span>
-          </Button>
-          <Button size="sm" onClick={() => openNewJob(null)}>
-            <Plus className="mr-1.5 h-4 w-4" /> New job
-          </Button>
-        </>
-        }
+      <ScheduleToolbar
+        view={view}
+        setView={setView}
+        anchor={anchor}
+        setAnchor={setAnchor}
+        go={go}
+        rangeLabel={rangeLabel}
+        exporting={exporting}
+        exportXlsx={exportXlsx}
+        setImportOpen={setImportOpen}
+        setBinOpen={setBinOpen}
+        openNewJob={openNewJob}
       />
 
       {/* Insights + filters. The job chips are the side panel's groups
           (mutually exclusive, they add up to "jobs"). */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-3 py-2 md:px-5 text-xs print:hidden">
-        <div className="flex flex-wrap items-center gap-2">
-          <Stat label="jobs" value={visible.length} title="Jobs matching the filters" />
-          <Stat label="scheduled" value={groups.scheduled.length} title="Dated, confirmed, not completed" />
-          <Stat label="tentative" value={groups.tentative.length} tone={groups.tentative.length ? "warn" : undefined} title="Dated but pencilled-in, not completed" />
-          <Stat label="unscheduled" value={groups.unscheduled.length} tone={groups.unscheduled.length ? "warn" : undefined} title="No date yet (the backlog), not completed" />
-          <Stat label="completed" value={groups.completed.length} title={showingOldCompleted ? "Completed jobs (all)" : "Completed jobs (ended in the last 12 months)"} />
-          <Stat
-            label={overCapacity === 1 ? "person over capacity" : "people over capacity"}
-            value={overCapacity}
-            tone={overCapacity ? "bad" : undefined}
-            title={`People shown who are booked for more days than they have available ${view === "calendar" ? "this month" : "this week"} (time off and holidays excluded)`}
-          />
-          <Stat
-            label={warnedCount === 1 ? "job with a conflict" : "jobs with conflicts"}
-            value={warnedCount}
-            tone={warnedCount ? "bad" : undefined}
-            title="Jobs shown with a ⚠: the person is double-booked or on time off"
-          />
-        </div>
-        <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto">
-          <div className="relative w-full sm:w-auto">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search SO / customer / title"
-              aria-label="Search jobs"
-              className={`${selectClass} w-full pl-7 sm:w-52`}
-            />
-          </div>
-          {fTechSel !== null ? (
-            // Phone: after the filters, so the people picker starts its own row
-            // at the left edge and its drop-down stays on screen.
-            <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-background px-2 py-0.5 max-sm:order-last">
-              Showing {visibleTechs.length} of {activeTechCount} people
-              <span aria-hidden>·</span>
-              <button
-                type="button"
-                onClick={() => setFTechSel(null)}
-                className="font-medium text-primary underline-offset-2 hover:underline"
-              >
-                Show everyone
-              </button>
-            </span>
-          ) : null}
-          <TechFilter technicians={technicians} others={otherHolders} selected={fTechSel} onChange={setFTechSel} />
-          <select className={selectClass} value={fType} onChange={(e) => setFType(e.target.value)} aria-label="Filter job type">
-            <option value="ALL">All types</option>
-            {Object.entries(JOB_TYPE_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>{v}</option>
-            ))}
-          </select>
-          <select className={selectClass} value={fSo} onChange={(e) => setFSo(e.target.value)} aria-label="Filter Sales Order">
-            <option value="ALL">All Sales Orders</option>
-            {soNumbers.map((so) => (
-              <option key={so} value={so}>{so}</option>
-            ))}
-          </select>
-          <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)} aria-label="Filter status">
-            <option value="ALL">All statuses</option>
-            {Object.entries(STATUS_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>{v}</option>
-            ))}
-            <option value="TENTATIVE">Tentative</option>
-          </select>
-        </div>
+        <JobStats
+          visibleCount={visible.length}
+          groups={groups}
+          showingOldCompleted={showingOldCompleted}
+          overCapacity={overCapacity}
+          warnedCount={warnedCount}
+          view={view}
+        />
+        <JobFilters
+          query={query}
+          setQuery={setQuery}
+          fTechSel={fTechSel}
+          setFTechSel={setFTechSel}
+          visibleTechCount={visibleTechs.length}
+          activeTechCount={activeTechCount}
+          technicians={technicians}
+          otherHolders={otherHolders}
+          fType={fType}
+          setFType={setFType}
+          fSo={fSo}
+          setFSo={setFSo}
+          soNumbers={soNumbers}
+          fStatus={fStatus}
+          setFStatus={setFStatus}
+        />
       </div>
 
-      {/* Capacity per person for the period in view: booked / AVAILABLE working
-          days (time off + holidays leave the denominator, shown as "· N off").
-          One rule (board.ts capacityLevel): amber when exactly full, red when
-          over. A VISUAL indicator only — it never blocks assignment. */}
-      {/* Phone: one line that scrolls sideways, so the board isn't pushed off the first screen. */}
-      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:whitespace-nowrap md:px-5 print:hidden">
-        <span className="shrink-0 text-xs font-medium text-muted-foreground">
-          {view === "calendar" ? "This month:" : "This week:"}
-        </span>
-        {visibleTechs.map((t) => {
-          const c = capacity.get(t.id) ?? { booked: 0, available: capacityDays.length, off: 0, level: "ok" as const };
-          return (
-            <span key={t.id} className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs" title={capacityTitle(t.name, c)}>
-              <span className="h-2 w-2 rounded-full" style={dotStyle(t.color)} />
-              {t.name}:{" "}
-              <span className={c.level === "over" ? "font-semibold text-red-600" : c.level === "full" ? "font-semibold text-amber-600" : ""}>
-                {c.booked}/{c.available}
-              </span>
-              {c.off ? <span className="text-muted-foreground">· {c.off} off</span> : null}
-            </span>
-          );
-        })}
-      </div>
+      {/* Capacity per person for the period in view (see CapacityStrip). */}
+      <CapacityStrip view={view} visibleTechs={visibleTechs} capacity={capacity} capacityDays={capacityDays} />
 
-      {error ? (
-        <div className="flex items-start gap-2 border-b bg-destructive/10 px-3 py-2 md:px-5 print:hidden">
-          <FormMessage tone="error" className="flex-1">{error}</FormMessage>
-          <button
-            type="button"
-            aria-label="Dismiss error"
-            onClick={() => setError(null)}
-            className="rounded p-0.5 text-destructive hover:bg-destructive/10"
-          >
-            <X className="h-4 w-4" aria-hidden />
-          </button>
-        </div>
-      ) : null}
-      {notice ? (
-        <div
-          role="status"
-          className="flex items-center gap-2 border-b bg-amber-50 px-3 py-2 md:px-5 text-sm text-amber-800 print:hidden"
-        >
-          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
-          <span className="flex-1">{notice.text}</span>
-          <button
-            type="button"
-            aria-label="Dismiss note"
-            onClick={() => setNotice(null)}
-            className="rounded p-0.5 hover:bg-amber-100"
-          >
-            <X className="h-4 w-4" aria-hidden />
-          </button>
-        </div>
-      ) : null}
+      <BoardMessages error={error} setError={setError} notice={notice} setNotice={setNotice} />
 
       {/* Entire interactive area is hidden in print — PrintSheet below is the printout. */}
       {/* Phone: the Jobs panel (when shown) stacks ABOVE the board, full width. */}
       <div className="flex min-h-0 flex-col md:flex-1 md:flex-row print:hidden">
         {/* Jobs queue — grouped, sortable, type-filterable */}
-        {sidebarOpen ? (
-          <aside
-            className="flex max-h-[60vh] w-full shrink-0 flex-col border-b bg-card/40 md:max-h-none md:w-72 md:border-b-0 md:border-r print:hidden"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onDropBacklog}
-            aria-label="Jobs queue"
-          >
-            <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-              <h2 className="text-sm font-semibold">Jobs</h2>
-              <button type="button" aria-label="Hide panel" title="Hide panel" onClick={() => setSidebarOpen(false)} className="rounded p-1 text-muted-foreground hover:bg-muted">
-                <PanelLeftClose className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="flex items-center gap-1.5 border-b px-3 py-2">
-              <select className={`${selectClass} flex-1`} value={panelSort} onChange={(e) => setPanelSort(e.target.value as "date" | "so")} aria-label="Sort jobs">
-                <option value="date">Sort: Date</option>
-                <option value="so">Sort: SO #</option>
-              </select>
-              <select className={`${selectClass} flex-1`} value={panelStatus} onChange={(e) => setPanelStatus(e.target.value)} aria-label="Filter status">
-                <option value="ALL">All statuses</option>
-                {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
-                ))}
-                <option value="TENTATIVE">Tentative</option>
-              </select>
-            </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-              {(
-                [
-                  ["Scheduled", panelGroups.scheduled, "No scheduled jobs.", undefined, false],
-                  ["Tentative", panelGroups.tentative, "None to confirm.", undefined, true],
-                  ["Unscheduled", panelGroups.unscheduled, "Nothing in the backlog.", "Drag onto the schedule to book.", false],
-                  ["Completed", panelGroups.completed, "No completed jobs.", undefined, false],
-                ] as const
-              ).map(([title, list, empty, hint, amber]) => (
-                <PanelSection
-                  key={title}
-                  title={title}
-                  amber={amber}
-                  jobs={list}
-                  collapsed={collapsed}
-                  setCollapsed={setCollapsed}
-                  emptyText={q ? "No jobs match your search." : empty}
-                  hint={hint}
-                  footer={
-                    title === "Completed" && (hasOlderCompleted || showingOldCompleted) ? (
-                      <button
-                        type="button"
-                        onClick={toggleOldCompleted}
-                        className="mt-2 text-xs font-medium text-primary underline-offset-2 hover:underline"
-                      >
-                        {showingOldCompleted ? "Hide completed jobs older than 12 months" : "Show older completed jobs"}
-                      </button>
-                    ) : null
-                  }
-                  renderCard={(j) => (
-                    <QueueCard
-                      key={j.id}
-                      job={j}
-                      onOpen={openJob}
-                      onJump={jumpToJob}
-                      onMenu={openMenu}
-                      onDragStart={onCardDragStart}
-                    />
-                  )}
-                />
-              ))}
-            </div>
-          </aside>
-        ) : (
-          <button
-            type="button"
-            aria-label="Show the Jobs panel"
-            title="Show panel"
-            onClick={() => setSidebarOpen(true)}
-            className="flex w-full shrink-0 items-center justify-center gap-1.5 border-b py-1.5 text-xs text-muted-foreground hover:bg-muted md:w-8 md:border-b-0 md:border-r md:py-0 print:hidden"
-          >
-            <PanelLeftOpen className="h-4 w-4" />
-            <span className="md:hidden">Show the Jobs panel</span>
-          </button>
-        )}
+        <JobsPanel
+          open={sidebarOpen}
+          setOpen={setSidebarOpen}
+          onDropBacklog={onDropBacklog}
+          panelSort={panelSort}
+          setPanelSort={setPanelSort}
+          panelStatus={panelStatus}
+          setPanelStatus={setPanelStatus}
+          panelGroups={panelGroups}
+          collapsed={collapsed}
+          setCollapsed={setCollapsed}
+          q={q}
+          hasOlderCompleted={hasOlderCompleted}
+          showingOldCompleted={showingOldCompleted}
+          onToggleOldCompleted={toggleOldCompleted}
+          renderCard={(j) => (
+            <QueueCard
+              key={j.id}
+              job={j}
+              onOpen={openJob}
+              onJump={jumpToJob}
+              onMenu={openMenu}
+              onDragStart={onCardDragStart}
+            />
+          )}
+        />
 
         {/* Main view. Phone: a fixed-height window that scrolls both ways inside
             itself (the page never scrolls sideways); md+: fills the rest. */}
@@ -1291,27 +917,7 @@ export function ScheduleClient({
             // Phone: narrower columns + the whole grid scrolls sideways inside the
             // view; the person column stays put (sticky left).
             <div className="min-w-[45rem] md:min-w-[59rem]">
-              <div className="sticky top-0 z-10 grid grid-cols-[6.5rem_repeat(7,minmax(5.5rem,1fr))] md:grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b bg-background">
-                <div className="sticky left-0 z-[1] border-r bg-background px-2 py-2 text-xs font-medium text-muted-foreground md:px-3">Person</div>
-                {weekDays.map((d, i) => {
-                  const isToday = ymd(d) === todayYmd;
-                  const weekend = i === 0 || i === 6;
-                  const holiday = holidayOn(d);
-                  return (
-                    <div
-                      key={i}
-                      title={holiday ? `Holiday: ${holiday}` : isToday ? "Today" : undefined}
-                      className={`border-r px-2 py-2 text-center text-xs ${isToday ? "border-b-2 border-b-primary bg-primary/10" : holiday ? "bg-amber-100/70" : weekend ? "bg-muted/40" : ""}`}
-                    >
-                      <div className={isToday ? "font-semibold text-primary" : "font-medium"}>{DAY_LABELS[i]}</div>
-                      <div className={isToday ? "inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 font-bold text-primary-foreground" : "text-muted-foreground"}>{d.getUTCDate()}</div>
-                      {holiday ? (
-                        <div className="truncate text-[10px] font-medium leading-tight text-amber-700" title={holiday}>{holiday}</div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
+              <WeekHeader weekDays={weekDays} todayYmd={todayYmd} holidayOn={holidayOn} />
 
               {rows.length === 0 ? (
                 <div className="px-5 py-10 text-center text-sm text-muted-foreground">
@@ -1364,42 +970,15 @@ export function ScheduleClient({
                         }
                       }}
                     >
-                      <div className="absolute inset-0 grid grid-cols-7">
-                        {weekDays.map((d, i) => {
-                          const weekend = i === 0 || i === 6;
-                          const offInfo = offInfoOnDay(row.id, d);
-                          const off = !!offInfo;
-                          const holiday = holidayOn(d);
-                          const isToday = ymd(d) === todayYmd;
-                          const dYmd = ymd(d);
-                          const tip = [
-                            off ? `${row.name} — time off${offInfo!.reason ? ` (${offInfo!.reason})` : ""}` : holiday ? `Holiday: ${holiday}` : "",
-                            row.droppable ? "Double-click to add a job here" : "",
-                          ]
-                            .filter(Boolean)
-                            .join("\n");
-                          return (
-                            <div
-                              key={i}
-                              className={`relative border-r focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary ${off ? "bg-red-100/70" : holiday ? "bg-amber-100/60" : isToday ? "bg-primary/5 shadow-[inset_2px_0_0_hsl(var(--primary)),inset_-2px_0_0_hsl(var(--primary))]" : weekend ? "bg-muted/30" : ""}`}
-                              title={tip || undefined}
-                              {...(row.droppable
-                                ? {
-                                    role: "button",
-                                    tabIndex: i === 0 ? 0 : -1,
-                                    "aria-label": `New job for ${row.id ? row.name : "Unassigned"} on ${fmtDay(dYmd)}`,
-                                    onDoubleClick: () => openNewJob({ date: dYmd, techId: row.id }),
-                                    onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => onCellKey(e, dYmd, row.id),
-                                  }
-                                : {})}
-                            >
-                              {off ? (
-                                <Plane className="pointer-events-none absolute right-0.5 top-0.5 h-3 w-3 text-red-600" aria-hidden />
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
+                      <LaneDayCells
+                        row={row}
+                        weekDays={weekDays}
+                        todayYmd={todayYmd}
+                        holidayOn={holidayOn}
+                        offInfoOnDay={offInfoOnDay}
+                        openNewJob={openNewJob}
+                        onCellKey={onCellKey}
+                      />
                       {packed.map(({ job, lane }) => {
                         const startIdx = Math.max(0, dayIndex(parseYmd(job.startDate!), weekStart));
                         const endIdx = Math.min(6, dayIndex(parseYmd(job.endDate ?? job.startDate!), weekStart));
@@ -1470,41 +1049,7 @@ export function ScheduleClient({
       />
 
       {dayTasks && (
-        <Modal
-          open
-          onClose={() => setDayTasks(null)}
-          title={`Targeted tasks — ${fmtDay(dayTasks.ymd)}`}
-          description="Dashboard tasks due this day."
-        >
-          <ul className="space-y-1.5">
-            {dayTasks.tasks.map((t) => (
-              <li key={t.task.id}>
-                {t.editable ? (
-                  <button
-                    type="button"
-                    onClick={() => { setDayTasks(null); setTaskTicketId(t.task.id); }}
-                    className="w-full rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/40"
-                  >
-                    <span className="font-medium">{t.task.title}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {t.ownerName} · P{t.task.priority}
-                    </span>
-                  </button>
-                ) : (
-                  <div
-                    className="w-full rounded-md border border-dashed px-3 py-2 text-left text-sm opacity-70"
-                    title="Managed on that person's dashboard"
-                  >
-                    <span className="font-medium">{t.task.title}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {t.ownerName} · P{t.task.priority}
-                    </span>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Modal>
+        <DayTasksModal dayTasks={dayTasks} setDayTasks={setDayTasks} setTaskTicketId={setTaskTicketId} />
       )}
 
       {ticketEntry && (
@@ -1596,328 +1141,5 @@ export function ScheduleClient({
         />
       )}
     </div>
-  );
-}
-
-/** Technician filter: compact button opening a checkbox popover (multi-select). */
-function TechFilter({
-  technicians,
-  others,
-  selected,
-  onChange,
-}: {
-  technicians: TechnicianOption[];
-  /** Not-schedulable / archived people who still hold jobs. */
-  others: TechnicianOption[];
-  selected: Set<string> | null; // null = everyone
-  onChange: (next: Set<string> | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-
-  const active = technicians.filter((t) => t.active);
-  const isAll = selected === null;
-  const count = selected?.size ?? 0;
-  const label = isAll
-    ? "Everyone"
-    : count === 0
-      ? "No one"
-      : count === 1
-        ? (selected!.has("UNASSIGNED")
-            ? "Unassigned"
-            : technicians.find((t) => selected!.has(t.id))?.name ?? "1 selected")
-        : `${count} selected`;
-
-  const toggle = (id: string) => {
-    // Starting from "All", a click narrows to just that one — feels natural.
-    const next = selected === null ? new Set<string>() : new Set(selected);
-    if (selected === null) next.add(id);
-    else if (next.has(id)) next.delete(id);
-    else next.add(id);
-    onChange(next);
-  };
-
-  const row = (t: TechnicianOption, suffix?: string) => (
-    <label key={t.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted">
-      <input
-        type="checkbox"
-        checked={isAll || (selected?.has(t.id) ?? false)}
-        onChange={() => toggle(t.id)}
-        className="h-3.5 w-3.5 accent-primary"
-      />
-      <span className="h-2 w-2 shrink-0 rounded-full" style={dotStyle(t.color)} />
-      <span className="truncate">
-        {t.name}
-        {suffix ? <span className="text-muted-foreground"> {suffix}</span> : null}
-      </span>
-    </label>
-  );
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        aria-label={`Filter people: ${label}`}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className={`${selectClass} flex items-center gap-1 ${!isAll ? "border-primary/60 font-medium" : ""}`}
-      >
-        {label}
-        <ChevronDown className="h-3.5 w-3.5" />
-      </button>
-      {open ? (
-        <div className="absolute left-0 z-30 mt-1 w-56 rounded-md border bg-background p-2 shadow-lg sm:left-auto sm:right-0">
-          <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs font-medium hover:bg-muted">
-            <input
-              type="checkbox"
-              checked={isAll}
-              onChange={() => onChange(isAll ? new Set() : null)}
-              className="h-3.5 w-3.5 accent-primary"
-            />
-            Everyone
-          </label>
-          <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted">
-            <input
-              type="checkbox"
-              checked={isAll || (selected?.has("UNASSIGNED") ?? false)}
-              onChange={() => toggle("UNASSIGNED")}
-              className="h-3.5 w-3.5 accent-primary"
-            />
-            Unassigned
-          </label>
-          <div className="my-1 border-t" />
-          <div className="max-h-64 overflow-y-auto">
-            {active.map((t) => row(t))}
-            {others.length ? (
-              <>
-                <p className="mt-1 border-t px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Still holding jobs
-                </p>
-                {others.map((t) => row(t, t.archived ? "(archived)" : "(inactive)"))}
-              </>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function Stat({ label, value, tone, title }: { label: string; value: number; tone?: "warn" | "bad"; title?: string }) {
-  const color = tone === "bad" ? "text-red-600" : tone === "warn" ? "text-amber-600" : "text-foreground";
-  return (
-    <span className="inline-flex items-baseline gap-1 rounded-full border bg-background px-2 py-0.5" title={title}>
-      <span className={`font-semibold ${color}`}>{value}</span>
-      <span className="text-muted-foreground">{label}</span>
-    </span>
-  );
-}
-
-function PanelSection({
-  title,
-  jobs,
-  collapsed,
-  setCollapsed,
-  renderCard,
-  emptyText,
-  hint,
-  amber,
-  footer,
-}: {
-  title: string;
-  jobs: readonly JobRow[];
-  collapsed: Set<string>;
-  setCollapsed: (fn: (prev: Set<string>) => Set<string>) => void;
-  renderCard: (job: JobRow) => ReactNode;
-  emptyText: string;
-  hint?: string;
-  amber?: boolean;
-  footer?: ReactNode;
-}) {
-  const isOpen = !collapsed.has(title);
-  const toggle = () =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(title)) next.delete(title);
-      else next.add(title);
-      return next;
-    });
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={toggle}
-        className="mb-1.5 flex w-full items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-        aria-expanded={isOpen}
-      >
-        {isOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span className={amber ? "text-amber-700" : "text-foreground"}>{title}</span>
-        <span>({jobs.length})</span>
-      </button>
-      {isOpen ? (
-        <>
-          {jobs.length ? (
-            <>
-              {hint ? <p className="mb-2 text-xs text-muted-foreground">{hint}</p> : null}
-              <ul className="space-y-1.5">{jobs.map((j) => renderCard(j))}</ul>
-            </>
-          ) : (
-            <p className="text-xs text-muted-foreground">{emptyText}</p>
-          )}
-          {footer}
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function Detail({ label, value, wrap }: { label: string; value: string | null | undefined; wrap?: boolean }) {
-  if (!value) return null;
-  return (
-    <div className="flex gap-2">
-      <dt className="w-16 shrink-0 text-muted-foreground">{label}</dt>
-      <dd className={wrap ? "whitespace-pre-wrap break-words" : "truncate"}>{value}</dd>
-    </div>
-  );
-}
-
-/**
- * Side-panel card. Click / Enter on the card's text opens the job editor; the
- * card is the drag source; the locate button jumps the board to the job's date
- * (dated jobs only); "⋯" (or right-click) opens the actions menu.
- */
-function QueueCard({
-  job,
-  onOpen,
-  onJump,
-  onMenu,
-  onDragStart,
-}: {
-  job: JobRow;
-  onOpen: (job: JobRow) => void;
-  onJump: (job: JobRow) => void;
-  onMenu: (job: JobRow, x: number, y: number, trigger: HTMLElement | null) => void;
-  onDragStart: (e: DragEvent<HTMLElement>, job: JobRow) => void;
-}) {
-  const assigned = !!job.technicianColor;
-  const [expanded, setExpanded] = useState(false);
-  const label = jobLabel(job);
-  const iconBtn = "rounded p-0.5 hover:bg-black/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-  return (
-    <li>
-      <div
-        draggable
-        onDragStart={(e) => onDragStart(e, job)}
-        onContextMenu={(e: ReactMouseEvent<HTMLDivElement>) => {
-          e.preventDefault();
-          const r = e.currentTarget.getBoundingClientRect();
-          const kb = e.clientX === 0 && e.clientY === 0;
-          onMenu(job, kb ? r.left : e.clientX, kb ? r.top + 24 : e.clientY, e.currentTarget.querySelector<HTMLElement>("[data-card-open]"));
-        }}
-        title={`${job.description ?? label}\nClick: open · Drag onto the board to schedule · ⋯ or right-click: actions`}
-        style={assigned ? softStyle(job.technicianColor) : undefined}
-        className={`group w-full cursor-grab rounded-md border p-2 text-left text-xs shadow-sm focus-within:ring-2 focus-within:ring-ring active:cursor-grabbing ${
-          assigned
-            ? "hover:brightness-95"
-            : "border-dashed border-muted-foreground/40 bg-background hover:border-primary/50"
-        }`}
-      >
-        <div className="flex items-start justify-between gap-1">
-          <div
-            role="button"
-            tabIndex={0}
-            data-card-open
-            aria-label={`Open job ${label}`}
-            onClick={() => onOpen(job)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onOpen(job);
-              }
-            }}
-            className="min-w-0 flex-1 focus-visible:outline-none"
-          >
-            <span className="block truncate font-medium">{label}</span>
-            <span className="block truncate text-[11px] opacity-80">
-              {job.technicianName ?? "Unassigned"}
-              {job.startDate ? ` · ${fmtDayRange(job.startDate, job.endDate)}` : ""}
-            </span>
-          </div>
-          <div className="flex shrink-0 items-center gap-0.5">
-            {job.tentative && job.startDate ? (
-              <span className="rounded bg-amber-200 px-1 text-[10px] font-medium text-amber-800">Tentative</span>
-            ) : job.jobStatus === "UNCONFIRMED" ? (
-              <span className="rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-700">Unconfirmed</span>
-            ) : null}
-            {job.startDate ? (
-              <button
-                type="button"
-                aria-label={`Show ${label} on the board`}
-                title="Show on the board (jump to its date)"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onJump(job);
-                }}
-                className={iconBtn}
-              >
-                <LocateFixed className="h-3.5 w-3.5" aria-hidden />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              aria-label={`Actions for ${label}`}
-              aria-haspopup="menu"
-              title="Actions"
-              onClick={(e) => {
-                e.stopPropagation();
-                const r = e.currentTarget.getBoundingClientRect();
-                onMenu(job, r.left, r.bottom + 2, e.currentTarget);
-              }}
-              className={`${iconBtn} opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100`}
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
-            </button>
-            <button
-              type="button"
-              aria-label={expanded ? "Hide details" : "Show details"}
-              aria-expanded={expanded}
-              onClick={(e) => {
-                e.stopPropagation();
-                setExpanded((v) => !v);
-              }}
-              className={iconBtn}
-            >
-              {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            </button>
-          </div>
-        </div>
-
-        {expanded ? (
-          <dl className="mt-2 space-y-0.5 border-t pt-2 text-[11px]">
-            <Detail label="SO #" value={job.soNumber} />
-            <Detail label="Customer" value={job.customerName} />
-            <Detail label="Type" value={job.jobType ? JOB_TYPE_LABELS[job.jobType] : null} />
-            <Detail label="Status" value={STATUS_LABELS[job.jobStatus] ?? job.jobStatus} />
-            <Detail label="Hardware" value={job.hardwareTarget} />
-            <Detail label="Person" value={job.technicianName ?? "Unassigned"} />
-            <Detail label="Start" value={job.startDate ? fmtDay(job.startDate) : null} />
-            <Detail label="End" value={job.endDate ? fmtDay(job.endDate) : null} />
-            <Detail label="Days" value={job.durationDays === 0 ? "TBD" : job.durationDays != null ? String(job.durationDays) : null} />
-            <Detail label="Tentative" value={job.tentative ? "Yes" : "No"} />
-            <Detail label="Scope" value={job.description} wrap />
-          </dl>
-        ) : null}
-      </div>
-    </li>
   );
 }

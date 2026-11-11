@@ -389,7 +389,7 @@ host normally has no npm — Docker is the supported path).
   backup, NOT in the Excel round-trip). List rows are slim — inline priority /
   target / state, 💬 comment count, notes preview; title/notes/contact editing
   lives in the ticket. Rows **sort by priority first, then target date**. Target-date cues: **red "Overdue"**
-  once past due, **amber "Due soon"** within 2 days (`dueStatus` in the client).
+  once past due, **amber "Due soon"** within 2 days (`dueStatus` in `dashboard/task-rules.ts`).
   Completed items appear (behind "Show completed") **grouped by completion week**
   (`TechTask.completedAt`, stamped on entering DONE / cleared on leaving). The
   dashboard also surfaces **field-service jobs** read-only: each person's dated jobs

@@ -20,7 +20,7 @@ import {
   getTaskThreadAction,
   updateTechTaskAction,
 } from "./actions";
-import { ORIGIN_LABELS, STATES, STATE_COLORS, STATE_LABELS, deleteTaskMessage, dueStatus } from "./dashboard-client";
+import { ORIGIN_LABELS, STATES, STATE_COLORS, STATE_LABELS, deleteTaskMessage, dueStatus } from "./task-rules";
 import type { NoteRow, OwnerLite, TechTaskRow, TechTaskState } from "@/lib/services/tech-tasks";
 
 // GitLab-style ticket view for a dashboard task: editable details up top, then

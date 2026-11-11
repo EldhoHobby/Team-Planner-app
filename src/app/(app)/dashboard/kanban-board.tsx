@@ -14,7 +14,7 @@ import {
   matchesDueFilter,
   staleMessage,
   type DueFilter,
-} from "./dashboard-client";
+} from "./task-rules";
 import type { OwnerGroup, TechTaskRow, TechTaskState } from "@/lib/services/tech-tasks";
 
 // Kanban view of the dashboard. A single board for a person viewing only their
