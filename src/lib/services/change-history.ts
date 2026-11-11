@@ -1,5 +1,4 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 
 // PERMANENT field-level change history (ChangeHistory model). Never pruned —
@@ -78,14 +77,5 @@ export async function recordFieldChanges(
       oldValue: c.oldValue,
       newValue: c.newValue,
     })),
-  });
-}
-
-/** History for one record, newest first (tenant-scoped). */
-export function listChangeHistory(scope: TenantScope, entity: string, entityId: string, take = 500) {
-  return prisma.changeHistory.findMany({
-    where: { orgId: scope.ctx.orgId, entity, entityId },
-    orderBy: { createdAt: "desc" },
-    take,
   });
 }

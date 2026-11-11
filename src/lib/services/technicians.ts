@@ -3,6 +3,7 @@ import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { toUtcMidnight } from "@/lib/scheduling/calc";
 import { writeAudit } from "./audit";
+import { assertPersonInScope } from "./people";
 
 function assertAdmin(scope: TenantScope) {
   if (!scope.ctx.isOrgAdmin) {
@@ -19,14 +20,6 @@ export function listTechTimeOff(scope: TenantScope) {
     where: { orgId: scope.ctx.orgId },
     orderBy: { startDate: "asc" },
   });
-}
-
-async function assertPersonInScope(scope: TenantScope, userId: string) {
-  const membership = await prisma.membership.findFirst({
-    where: { userId, orgId: scope.ctx.orgId },
-    select: { id: true },
-  });
-  if (!membership) throw new ForbiddenError("That person is not in your organization");
 }
 
 export async function createTechTimeOff(

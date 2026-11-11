@@ -2,13 +2,14 @@ import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/db/client";
 import {
-  ensureDefaultTechnicians,
+  hasOlderCompletedJobs,
   listFieldJobs,
+  listPeopleByIds,
   listTechnicians,
 } from "@/lib/services/field-service";
 import { listTechTimeOff } from "@/lib/services/technicians";
 import { listHolidays } from "@/lib/services/holidays";
-import { recordPageView } from "@/lib/services/audit";
+import { AUDIT_RETENTION_DAYS, recordPageView } from "@/lib/services/audit";
 import { listTargetedTasks, listOrgPeople } from "@/lib/services/tech-tasks";
 import { ScheduleClient } from "./schedule-client";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
@@ -57,26 +58,34 @@ async function defaultTechIdsFor(userId: string, orgId: string, isOrgAdmin: bool
 export default async function SchedulePage({
   searchParams,
 }: {
-  searchParams: Promise<{ tech?: string; date?: string }>;
+  searchParams: Promise<{ tech?: string; date?: string; completed?: string }>;
 }) {
   await requireAuth();
   const { user, scope } = await requireScope();
   await recordPageView(scope, "Schedule");
   const params = await searchParams;
+  // Completed jobs older than 12 months are only loaded on request
+  // ("Show older completed jobs" in the Completed section → ?completed=all).
+  const includeOldCompleted = params.completed === "all";
 
-  // Optionally seed a demo crew on first visit (opt-in via SEED_DEFAULT_TECHNICIANS;
-  // off by default, so production starts with no technicians). No-op otherwise.
-  await ensureDefaultTechnicians(scope);
-
-  const [jobs, techs, timeOff, holidays, defaultTechIds, targetedTasks, people] = await Promise.all([
-    listFieldJobs(scope),
+  const [jobs, techs, timeOff, holidays, defaultTechIds, targetedTasks, people, hasOlderCompleted] = await Promise.all([
+    listFieldJobs(scope, { includeOldCompleted }),
     listTechnicians(scope),
     listTechTimeOff(scope),
     listHolidays(scope),
     defaultTechIdsFor(user.id, scope.ctx.orgId, scope.ctx.isOrgAdmin),
     listTargetedTasks(scope),
     listOrgPeople(scope),
+    includeOldCompleted ? Promise.resolve(true) : hasOlderCompletedJobs(scope),
   ]);
+
+  // People who still hold jobs but are not in the schedulable list (archived):
+  // looked up by id so their work gets an "(archived)" lane instead of vanishing.
+  const listed = new Set(techs.map((t) => t.id));
+  const missingIds = [
+    ...new Set(jobs.map((j) => j.technicianId).filter((id): id is string => !!id && !listed.has(id))),
+  ];
+  const holders = await listPeopleByIds(scope, missingIds);
 
   const jobRows: JobRow[] = jobs.map((j) => ({
     id: j.id,
@@ -97,12 +106,16 @@ export default async function SchedulePage({
     tentative: j.tentative,
   }));
 
-  const technicians: TechnicianOption[] = techs.map((t) => ({
-    id: t.id,
-    name: t.name,
-    color: t.color,
-    active: t.active,
-  }));
+  const technicians: TechnicianOption[] = [
+    ...techs.map((t) => ({
+      id: t.id,
+      name: t.name,
+      color: t.color,
+      active: t.active,
+    })),
+    // Never schedulable; `archived` marks them for the "(archived)" lane.
+    ...holders.map((h) => ({ id: h.id, name: h.name, color: h.color, active: false, archived: true })),
+  ];
 
   const timeOffRows: TechTimeOff[] = timeOff.map((e) => ({
     technicianId: e.technicianId,
@@ -128,6 +141,9 @@ export default async function SchedulePage({
       people={people}
       currentUserId={user.id}
       isAdmin={scope.ctx.isOrgAdmin}
+      historyDays={AUDIT_RETENTION_DAYS}
+      showingOldCompleted={includeOldCompleted}
+      hasOlderCompleted={hasOlderCompleted}
     />
   );
 }

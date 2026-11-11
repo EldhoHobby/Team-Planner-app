@@ -1,10 +1,9 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
-import { useConfirm } from "@/components/ui/confirm-dialog";
 import { FormMessage } from "@/components/ui/form-message";
 import { cn } from "@/lib/utils";
 import { fmtDate, fmtMoney } from "@/lib/agreements/constants";
@@ -12,7 +11,7 @@ import type { PipelineCard, PipelineColumn } from "@/lib/services/agreements/das
 import { createProposalAction, proposalTransitionAction } from "../actions";
 import { CloseProposalDialog } from "../close-proposal-dialog";
 import { CustomerStatusBadge } from "../badges";
-import { SIGN_TITLE, signMessage } from "../sign-message";
+import { SendSignDialog, type SendSignRequest } from "../send-sign-dialog";
 
 const COLUMNS: { id: PipelineColumn; title: string; hint: string }[] = [
   { id: "DUE", title: "Due", hint: "Ending soon or expired, no proposal" },
@@ -43,11 +42,24 @@ function daysSince(from: string | null, today: string): number | null {
   return Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
 
-export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]; canEdit: boolean; today: string }) {
+export function PipelineBoard({
+  cards, canEdit, today, initialQ = "",
+}: {
+  cards: PipelineCard[];
+  canEdit: boolean;
+  today: string;
+  initialQ?: string;
+}) {
   const router = useRouter();
-  const confirm = useConfirm();
   const [pending, start] = useTransition();
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQ);
+  // The search lives in the URL (?q=) so a reload / browser Back after opening a card keeps it.
+  useEffect(() => {
+    const url = `${window.location.pathname}${q ? `?${new URLSearchParams({ q }).toString()}` : ""}`;
+    if (`${window.location.pathname}${window.location.search}` !== url) window.history.replaceState(null, "", url);
+  }, [q]);
+  // A move to Sent / Signed waits for the date dialog.
+  const [asking, setAsking] = useState<{ card: PipelineCard; to: "SENT" | "SIGNED"; req: SendSignRequest } | null>(null);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [over, setOver] = useState<PipelineColumn | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,17 +77,24 @@ export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]
   const drag = cards.find((c) => c.key === dragKey) ?? null;
   const canDrop = (to: PipelineColumn) => !!drag && canEdit && (MOVES[drag.column] ?? []).includes(to);
 
-  const move = async (card: PipelineCard, to: PipelineColumn) => {
+  const move = (card: PipelineCard, to: PipelineColumn) => {
     setError(null);
     if (to === "CLOSED") return setClosing(card);
-    if (to === "SIGNED") {
-      const ok = await confirm({
-        title: SIGN_TITLE,
-        message: signMessage({ customer: card.name, year: card.year, total: card.value, agreements: card.agreements }),
-        confirmLabel: "Mark signed",
+    if ((to === "SENT" || to === "SIGNED") && card.column !== "DUE") {
+      // Same dialog as the proposal page: the date it happened (+ set a parked customer Active on signing).
+      setAsking({
+        card, to,
+        req: {
+          kind: to === "SENT" ? "send" : "sign", customer: card.name, customerStatus: card.customerStatus, year: card.year,
+          total: card.value, agreements: card.agreements, sentDate: card.column === "SENT" ? card.sentDate : null,
+        },
       });
-      if (!ok) return;
+      return;
     }
+    run(card, to);
+  };
+
+  const run = (card: PipelineCard, to: PipelineColumn, extra: { date?: string; setActive?: boolean } = {}) => {
     setMoved((m) => ({ ...m, [card.key]: to }));
     start(async () => {
       const r =
@@ -85,6 +104,7 @@ export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]
               id: card.proposalId!,
               version: card.proposalVersion!,
               action: to === "SENT" ? "send" : to === "SIGNED" ? "sign" : card.column === "CLOSED" ? "reopen" : "unsend",
+              ...extra,
             });
       if (r.error) setError(r.error);
       setMoved((m) => {
@@ -224,6 +244,16 @@ export function PipelineBoard({ cards, canEdit, today }: { cards: PipelineCard[]
           }}
         />
       )}
+
+      <SendSignDialog
+        request={asking?.req ?? null}
+        onCancel={() => setAsking(null)}
+        onConfirm={({ date, setActive }) => {
+          const a = asking;
+          setAsking(null);
+          if (a) run(a.card, a.to, { date, setActive });
+        }}
+      />
     </div>
   );
 }

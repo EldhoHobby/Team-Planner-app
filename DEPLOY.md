@@ -24,10 +24,10 @@ from `C:\TeamPlanner` unless a step says otherwise.
 | **URL** | `https://10.210.6.233:8443` (self-signed `tls internal` cert — click through the warning) |
 | **Folder** | `C:\TeamPlanner` = a **git clone of `main`** (running **v0.0.10**) |
 | **Compose file** | `docker-compose.offline.yml` (uses locally built / pulled images, `pull_policy: never`) |
-| **Images** | `team-planner-app:latest` + `team-planner-app-migrator:latest`, **built on this PC** from the clone; Caddy / Postgres / Ollama pulled with `docker pull` |
-| **`.env`** | `DB_PASSWORD`, `APP_URL=https://10.210.6.233:8443`, `HTTPS_PORT=8443`, `MAX_UPLOAD_MB`, `BACKUP_KEEP_DAYS=14` — not in git; keep a copy somewhere safe (it holds the DB password) |
-| **Caddyfile** | **edited locally** to the new IP (`10.210.6.233`) — see 1.3, it gets in the way of `git pull` |
-| **Email ingest** | off (`EMAIL_INGEST_ENABLED` unset) |
+| **Images** | `team-planner-app:latest` + `team-planner-app-migrator:latest`, **built on this PC** from the clone; Caddy / Postgres (and Ollama, only for AI) pulled with `docker pull` |
+| **`.env`** | `DB_PASSWORD`, `APP_URL=https://10.210.6.233:8443`, `HTTPS_PORT=8443`, `LAN_IP=10.210.6.233`, `BACKUP_KEEP_DAYS=14` — not in git; keep a copy somewhere safe (it holds the DB password). An old `MAX_UPLOAD_MB` / `SESSION_SECRET` line is ignored |
+| **Caddyfile** | v0.0.10 (running now): **edited locally** to `10.210.6.233`. From the next update on, the Caddyfile reads `LAN_IP` from `.env` and is no longer edited — one-time switch in 1.3 |
+| **Email ingest / AI** | off (`EMAIL_INGEST_ENABLED` unset); the `ollama` containers only run with `--profile ai` (section 5) |
 | **Data** | Docker volumes `teamplanner_db_data` (database) and `teamplanner_uploads` (attachments); dumps in `C:\TeamPlanner\backups` |
 
 The **dev PC** is `10.210.4.130` (`https://planner.localhost`, `docker-compose.yml`).
@@ -77,38 +77,32 @@ Optional, if people attach files to tasks — copy the uploads out too:
 docker compose -f docker-compose.offline.yml cp app:/app/uploads "backups\uploads-$(Get-Date -Format yyyyMMdd-HHmmss)"
 ```
 
-**4. Pull the new code, keeping the local Caddyfile** (details and conflicts: 1.3):
+**4. Pull the new code.** The **first** update after v0.0.10 still has the
+locally edited Caddyfile — do the one-time switch in 1.3 first (add `LAN_IP`
+to `.env`, discard the edit). After that the clone has no local changes:
 
 ```powershell
-git stash push -m "production Caddyfile" -- Caddyfile
+git status --short
 ```
+
+(expect no output, or only untracked files), then:
 
 ```powershell
 git pull
 ```
 
-**If `git pull` prints an error, STOP** — run `git stash pop`, start the proxy
-again, and fix the cause before continuing (the next steps would otherwise
-rebuild the OLD version without any warning):
+**If `git pull` prints an error, STOP** — start the proxy again and fix the
+cause before continuing (the next steps would otherwise rebuild the OLD
+version without any warning):
 
 ```powershell
 docker compose -f docker-compose.offline.yml start proxy
 ```
 
-Otherwise put the local Caddyfile back:
-
-```powershell
-git stash pop
-```
-
-```powershell
-git diff -- Caddyfile
-```
-
-The diff should show only the IP lines (`10.210.6.233`).
-
 **5. Pull the base images the compose file pins** (needs internet; a no-op when
-they are already present). This reads the exact tags from the compose file:
+they are already present). This reads the exact tags from the compose file
+(it also pulls the Ollama image, which is only used with `--profile ai` —
+harmless; the Node base image for the build is pulled by `docker build`):
 
 ```powershell
 Select-String -Path .\docker-compose.offline.yml -Pattern '^\s*image:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Where-Object { $_ -notlike 'team-planner-*' } | Sort-Object -Unique | ForEach-Object { docker pull $_ }
@@ -125,12 +119,16 @@ docker build --target runner -t team-planner-app:latest .
 docker build --target migrator -t team-planner-app-migrator:latest .
 ```
 
-**7. Start it.** `migrate` applies any new database migrations, then `app` and
-`proxy` start on the new images:
+**7. Start it.** `migrate` applies any new database migrations, then `app`
+starts on the new images, and `proxy` once the app's healthcheck passes
+(so nobody sees a 502 while it starts):
 
 ```powershell
 docker compose -f docker-compose.offline.yml up -d
 ```
+
+(Add `--profile ai` after `-f docker-compose.offline.yml` only if
+`EMAIL_AI_ENABLED=true` — section 5.)
 
 **8. Check it.**
 
@@ -138,8 +136,10 @@ docker compose -f docker-compose.offline.yml up -d
 docker compose -f docker-compose.offline.yml ps
 ```
 
-You want `app`, `proxy`, `db`, `backup`, `ollama` running and `migrate`
-**exited (0)**. If `migrate` exited with an error, read its log and go to 1.2:
+You want `app` (healthy), `proxy`, `db` (healthy), `backup` running and
+`migrate` **exited (0)** (`ollama` only with the AI profile). If `proxy` is not
+up, the app is not healthy yet — wait a minute, or read the `app` log. If
+`migrate` exited with an error, read its log and go to 1.2:
 
 ```powershell
 docker compose -f docker-compose.offline.yml logs --tail=40 migrate
@@ -156,7 +156,22 @@ and open the Schedule and Dashboard.
 #### First update after v0.0.10 (one-time notes)
 
 Production is on v0.0.10; the next release jumps to the service-agreements line
-(v0.0.11 → v0.0.40+). Things to know before that update:
+(v0.0.11 → v0.0.43+). Things to know before that update:
+
+- **Do the one-time Caddyfile switch (1.3) in step 4**, before `git pull`.
+- `ollama` / `ollama-init` now only start with `--profile ai`. After the update
+  the old `ollama` container from v0.0.10 keeps running until you remove it
+  (AI is off on production):
+
+  ```powershell
+  docker compose -f docker-compose.offline.yml --profile ai rm -sf ollama ollama-init
+  ```
+
+  The `ollama_models` volume is kept; nothing else is affected.
+- The app now has a healthcheck and `proxy` waits for it; all services rotate
+  their Docker logs (10 MB × 5).
+- The build's Node base image is pinned (`node:22.23-alpine`); `docker build`
+  pulls it on the first build.
 
 - **Rehearse the migrations on a copy of production first** (below). The jump
   adds seven migrations (change history + task version column, the whole
@@ -274,15 +289,15 @@ here.
 as `v0.0.10`; run `git fetch --tags` first if the tag is missing):
 
 ```powershell
-git stash push -m "production Caddyfile" -- Caddyfile
-```
-
-```powershell
 git checkout <previous-commit-or-tag>
 ```
 
+**Only when going back to a version from before `LAN_IP`** (v0.0.43 or older,
+v0.0.10 included): its Caddyfile names the dev PC's IP and ignores `LAN_IP`, so
+put the production Caddyfile kept outside the repo (1.3) over it:
+
 ```powershell
-git stash pop
+Copy-Item C:\TeamPlanner-local\Caddyfile C:\TeamPlanner\Caddyfile -Force
 ```
 
 **5. Rebuild both images from that code** (same commands as 1.1 step 6):
@@ -315,42 +330,76 @@ forward again, copy the monthly dumps from `C:\TeamPlanner-local\monthly-dumps`
 back into `C:\TeamPlanner\backups` if any were pruned.
 
 The clone is now on a "detached HEAD". When the fix is ready, go forward again
-with `git checkout main` (stash the Caddyfile around it the same way) and
-follow 1.1.
+(if you copied the old Caddyfile in, discard it first with
+`git checkout -- Caddyfile`), then `git checkout main` and follow 1.1.
 
-### 1.3 The locally edited Caddyfile (known pain point)
+### 1.3 The Caddyfile and `LAN_IP`
 
-The Caddyfile in git names the dev PC's IP; production's copy was edited to
-`10.210.6.233`. Git sees that as an uncommitted change, so:
+The Caddyfile in git no longer names any IP: it serves `planner.localhost` plus
+`{$LAN_IP}`, which the compose file passes from `.env`. Production sets
+`LAN_IP=10.210.6.233` in `.env`, so the clone has **no local Caddyfile edit** and
+`git pull` / `git checkout` run cleanly.
 
-- `git pull` / `git checkout` **refuse to run** whenever the incoming commit
-  also changes the Caddyfile ("Your local changes would be overwritten").
-- If the edit is simply discarded, Caddy serves the wrong IP and browsers get
-  `ERR_SSL_PROTOCOL_ERROR`.
+**One-time switch (first update after v0.0.10)** — production's running
+Caddyfile is still the hand-edited one. During 1.1, after step 3 (proxy stopped,
+backup taken) and before `git pull`:
+
+**a. Keep a copy of the working production Caddyfile outside the repo** (needed
+if you ever roll back to v0.0.10 — 1.2 step 4):
+
+```powershell
+New-Item -ItemType Directory -Force C:\TeamPlanner-local
+```
+
+```powershell
+Copy-Item C:\TeamPlanner\Caddyfile C:\TeamPlanner-local\Caddyfile -Force
+```
+
+**b. Add `LAN_IP` to `.env`** (the leading line break guards against a last line
+without one):
+
+```powershell
+Add-Content -Path C:\TeamPlanner\.env -Value "`r`nLAN_IP=10.210.6.233" -Encoding ascii
+```
+
+```powershell
+Select-String -Path C:\TeamPlanner\.env -Pattern '^LAN_IP='
+```
+
+**c. Discard the local Caddyfile edit — only AFTER b** (until the new code is
+pulled, the proxy stays stopped, so nothing serves the dev IP):
+
+```powershell
+git checkout -- Caddyfile
+```
+
+```powershell
+git status --short
+```
+
+Then continue with `git pull` (1.1 step 4). The new Caddyfile + compose file
+pick up `LAN_IP` when the proxy is created in step 7.
+
+**If you still have a local Caddyfile edit** later (e.g. after a rollback to an
+old version, or someone edited it), `git pull` refuses with "Your local changes
+would be overwritten". Check that `.env` has the right `LAN_IP`, then discard
+the edit with `git checkout -- Caddyfile` and pull again.
+
+Notes:
+
+- After changing `LAN_IP` in `.env`, recreate the proxy (a plain `restart`
+  keeps the old value):
+
+  ```powershell
+  docker compose -f docker-compose.offline.yml up -d proxy
+  ```
+
+- After editing the Caddyfile itself (bind mount),
+  `docker compose -f docker-compose.offline.yml restart proxy` is enough.
 - While the proxy runs it holds the file open, so git (or an editor) can fail
   with a "user-mapped section" error — stop the proxy first (1.1 step 2).
-
-The routine is the `git stash push -- Caddyfile` → pull/checkout → `git stash pop`
-shown in 1.1. If `git stash pop` reports a **conflict**, open `Caddyfile` in
-Notepad, keep the new version's content, set the two IP lines (`default_sni`
-and the site address) to `10.210.6.233`, remove the `<<<<<<<` / `=======` /
-`>>>>>>>` marker lines, save, then:
-
-```powershell
-git restore --staged Caddyfile
-```
-
-```powershell
-git stash drop
-```
-
-Keep a copy of the working production Caddyfile **outside the repo** (e.g.
-`C:\TeamPlanner-local\Caddyfile`) so it can always be put back by hand. After
-any Caddyfile change, `docker compose -f docker-compose.offline.yml restart proxy`.
-
-> Better long-term fix (not done yet): let the compose file read the Caddyfile
-> path from `.env` (e.g. `CADDYFILE=./Caddyfile.production`, git-ignored), so
-> production's file is never a tracked change.
+- `LAN_IP` missing or wrong → browsers get `ERR_SSL_PROTOCOL_ERROR` on
+  `https://10.210.6.233:8443` (the certificate only covers `127.0.0.1`).
 
 ### 1.4 Keeping it running
 
@@ -401,8 +450,8 @@ Windows Update) leaves the app down until someone signs in — unless:
 - **Windows Update:** Settings → Windows Update → Advanced options → **Active
   hours** set manually to cover the working day (e.g. 6:00–22:00), so update
   restarts happen at night. With the items above the app comes back on its own.
-- **Static IP / DHCP reservation** for `10.210.6.233` — the Caddyfile and
-  `APP_URL` depend on it.
+- **Static IP / DHCP reservation** for `10.210.6.233` — `LAN_IP` and `APP_URL`
+  in `.env` depend on it.
 - **Firewall** (Administrator PowerShell; already done at setup):
 
   ```powershell
@@ -675,8 +724,12 @@ docker compose -f docker-compose.offline.yml exec -T db pg_restore -U planner -d
 - `bind: ...forbidden by its access permissions` on port 80/443 → held by
   Windows IIS/HTTP.sys. Publish on `8443` (`HTTPS_PORT=8443`, already done), or
   disable IIS (`Stop-Service W3SVC; Set-Service W3SVC -StartupType Disabled`).
-- `ERR_SSL_PROTOCOL_ERROR` by IP → the Caddyfile is missing that IP or the
-  `default_sni` line. Fix both, then `restart proxy`.
+- `ERR_SSL_PROTOCOL_ERROR` by IP → `LAN_IP` in `.env` is missing or wrong
+  (it feeds both the site address and `default_sni`). Fix it, then
+  `docker compose -f docker-compose.offline.yml up -d proxy`.
+- Site unreachable right after `up -d`, `proxy` not running → it waits for the
+  `app` healthcheck. Check `ps` (app should become `healthy`) and
+  `logs --tail=40 app`.
 - `user-mapped section open` saving the Caddyfile (or during `git pull`) →
   stop the proxy (and close Notepad++, which locks files too) first.
 - `cannot find ... dockerDesktopLinuxEngine` → Docker Desktop isn't running;
@@ -695,6 +748,16 @@ dashboard tasks. It is **off** on production. The new PC has internet, so it
 could be turned on: set `EMAIL_INGEST_ENABLED=true`, `IMAP_USER`,
 `IMAP_PASSWORD` (a Google App Password) in `.env`, then `up -d`. Only **one**
 install may poll an inbox — turn it off on dev first.
+
+The optional local AI (target date / priority from the email) also needs
+`EMAIL_AI_ENABLED=true` and the `ai` compose profile, which starts the
+`ollama` containers (the first start downloads the ~2 GB model):
+
+```powershell
+docker compose -f docker-compose.offline.yml --profile ai up -d
+```
+
+Use `--profile ai` on every later `up -d` too while AI is on.
 
 ---
 
@@ -727,8 +790,8 @@ docker build --provenance=false --target migrator -t team-planner-app-migrator:l
 
 Pull the **exact** base images `docker-compose.offline.yml` pins (check the
 `image:` lines — on this branch `caddy:2.11.8-alpine`, `postgres:16.15-alpine`,
-`ollama/ollama:0.40.14`). Ollama must travel too even with AI off: with
-`pull_policy: never`, `up -d` fails if any image is missing.
+and `ollama/ollama:0.40.14`). Ollama is only needed when the host will run
+`--profile ai`; without it, leave it out of the pull and the bundle.
 
 ```powershell
 docker pull caddy:2.11.8-alpine
@@ -742,8 +805,9 @@ docker pull postgres:16.15-alpine
 docker pull ollama/ollama:0.40.14
 ```
 
-Bundle **all five** images into one file (`docker save -o` writes the file
-itself — no redirect involved; the Ollama image makes it several GB):
+Bundle the images into one file (`docker save -o` writes the file itself — no
+redirect involved; the Ollama image makes it several GB — drop it from the
+list when AI stays off):
 
 ```powershell
 docker save -o team-planner-bundle.tar team-planner-app:latest team-planner-app-migrator:latest caddy:2.11.8-alpine postgres:16.15-alpine ollama/ollama:0.40.14
@@ -783,28 +847,14 @@ docker save -o team-planner-app-update.tar team-planner-app:latest team-planner-
    ```
 
    ```powershell
-   "DB_PASSWORD=$dbpw`r`nAPP_URL=https://<host-IP>:8443`r`nHTTPS_PORT=8443`r`nMAX_UPLOAD_MB=10`r`nBACKUP_KEEP_DAYS=14" | Set-Content -Path .\.env -Encoding ascii
+   "DB_PASSWORD=$dbpw`r`nAPP_URL=https://<host-IP>:8443`r`nHTTPS_PORT=8443`r`nLAN_IP=<host-IP>`r`nBACKUP_KEEP_DAYS=14" | Set-Content -Path .\.env -Encoding ascii
    ```
 
    Keep `.env` safe; recreating it with a different `DB_PASSWORD` locks the app
    out of the existing database volume.
 
-5. **New host only — Caddyfile:** put the host's IP (`ipconfig`) in both the
-   `default_sni` line and the site address, keep `tls internal`:
-
-   ```
-   {
-     default_sni <host-IP>
-   }
-
-   planner.localhost, <host-IP> {
-     encode gzip
-     reverse_proxy app:3000 {
-       header_up X-Real-IP {remote_host}
-     }
-     tls internal
-   }
-   ```
+5. **Caddyfile:** copy it unchanged — the host's IP (`ipconfig`) goes in
+   `LAN_IP` in `.env` (step 4), never in the Caddyfile.
 
 6. Create the backups folder and start:
 

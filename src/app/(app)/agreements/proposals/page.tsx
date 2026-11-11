@@ -18,13 +18,15 @@ function parseSort(v: string | undefined): ProposalSort {
 }
 
 /**
- * The filters live in the URL (q, status, month, customer, sort) so a proposal opened from a filtered
- * list can link back to exactly that list (see the `back` param on /agreements/proposals/[id]).
+ * The filters live in the URL (q, status, month, customer, sort, signed = signed-date year) so a proposal
+ * opened from a filtered list can link back to exactly that list (see the `back` param on
+ * /agreements/proposals/[id]). `?bulk=YYYY-MM` (editors) opens the bulk-create preview for that month
+ * (the dashboard's renewals chart links here); it is dropped from the URL once opened.
  */
 export default async function ProposalsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; customer?: string; q?: string; month?: string; sort?: string }>;
+  searchParams: Promise<{ status?: string; customer?: string; q?: string; month?: string; sort?: string; signed?: string; bulk?: string }>;
 }) {
   await requireAuth();
   const { scope } = await requireScope();
@@ -40,6 +42,8 @@ export default async function ProposalsPage({
       initialQ={typeof sp.q === "string" ? sp.q.slice(0, 200) : ""}
       initialMonth={typeof sp.month === "string" && /^\d{4}-\d{2}$/.test(sp.month) ? sp.month : ""}
       initialSort={parseSort(typeof sp.sort === "string" ? sp.sort : undefined)}
+      initialSigned={typeof sp.signed === "string" && /^\d{4}$/.test(sp.signed) ? sp.signed : ""}
+      openBulk={canEdit && typeof sp.bulk === "string" && /^\d{4}-\d{2}$/.test(sp.bulk) ? sp.bulk : ""}
     />
   );
 }

@@ -1,5 +1,15 @@
-# Self-hosted Team Planner — three services on a private network.
+# Self-hosted Team Planner (dev PC) — services on two private networks.
 # Only the proxy is published to the host; app and db stay internal.
+#
+#   docker compose up -d --build              # everything except local AI
+#   docker compose --profile ai up -d --build # also ollama (EMAIL_AI_ENABLED=true)
+
+# Log rotation for every service (Docker's default json-file log never shrinks).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   proxy:
@@ -9,17 +19,21 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      APP_DOMAIN: ${APP_DOMAIN:-planner.localhost}
+      # The host's LAN IP — the Caddyfile reads it ({$LAN_IP}). Set it in .env.
+      LAN_IP: ${LAN_IP:-127.0.0.1}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - app
+      app:
+        condition: service_healthy   # no 502s while the app is still starting
     networks:
       - web
+    logging: *default-logging
 
-  # One-shot: syncs the DB schema, then exits. Runs before app starts.
+  # One-shot: applies the versioned migrations (prisma/migrate.sh), then exits.
+  # Runs before app starts.
   migrate:
     build:
       context: .
@@ -32,6 +46,7 @@ services:
     networks:
       - internal
     restart: "no"
+    logging: *default-logging
 
   app:
     build: .
@@ -39,11 +54,7 @@ services:
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
       APP_URL: ${APP_URL:-https://planner.localhost}
-      SMTP_URL: ${SMTP_URL:-}
-      SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
-      SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
       TIMESHEET_TEMPLATE_PATH: ${TIMESHEET_TEMPLATE_PATH:-/app/timesheet-template/Time_Sheet_Template.xlsm}
       # ── Email → task ingest (Gmail via IMAP; blank = feature off) ──
       EMAIL_INGEST_ENABLED: ${EMAIL_INGEST_ENABLED:-false}
@@ -52,40 +63,52 @@ services:
       IMAP_USER: ${IMAP_USER:-}
       IMAP_PASSWORD: ${IMAP_PASSWORD:-}
       EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-120}
-      # ── Local AI email summarizer (Ollama; blank/false = feature off) ──
+      # ── Local AI email assist (Ollama, `--profile ai`; false = feature off) ──
       EMAIL_AI_ENABLED: ${EMAIL_AI_ENABLED:-false}
       EMAIL_AI_MODEL: ${EMAIL_AI_MODEL:-qwen2.5:3b-instruct}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       NODE_ENV: production
     volumes:
-      - uploads:/app/uploads          # task attachments, persisted on the host
+      - uploads:/app/uploads          # attachment storage (Attachment rows; no upload screen today)
       - ./timesheet-template:/app/timesheet-template:ro   # QEI timesheet template (host-managed)
     depends_on:
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # node:alpine ships BusyBox wget; /api/health answers 503 when the DB is down.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     networks:
       - web          # reachable by proxy
       - internal     # reaches db
     # No host ports — only the proxy talks to it.
+    logging: *default-logging
 
-  # Local LLM runtime for the email→task summarizer. Internal network only;
-  # the model loads on first request and unloads after idling, so the idle
-  # footprint is small even when EMAIL_AI_ENABLED=false.
+  # Local LLM runtime for the email→task assist. Only started with the "ai"
+  # profile (`docker compose --profile ai up -d`) — hosts with
+  # EMAIL_AI_ENABLED=false never run it. Internal network only. The app does
+  # not depend on it: with it absent, ingest simply skips the AI step.
   ollama:
     image: ollama/ollama:0.40.14   # pinned; bump deliberately
+    profiles: ["ai"]
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
     networks:
       - internal
     # No host ports — only the app talks to it.
+    logging: *default-logging
 
-  # One-shot: downloads the summarizer model (only when the feature is on),
+  # One-shot ("ai" profile): downloads the model (only when the feature is on),
   # then exits. The app does NOT wait for it — AI is optional and lazy.
   ollama-init:
     image: ollama/ollama:0.40.14   # pinned; bump deliberately
+    profiles: ["ai"]
     environment:
       OLLAMA_HOST: http://ollama:11434
       EMAIL_AI_ENABLED: ${EMAIL_AI_ENABLED:-false}
@@ -110,6 +133,7 @@ services:
     networks:
       - internal
     restart: "no"
+    logging: *default-logging
 
   db:
     image: postgres:16.15-alpine   # pinned; bump deliberately
@@ -129,6 +153,7 @@ services:
     networks:
       - internal
     # No host ports — internal network only.
+    logging: *default-logging
 
   # Postgres backups → ./backups on the host (compressed pg_dump format).
   # Dumps once at startup, then every 24 h (retries after 1 h if a dump fails):
@@ -197,6 +222,7 @@ services:
         condition: service_healthy
     networks:
       - internal
+    logging: *default-logging
 
 volumes:
   db_data:

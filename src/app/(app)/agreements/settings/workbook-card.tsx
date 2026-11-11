@@ -64,7 +64,7 @@ export function WorkbookCard() {
     if (apply) {
       const ok = await confirm({
         title: "Apply the workbook's changes?",
-        message: "The changes listed in the preview are written to the live data. Rows that changed in the app since the export are skipped.",
+        message: "The changes listed in the preview are written to the live data. Conflicts (rows also changed in the app since the export) and rows with errors are not applied.",
         confirmLabel: "Apply changes",
       });
       if (!ok) return;
@@ -80,19 +80,22 @@ export function WorkbookCard() {
     });
   };
 
-  const total = summary ? Object.values(summary.sheets).reduce((a, c) => a + c.created + c.updated + c.deleted, 0) : 0;
+  // Older summaries (before conflicts / row errors existed) may lack the new lists.
+  const changes = summary?.changes ?? [];
+  const conflicts = summary?.conflicts ?? [];
+  const rowErrors = summary?.rowErrors ?? [];
+  const ignored = summary?.ignored ?? 0;
+  const total = changes.length;
   const failed = summary?.errors.length ?? 0;
-  const applied = summary ? Math.max(0, summary.changes.length - failed) : 0;
+  const applied = summary ? summary.appliedCount ?? Math.max(0, total - failed) : 0;
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   const headline = !summary
     ? ""
     : summary.applied
-      ? failed
-        ? `Applied ${plural(applied, "change")}, ${failed} failed (listed below).`
-        : `Applied ${plural(applied, "change")}.`
+      ? `Applied ${plural(applied, "change")}, ${failed} failed.`
       : total
-        ? "Preview — nothing written yet:"
-        : "No changes found in this workbook.";
+        ? `Preview — nothing written yet: ${plural(total, "change")} to apply.`
+        : "No changes to apply in this workbook.";
 
   return (
     <section id="workbook" className="space-y-3 rounded-lg border bg-card p-5 text-sm">
@@ -147,7 +150,11 @@ export function WorkbookCard() {
           </p>
           <table className="w-full text-xs">
             <thead className="text-muted-foreground">
-              <tr><th className="text-left font-medium">Sheet</th><th className="text-right font-medium">New</th><th className="text-right font-medium">Changed</th><th className="text-right font-medium">Deleted</th><th className="text-right font-medium">Same</th><th className="text-right font-medium">Skipped</th></tr>
+              <tr>
+                <th className="text-left font-medium">Sheet</th><th className="text-right font-medium">New</th><th className="text-right font-medium">Changed</th>
+                <th className="text-right font-medium">Deleted</th><th className="text-right font-medium">Not edited</th><th className="text-right font-medium">Same</th>
+                <th className="text-right font-medium">Conflicts</th><th className="text-right font-medium">Errors</th><th className="text-right font-medium">Skipped</th>
+              </tr>
             </thead>
             <tbody>
               {Object.entries(summary.sheets).map(([name, c]) => (
@@ -156,28 +163,83 @@ export function WorkbookCard() {
                   <td className="text-right tabular-nums">{c.created}</td>
                   <td className="text-right tabular-nums">{c.updated}</td>
                   <td className="text-right tabular-nums">{c.deleted}</td>
+                  <td className="text-right tabular-nums text-muted-foreground">{c.ignored ?? 0}</td>
                   <td className="text-right tabular-nums text-muted-foreground">{c.unchanged}</td>
+                  <td className={c.conflicts ? "text-right tabular-nums text-amber-700 dark:text-amber-400" : "text-right tabular-nums"}>{c.conflicts ?? 0}</td>
+                  <td className={c.errors ? "text-right tabular-nums text-destructive" : "text-right tabular-nums"}>{c.errors ?? 0}</td>
                   <td className={c.skipped ? "text-right tabular-nums text-amber-700 dark:text-amber-400" : "text-right tabular-nums"}>{c.skipped}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {summary.changes.length > 0 && (
-            <details open={!summary.applied && summary.changes.length <= 15}>
-              <summary className="cursor-pointer">{summary.changes.length} change{summary.changes.length === 1 ? "" : "s"}</summary>
-              <ul className="mt-1 max-h-60 list-disc overflow-y-auto pl-5 text-xs">{summary.changes.map((s, i) => <li key={i}>{s}</li>)}</ul>
+          {ignored > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {plural(ignored, "row")} unchanged in this file — ignored (even where the app changed since the export).
+            </p>
+          )}
+          {summary.applied && failed > 0 && (
+            <details open>
+              <summary className="cursor-pointer text-destructive">{plural(failed, "change")} failed</summary>
+              <ul className="mt-1 max-h-60 list-disc overflow-y-auto pl-5 text-xs">{summary.errors.map((s, i) => <li key={i}>{s}</li>)}</ul>
+            </details>
+          )}
+          {changes.length > 0 && (
+            <details open={!summary.applied && changes.length <= 15}>
+              <summary className="cursor-pointer">{plural(changes.length, "change")}{summary.applied ? "" : " to apply"}</summary>
+              <ul className="mt-1 max-h-72 list-disc space-y-0.5 overflow-y-auto pl-5 text-xs">
+                {changes.map((c, i) => (
+                  <li key={i}>
+                    <span className="text-muted-foreground">{c.sheet}{c.row ? ` row ${c.row}` : ""}: </span>
+                    {c.what}
+                    {c.fields.length > 0 && (
+                      <ul className="pl-3">
+                        {c.fields.map((x, j) => (
+                          <li key={j}>
+                            {x.field}: <span className="text-muted-foreground">{x.from}</span> → <span className="font-medium">{x.to}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {conflicts.length > 0 && (
+            <details open>
+              <summary className="cursor-pointer text-amber-700 dark:text-amber-400">
+                {plural(conflicts.length, "conflict")} — edited here AND changed in the app since the export (not applied)
+              </summary>
+              <ul className="mt-1 max-h-72 list-disc space-y-0.5 overflow-y-auto pl-5 text-xs">
+                {conflicts.map((c, i) => (
+                  <li key={i}>
+                    <span className="text-muted-foreground">{c.sheet}{c.row ? ` row ${c.row}` : ""}: </span>
+                    {c.what}
+                    {c.fields.length > 0 && (
+                      <ul className="pl-3">
+                        {c.fields.map((x, j) => (
+                          <li key={j}>
+                            {x.field}: this file <span className="font-medium">{x.workbook}</span>, the app <span className="font-medium">{x.app}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs text-muted-foreground">Redo these in the app, or in a fresh export.</p>
+            </details>
+          )}
+          {rowErrors.length > 0 && (
+            <details open>
+              <summary className="cursor-pointer text-destructive">{plural(rowErrors.length, "row")} with errors (skipped)</summary>
+              <ul className="mt-1 max-h-60 list-disc overflow-y-auto pl-5 text-xs">{rowErrors.map((s, i) => <li key={i}>{s}</li>)}</ul>
             </details>
           )}
           {summary.skipped.length > 0 && (
-            <details open>
-              <summary className="cursor-pointer text-amber-700 dark:text-amber-400">{summary.skipped.length} row{summary.skipped.length === 1 ? "" : "s"} skipped or noted</summary>
+            <details open={summary.skipped.length <= 10}>
+              <summary className="cursor-pointer text-amber-700 dark:text-amber-400">{plural(summary.skipped.length, "row")} skipped or noted</summary>
               <ul className="mt-1 max-h-60 list-disc overflow-y-auto pl-5 text-xs">{summary.skipped.map((s, i) => <li key={i}>{s}</li>)}</ul>
-            </details>
-          )}
-          {summary.errors.length > 0 && (
-            <details open>
-              <summary className="cursor-pointer text-destructive">{summary.errors.length} change{summary.errors.length === 1 ? "" : "s"} failed</summary>
-              <ul className="mt-1 max-h-60 list-disc overflow-y-auto pl-5 text-xs">{summary.errors.map((s, i) => <li key={i}>{s}</li>)}</ul>
             </details>
           )}
         </div>

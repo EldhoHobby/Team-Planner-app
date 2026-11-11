@@ -7,9 +7,10 @@ import { todayYmd } from "@/lib/tz";
 import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, HISTORY_YEARS, OPEN_CUSTOMER_STATUSES, PROPOSAL_STATUS_LABELS, SA_AGREEMENTS, fmtDate, fmtMoney, type SaAgreement, type SaCustomerStatus, type SaSoftware } from "@/lib/agreements/constants";
 import { addOneYear, proposePrices, type PricingRules } from "@/lib/agreements/pricing";
 import { claimedAgreements, customerRenewal, priceHistory, sortByAgreement, type LineLite, type ProposalLite } from "@/lib/agreements/renewal";
+import { undoSigningBlockers } from "@/lib/agreements/undo-signing";
 import type { FieldChange } from "@/lib/services/change-history";
 import { logError } from "@/lib/log";
-import { assertCanEdit, audit, dateOf, getSettings, history, toLineLite, toProposalLite, ymd, type Db, type SettingsRow } from "./common";
+import { assertCanEdit, audit, dateOf, getSettings, history, lockCustomer, toLineLite, toProposalLite, ymd, type Db, type SettingsRow } from "./common";
 
 // Proposal workflow: DRAFT → SENT → SIGNED, or → DECLINED / WITHDRAWN.
 // Lines can be edited while DRAFT or SENT. Signing copies the lines into
@@ -63,20 +64,28 @@ function scadaPriceFor(
  * Settings rules. Each agreement renews into ITS next year (agreements can end
  * in different months, so after a partial renewal they can be a year apart);
  * one proposal per target year. `only` limits the agreements (bulk by end
- * month). Agreements already in a live proposal for that year are left out.
+ * month); `lapsedOnly` renews just the lapsed agreements (renewal.ts lapsedLines —
+ * the dashboard's "Lapsed agreements" shortcut). Lapsed agreements are renewed
+ * too otherwise. Agreements already in a live proposal for that year are left out.
+ *
+ * Must run inside a transaction: the customer row is locked first, and the
+ * "already in a proposal" check reads the proposals AFTER the lock, so two people
+ * pressing Start proposal at once can't both create a draft for the same agreements.
  */
 async function createFromCurrent(
   db: Db,
   scope: TenantScope,
   customerId: string,
-  opts: { only?: (a: SaAgreement, endDate: string | null) => boolean } = {},
+  opts: { only?: (a: SaAgreement, endDate: string | null) => boolean; lapsedOnly?: boolean } = {},
 ) {
   const rules = await getSettings(scope);
+  await lockCustomer(db, scope, customerId);
   const c = await loadCustomerFull(db, scope, customerId);
   const proposals = c.proposals.map(toProposalLite);
   const r = customerRenewal(c.contracts.map(toLineLite), proposals, todayYmd(), rules.dueWindowDays);
   if (r.currentYear === null) throw new ForbiddenError(`${c.name} has no signed agreements to renew yet.`);
-  const base = freeLines(r.currentLines, proposals).filter((l) => !opts.only || opts.only(l.agreement, l.endDate));
+  const renewable = opts.lapsedOnly ? r.lapsedLines : [...r.currentLines, ...r.lapsedLines];
+  const base = freeLines(renewable, proposals).filter((l) => !opts.only || opts.only(l.agreement, l.endDate));
   const years = [...new Set(base.map((l) => l.year + 1))].sort((x, y) => x - y);
   const created: { id: string; year: number; agreements: SaAgreement[]; total: number }[] = [];
   for (const year of years) {
@@ -103,11 +112,20 @@ async function createFromCurrent(
   return { name: c.name, soNumber: c.soNumber, created };
 }
 
-/** New proposal button. Returns the first proposal created (usually the only one). */
-export async function createProposal(scope: TenantScope, customerId: string) {
+/**
+ * New proposal button. Returns the first proposal created (usually the only one).
+ * `lapsedOnly`: renew only the lapsed agreements (dashboard "Lapsed agreements").
+ */
+export async function createProposal(scope: TenantScope, customerId: string, opts: { lapsedOnly?: boolean } = {}) {
   await assertCanEdit(scope);
-  const res = await prisma.$transaction((tx) => createFromCurrent(tx, scope, customerId));
-  if (!res.created.length) throw new ForbiddenError("Every current agreement is already in a proposal for its next year.");
+  const res = await prisma.$transaction((tx) => createFromCurrent(tx, scope, customerId, { lapsedOnly: !!opts.lapsedOnly }));
+  if (!res.created.length) {
+    throw new ForbiddenError(
+      opts.lapsedOnly
+        ? "Those lapsed agreements are already in a proposal."
+        : "Every current agreement is already in a proposal for its next year.",
+    );
+  }
   await audit(scope, customerId, "proposal_created", `Created ${res.created.map((p) => p.year).join(" + ")} proposal for ${res.name}`);
   return res.created[0]!.id;
 }
@@ -135,6 +153,7 @@ export async function createProposalFromLines(
     seen.add(l.agreement);
   }
   const res = await prisma.$transaction(async (tx) => {
+    await lockCustomer(tx, scope, customerId); // see createFromCurrent
     const c = await loadCustomerFull(tx, scope, customerId);
     const claimed = claimedAgreements(c.proposals.map(toProposalLite), year);
     const taken = input.lines.filter((l) => claimed.has(l.agreement)).map((l) => AGREEMENT_LABELS[l.agreement]);
@@ -287,6 +306,10 @@ export async function getProposal(scope: TenantScope, id: string, settings?: Set
         id: l.id, version: l.version, agreement: l.agreement, lastPrice: l.lastPrice === null ? null : Number(l.lastPrice),
         price: Number(l.price), rule: l.rule,
       })),
+      /** The signed agreement lines this proposal's signing created (still on the customer's record). */
+      signedLines: sortByAgreement(c.contracts.filter((l) => l.proposalId === p.id)).map((l) => ({
+        year: l.year, agreement: l.agreement, price: Number(l.price),
+      })),
     },
     customer: {
       id: c.id, name: c.name, soNumber: c.soNumber, soConfirmed: c.soConfirmed, status: c.status, state: c.state,
@@ -400,11 +423,13 @@ export async function addLine(scope: TenantScope, proposalId: string, agreement:
   if (!SA_AGREEMENTS.includes(agreement)) throw new ForbiddenError("Unknown agreement.");
   if (!Number.isFinite(price) || price < 0) throw new ForbiddenError("Price must be zero or more.");
   const p = await loadEditable(prisma, scope, proposalId);
-  const others = await prisma.saProposal.findMany({ where: { customerId: p.customerId, year: p.year }, include: { lines: true } });
-  if (claimedAgreements(others.map(toProposalLite), p.year).has(agreement)) {
-    throw new ForbiddenError(`${AGREEMENT_LABELS[agreement]} is already in a ${p.year} proposal for this customer.`);
-  }
   const proposalVersion = await prisma.$transaction(async (tx) => {
+    // Customer first (same lock order as Start proposal), then re-read the claims under the lock.
+    await lockCustomer(tx, scope, p.customerId);
+    const others = await tx.saProposal.findMany({ where: { orgId: scope.ctx.orgId, customerId: p.customerId, year: p.year }, include: { lines: true } });
+    if (claimedAgreements(others.map(toProposalLite), p.year).has(agreement)) {
+      throw new ForbiddenError(`${AGREEMENT_LABELS[agreement]} is already in a ${p.year} proposal for this customer.`);
+    }
     const pv = await bumpProposal(tx, scope, p.id);
     await tx.saProposalLine.create({ data: { orgId: scope.ctx.orgId, proposalId, agreement, price: Math.round(price), rule: "manual" } });
     await history(tx, scope, p.customerId, [{ field: `${p.year} proposal ${AGREEMENT_LABELS[agreement]}`, oldValue: null, newValue: `added at ${Math.round(price)}` }]);
@@ -473,6 +498,11 @@ export async function transitionProposal(
     markNotRenewed?: boolean;
     /** reopen: a Not renewed customer goes back to Active. */
     restoreActive?: boolean;
+    /** send / sign: the day it was sent / signed ("YYYY-MM-DD", default today). Never in the future;
+     *  a signed date is never before the proposal's sent date. */
+    date?: string | null;
+    /** sign: a Pending / Expired – still waiting customer goes back to Active. */
+    setActive?: boolean;
   },
 ) {
   await assertCanEdit(scope);
@@ -486,15 +516,31 @@ export async function transitionProposal(
     throw new ForbiddenError(`Can't ${action} a ${PROPOSAL_STATUS_LABELS[p.status].toLowerCase()} proposal.`);
   }
   const today = todayYmd();
+  // send / sign may be dated earlier (sent last Friday, signed copy came back yesterday).
+  let when = today;
+  if ((action === "send" || action === "sign") && opts.date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.date) || Number.isNaN(Date.parse(`${opts.date}T00:00:00Z`))) {
+      throw new ForbiddenError("Pick a valid date.");
+    }
+    if (opts.date > today) throw new ForbiddenError(`The ${action === "send" ? "sent" : "signed"} date can't be in the future.`);
+    if (opts.date < "2000-01-01") throw new ForbiddenError("That date looks wrong.");
+    const sent = p.status === "SENT" ? ymd(p.sentDate) : null;
+    if (action === "sign" && sent && opts.date < sent) {
+      throw new ForbiddenError(`The signed date can't be before the date it was sent (${fmtDate(sent)}).`);
+    }
+    when = opts.date;
+  }
   const c = p.customer;
   let statusNote = "";
 
   await prisma.$transaction(async (tx) => {
+    // Customer row first (one lock order for every proposal workflow; see lockCustomer).
+    await lockCustomer(tx, scope, c.id);
     let next: SaProposalStatus;
     let data: Record<string, unknown>;
     switch (action) {
       case "send":
-        next = "SENT"; data = { sentDate: dateOf(today) }; break;
+        next = "SENT"; data = { sentDate: dateOf(when) }; break;
       case "unsend":
         next = "DRAFT"; data = { sentDate: null }; break;
       case "decline":
@@ -504,7 +550,7 @@ export async function transitionProposal(
       case "reopen":
         next = "DRAFT"; data = { closedDate: null, declineReason: null, sentDate: null }; break;
       case "sign":
-        next = "SIGNED"; data = { signedDate: dateOf(today) }; break;
+        next = "SIGNED"; data = { signedDate: dateOf(when) }; break;
       default:
         throw new ForbiddenError("Unknown action.");
     }
@@ -537,7 +583,7 @@ export async function transitionProposal(
         data: lines.map((l) => ({
           orgId: scope.ctx.orgId, customerId: c.id, year: p.year, agreement: l.agreement, price: l.price,
           status: "ACTIVE" as const, endDate: p.endDate ?? dateOf(plusYear(prevEnd.get(l.agreement) ?? null)),
-          signedDate: dateOf(today), proposalId: p.id,
+          signedDate: dateOf(when), proposalId: p.id,
         })),
       });
     }
@@ -548,6 +594,10 @@ export async function transitionProposal(
       oldValue: PROPOSAL_STATUS_LABELS[p.status],
       newValue: `${PROPOSAL_STATUS_LABELS[next]}${action === "sign" ? ` (${fmtMoney(total)})` : ""}${opts.reason?.trim() ? ` — ${opts.reason.trim()}` : ""}`,
     }];
+    // A backdated send / sign keeps its date in the history (the row's own timestamp says when it was entered).
+    if (when !== today) {
+      changes.push({ field: `${p.year} proposal ${action === "send" ? "sent" : "signed"} date`, oldValue: null, newValue: when });
+    }
     const setStatus = async (to: SaCustomerStatus) => {
       const cur = await tx.saCustomer.findFirst({ where: { id: c.id, orgId: scope.ctx.orgId }, select: { status: true } });
       if (!cur || cur.status === to) return;
@@ -558,10 +608,81 @@ export async function transitionProposal(
     };
     if (action === "decline" && opts.markNotRenewed) await setStatus("NOT_RENEWED");
     if (action === "reopen" && opts.restoreActive && c.status === "NOT_RENEWED") await setStatus("ACTIVE");
+    // Signing a parked customer's renewal: back to Active (re-read under the lock in setStatus).
+    if (action === "sign" && opts.setActive && (c.status === "PENDING" || c.status === "EXPIRED_WAITING")) await setStatus("ACTIVE");
     await history(tx, scope, c.id, changes);
   });
   const verb: Record<ProposalAction, string> = {
     send: "marked sent", unsend: "back to draft", sign: "signed", decline: "declined", withdraw: "withdrawn", reopen: "reopened as a draft",
   };
-  await audit(scope, c.id, `proposal_${action}`, `${c.name} ${p.year} proposal: ${verb[action]}${statusNote}`);
+  const dated = when !== today ? ` (dated ${fmtDate(when)})` : "";
+  await audit(scope, c.id, `proposal_${action}`, `${c.name} ${p.year} proposal: ${verb[action]}${dated}${statusNote}`);
+}
+
+/**
+ * Undo a signing: SIGNED → SENT (→ DRAFT when it never had a sent date), deleting the signed
+ * agreement lines that signing created (proposalId = this proposal) in the same transaction.
+ * Refused — naming what blocks it — when one of those lines was changed after signing or a later
+ * year already builds on them (the rule: `undoSigningBlockers` in src/lib/agreements/undo-signing.ts).
+ * A signing whose lines were already deleted by hand undoes cleanly (nothing left to delete),
+ * which frees its agreements for "Start proposal" again.
+ */
+export async function undoSigning(scope: TenantScope, id: string, expectedVersion: number) {
+  await assertCanEdit(scope);
+  const p0 = await prisma.saProposal.findFirst({
+    where: { id, orgId: scope.ctx.orgId },
+    include: { customer: { select: { id: true, name: true } } },
+  });
+  if (!p0) throw new ForbiddenError("Proposal not found.");
+  if (p0.version !== expectedVersion) throw new StaleSaveError("proposal");
+  if (p0.status !== "SIGNED") throw new ForbiddenError(`Only a signed proposal can be un-signed — this one is ${PROPOSAL_STATUS_LABELS[p0.status].toLowerCase()}.`);
+  const c = p0.customer;
+
+  const out = await prisma.$transaction(async (tx) => {
+    await lockCustomer(tx, scope, c.id);
+    // Claim the proposal (status + version guard), then read everything under the locks.
+    const p = await tx.saProposal.findFirst({ where: { id, orgId: scope.ctx.orgId }, include: { lines: true } });
+    if (!p || p.status !== "SIGNED") throw new StaleSaveError("proposal");
+    const next: SaProposalStatus = p.sentDate ? "SENT" : "DRAFT";
+    const res = await tx.saProposal.updateMany({
+      where: { id, orgId: scope.ctx.orgId, status: "SIGNED", ...versionGuard(expectedVersion) },
+      data: { status: next, signedDate: null, version: { increment: 1 } },
+    });
+    assertFreshWrite(res.count, "proposal");
+
+    const [mine, proposals, contracts] = await Promise.all([
+      tx.saContractLine.findMany({ where: { orgId: scope.ctx.orgId, customerId: c.id, proposalId: id } }),
+      tx.saProposal.findMany({ where: { orgId: scope.ctx.orgId, customerId: c.id }, include: { lines: true } }),
+      tx.saContractLine.findMany({ where: { orgId: scope.ctx.orgId, customerId: c.id }, select: { year: true, agreement: true, proposalId: true } }),
+    ]);
+    const blockers = undoSigningBlockers({
+      proposal: { id, year: p.year, signedDate: ymd(p.signedDate), lines: p.lines.map((l) => ({ agreement: l.agreement, price: Number(l.price) })) },
+      signedLines: mine.map((l) => ({
+        year: l.year, agreement: l.agreement, price: Number(l.price), status: l.status, signedDate: ymd(l.signedDate),
+        version: l.version, checked: l.checked, invoicedDate: ymd(l.invoicedDate), notes: l.notes,
+      })),
+      // `proposals` was read after the update: this one shows its new status and is skipped by id anyway.
+      proposals: proposals.map((x) => ({ id: x.id, year: x.year, status: x.status, agreements: x.lines.map((l) => l.agreement) })),
+      contracts,
+    });
+    if (blockers.length) {
+      throw new ForbiddenError(`Can't undo signing: ${blockers.join("; ")}. Fix those first (a changed line can also be deleted by hand), then undo again.`);
+    }
+
+    const del = await tx.saContractLine.deleteMany({ where: { orgId: scope.ctx.orgId, customerId: c.id, proposalId: id, version: 1 } });
+    if (del.count !== mine.length) throw new StaleSaveError("agreement line");
+    const removed = sortByAgreement(mine);
+    const changes: FieldChange[] = [
+      { field: `${p.year} proposal`, oldValue: PROPOSAL_STATUS_LABELS.SIGNED, newValue: `${PROPOSAL_STATUS_LABELS[next]} (signing undone)` },
+      ...removed.map((l) => ({ field: `${l.year} ${AGREEMENT_LABELS[l.agreement]}`, oldValue: String(Number(l.price)), newValue: "deleted (signing undone)" })),
+    ];
+    await history(tx, scope, c.id, changes);
+    return { year: p.year, next, removed: removed.length, total: removed.reduce((a, l) => a + Number(l.price), 0) };
+  });
+  await audit(
+    scope, c.id, "proposal_unsign",
+    `${c.name} ${out.year} proposal: signing undone (back to ${PROPOSAL_STATUS_LABELS[out.next]}); ` +
+      (out.removed ? `removed ${out.removed} signed agreement line${out.removed === 1 ? "" : "s"} (${fmtMoney(out.total)})` : "no signed agreement lines were left to remove"),
+  );
+  return out.next;
 }

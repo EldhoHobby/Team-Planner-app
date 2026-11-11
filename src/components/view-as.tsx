@@ -82,16 +82,18 @@ export function ViewAsBanner({ targetLabel }: { targetLabel: string }) {
     });
 
   return (
-    <div className="sticky top-0 z-50 flex items-center justify-center gap-3 border-b border-amber-300 bg-amber-100 px-4 py-1.5 text-xs font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-      <Eye className="h-3.5 w-3.5" aria-hidden />
-      <span>
+    // flex-wrap + text-center: on a phone the message wraps and Exit drops to
+    // its own line instead of squeezing the text into a narrow column.
+    <div className="sticky top-0 z-50 flex flex-shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b border-amber-300 bg-amber-100 px-3 py-1.5 text-center text-xs font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200 md:px-4">
+      <Eye className="h-3.5 w-3.5 flex-shrink-0" aria-hidden />
+      <span className="min-w-0">
         Viewing as <span className="font-semibold">{targetLabel}</span> — pages and edits behave as this person.
       </span>
       <button
         type="button"
         onClick={exit}
         disabled={pending}
-        className="flex items-center gap-1 rounded-md border border-amber-400 px-2 py-0.5 hover:bg-amber-200 dark:border-amber-600 dark:hover:bg-amber-900"
+        className="flex items-center gap-1 rounded-md border border-amber-400 px-2 py-0.5 hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 dark:border-amber-600 dark:hover:bg-amber-900 dark:focus-visible:ring-amber-400"
       >
         <X className="h-3 w-3" aria-hidden /> {pending ? "Exiting…" : "Exit"}
       </button>

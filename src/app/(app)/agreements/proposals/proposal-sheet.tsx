@@ -106,6 +106,17 @@ function Td({ c }: { c: Cell }) {
   );
 }
 
+/** One text on screen, another in print (the printed sheet keeps its agreed layout). */
+function ScreenPrint({ screen, print }: { screen: string; print: string }) {
+  if (screen === print) return <>{print}</>;
+  return (
+    <>
+      <span className="print:hidden">{screen}</span>
+      <span className="hidden print:inline">{print}</span>
+    </>
+  );
+}
+
 function Row({ cells, h }: { cells: Cell[]; h?: number }) {
   const used = cells.reduce((a, c) => a + (c.span ?? 1), 0);
   return (
@@ -155,6 +166,10 @@ export function ProposalSheet({
   const last = rows[rows.length - 1];
   const total = p.lines.reduce((a, l) => a + l.price, 0);
   const growth = (a: number | undefined, b: number | undefined) => (a && b ? a / b - 1 : null);
+  // Screen only: signed years in the window (newest first); the increase runs oldest → newest of these.
+  const spanYears = h.signedYears.length;
+  const increaseLabel = spanYears >= 2 ? `${spanYears}-year increase` : "Increase";
+  const fraction = (percent: number | null | undefined) => (percent === null || percent === undefined ? null : percent / 100);
 
   const label = (v: string, extra: Partial<Cell> = {}): Cell => ({ v, b: true, fill: LABEL, edge: true, ...extra });
   const value = (v: ReactNode, span: number, extra: Partial<Cell> = {}): Cell => ({ v, span, edge: true, ...extra });
@@ -208,10 +223,17 @@ export function ProposalSheet({
                 { v: money(r.total), b: true, align: "right", edge: true },
               ]} />
             ))}
+            {/* PRINT keeps the agreed layout exactly: "5-year increase", first vs last row of the 5-year
+                window (blank when the oldest window year has no signed price). On SCREEN the row shows the
+                increase over the signed years actually there, oldest → newest — the same figures as the
+                customer page — labelled honestly ("3-year increase"). */}
             <Row cells={[
-              { v: "5-year increase", b: true, i: true, fill: LABEL, align: "center", edge: true },
-              ...SA_AGREEMENTS.map((a): Cell => ({ v: pct(growth(first?.prices[a], last?.prices[a])), fill: LABEL, align: "center", edge: true, dim: dim(a) })),
-              { v: pct(growth(first?.total, last?.total)), fill: LABEL, align: "center", edge: true },
+              { v: <ScreenPrint screen={increaseLabel} print="5-year increase" />, b: true, i: true, fill: LABEL, align: "center", edge: true },
+              ...SA_AGREEMENTS.map((a): Cell => ({
+                v: <ScreenPrint screen={pct(fraction(h.increase[a]))} print={pct(growth(first?.prices[a], last?.prices[a]))} />,
+                fill: LABEL, align: "center", edge: true, dim: dim(a),
+              })),
+              { v: <ScreenPrint screen={pct(fraction(h.increaseTotal))} print={pct(growth(first?.total, last?.total))} />, fill: LABEL, align: "center", edge: true },
             ]} />
 
             {/* CALLS AND REPAIRS */}

@@ -44,5 +44,8 @@ next-env.d.ts
 *.tar.gz
 *.tgz
 
-# scratch/notes
+# scratch/notes, test coverage, logs
 process.txt
+/coverage
+*.log
+*.zip

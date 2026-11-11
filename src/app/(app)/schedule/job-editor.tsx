@@ -107,7 +107,10 @@ export function JobEditor({
   conflictReason,
   currentUserId,
   isAdmin,
+  historyDays = 30,
 }: {
+  /** How many days of change history the activity log keeps (AUDIT_RETENTION_DAYS). */
+  historyDays?: number;
   job: JobRow | null;
   technicians: TechnicianOption[];
   /** Every job in scope — used to warn about un-renamed / colliding duplicates. */
@@ -154,6 +157,11 @@ export function JobEditor({
   // True while a close waits for in-flight field saves to finish.
   const [closing, setClosing] = useState(false);
   const closingRef = useRef(false);
+  // When this job was opened. A single click on a board bar opens the editor,
+  // so the SECOND click of a double-click lands on the dialog's backdrop a few
+  // ms later — ignore backdrop / Escape / X for a moment so it can't close the
+  // editor it just opened.
+  const openedAt = useRef(0);
 
   // Controlled form state so edits stay consistent (the inputs reflect each other
   // immediately). Reset whenever a different job is opened.
@@ -172,6 +180,7 @@ export function JobEditor({
 
   useEffect(() => {
     if (job) {
+      openedAt.current = Date.now();
       setForm(formFromJob(job));
       setComment("");
       setEditingNoteId(null);
@@ -453,6 +462,7 @@ Changed: ${changed.join("; ")}`;
     form.technicianId && !activePeople.some((t) => t.id === form.technicianId)
       ? {
           id: form.technicianId,
+          archived: technicians.find((t) => t.id === form.technicianId)?.archived ?? false,
           name:
             technicians.find((t) => t.id === form.technicianId)?.name ??
             (job.technicianId === form.technicianId ? job.technicianName : null) ??
@@ -469,7 +479,7 @@ Changed: ${changed.join("; ")}`;
       // While the reason dialog is up it owns Escape / backdrop clicks — the
       // editor underneath must not also react (it would re-open the prompt).
       onClose={() => { if (!askReason) void requestClose(); }}
-      canClose={() => !closingRef.current && !pending}
+      canClose={() => !closingRef.current && !pending && Date.now() - openedAt.current > 450}
       title={job.title}
       titleBadge={
         conflict ? (
@@ -653,7 +663,9 @@ Changed: ${changed.join("; ")}`;
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
               {inactiveHolder ? (
-                <option value={inactiveHolder.id}>{inactiveHolder.name} (inactive)</option>
+                <option value={inactiveHolder.id}>
+                  {inactiveHolder.name} ({inactiveHolder.archived ? "archived" : "inactive"})
+                </option>
               ) : null}
             </select>
           </div>
@@ -776,7 +788,7 @@ Changed: ${changed.join("; ")}`;
             className="mb-2 flex w-full items-center gap-1.5 text-sm font-medium hover:text-foreground"
           >
             {notesOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-            <History className="h-4 w-4" /> Notes &amp; change history
+            <History className="h-4 w-4" /> Notes &amp; changes
             <span className="text-muted-foreground">
               ({thread.length + (history?.length ?? 0)})
             </span>
@@ -784,6 +796,12 @@ Changed: ${changed.join("; ")}`;
 
           {notesOpen ? (
           <>
+          {/* Honest about the source: comments are kept forever, but change
+              rows come from the activity log, which is pruned. */}
+          <p className="text-[11px] text-muted-foreground">
+            Comments are kept permanently. Changes from the last {historyDays} days are shown
+            (older changes are not kept here).
+          </p>
           {/* Composer — first thing inside the expanded history. */}
           <div className="mt-3 flex items-start gap-2">
             <textarea
@@ -822,12 +840,16 @@ Changed: ${changed.join("; ")}`;
                 .filter((h) => h.action !== "commented")
                 .map((h, i) => ({
                   key: `h-${i}-${h.createdAt}`, when: h.createdAt, kind: "change" as const,
-                  who: h.actorEmail ?? "system", body: h.summary,
+                  who: h.actorName ?? h.actorEmail ?? "system", body: h.summary,
                 })),
             ].sort((a, b) => b.when.localeCompare(a.when)); // newest first
 
             if (!entries.length) {
-              return <p className="text-xs text-muted-foreground">No notes or changes yet.</p>;
+              return (
+                <p className="text-xs text-muted-foreground">
+                  No comments yet, and no changes in the last {historyDays} days.
+                </p>
+              );
             }
             return (
               <ul className="space-y-2">

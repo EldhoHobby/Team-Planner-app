@@ -7,10 +7,10 @@ import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
 import { getDashboard } from "@/lib/services/agreements/dashboard";
 import { canEditAgreements } from "@/lib/services/agreements/common";
-import { CUSTOMER_STATUS_LABELS, fmtDate, fmtMoney } from "@/lib/agreements/constants";
-import { WAITING_STATUSES, type WaitingItem } from "@/lib/services/agreements/dashboard";
+import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, fmtDate, fmtMoney } from "@/lib/agreements/constants";
+import { WAITING_STATUSES, type LapsedItem, type WaitingItem } from "@/lib/services/agreements/dashboard";
 import type { RenewalState } from "@/lib/agreements/renewal";
-import { CustomerStatusBadge, ProposalBadge, RenewalBadge } from "./badges";
+import { CustomerStatusBadge, LapsedBadge, ProposalBadge, RenewalBadge } from "./badges";
 import { RenewalsChart } from "./renewals-chart";
 import { StartProposalButton } from "./start-proposal-button";
 import { Collapsible } from "./collapsible";
@@ -114,6 +114,35 @@ function WaitingSection({ items }: { items: WaitingItem[] }) {
   );
 }
 
+/** Active customers with an agreement that lapsed after a partial renewal (renewal.ts lapsedLines). */
+function LapsedSection({ items, canEdit }: { items: LapsedItem[]; canEdit: boolean }) {
+  if (!items.length) return null;
+  return (
+    <Collapsible
+      id="lapsed"
+      title="Lapsed agreements"
+      subtitle="Ended without renewal while the customer's other agreements were renewed. Not renewing? Mark the agreement Cancelled on the customer's Agreements tab."
+      aside={`${items.length} customers · ${fmtMoney(items.reduce((a, i) => a + i.value, 0))}/yr`}
+    >
+      <ul className="divide-y">
+        {items.map((a) => (
+          <li key={a.customerId} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5">
+            <div className="min-w-0 flex-1">
+              <Link href={`/agreements/customers/${a.customerId}`} className="font-medium hover:underline">{a.name}</Link>
+              <p className="text-xs text-muted-foreground">
+                {a.soNumber} · {a.lines.map((l) => `${AGREEMENT_LABELS[l.agreement]} ${fmtMoney(l.price)} (ended ${fmtDate(l.endDate)})`).join(", ")}
+              </p>
+              <Notes text={a.notes} />
+            </div>
+            <LapsedBadge lines={a.lines} />
+            {canEdit && <StartProposalButton customerId={a.customerId} lapsedOnly label="Start proposal" />}
+          </li>
+        ))}
+      </ul>
+    </Collapsible>
+  );
+}
+
 export default async function AgreementsDashboard() {
   await requireAuth();
   const { scope } = await requireScope();
@@ -153,10 +182,21 @@ export default async function AgreementsDashboard() {
         <Kpi label="Active customers" value={String(k.activeCustomers)} href="/agreements/customers?status=ACTIVE" />
         <Kpi label="Pending" value={String(k.pending)} sub="customers" href="/agreements/customers?status=PENDING" />
         <Kpi label="Expired – still waiting" value={String(k.expiredWaiting)} sub="customers" href="/agreements/customers?status=EXPIRED_WAITING" />
-        <Kpi label={`Due in ${d.dueWindowDays} days`} value={String(k.due)} sub="no proposal yet" href="/agreements/pipeline" />
+        {/* Each tile opens a list that shows exactly the customers / proposals it counts. */}
+        <Kpi label={`Due in ${d.dueWindowDays} days`} value={String(k.due)} sub="no proposal yet" href="/agreements/customers?status=ACTIVE&renewal=DUE" />
         <Kpi label="Expired" value={String(k.expired)} sub="term ended, not renewed" href="/agreements/customers?status=ACTIVE&renewal=EXPIRED" />
-        <Kpi label="Awaiting signature" value={String(k.awaitingSignature)} sub={fmtMoney(k.awaitingValue)} href="/agreements/proposals?status=SENT" />
-        <Kpi label={`Signed in ${d.today.slice(0, 4)}`} value={String(k.signedThisYear)} sub={fmtMoney(k.signedThisYearValue)} href="/agreements/proposals?status=SIGNED" />
+        <Kpi
+          label="Awaiting signature"
+          value={String(k.awaitingSignature)}
+          sub={`${fmtMoney(k.awaitingValue)}${k.awaitingWaiting ? ` · ${k.awaitingWaiting} waiting on the customer` : ""}`}
+          href="/agreements/proposals?status=SENT"
+        />
+        <Kpi
+          label={`Signed in ${d.today.slice(0, 4)}`}
+          value={String(k.signedThisYear)}
+          sub={fmtMoney(k.signedThisYearValue)}
+          href={`/agreements/proposals?status=SIGNED&signed=${d.today.slice(0, 4)}&customer=`}
+        />
       </section>
 
       <div className="grid gap-6 lg:grid-cols-5">
@@ -210,6 +250,8 @@ export default async function AgreementsDashboard() {
           )}
         </Collapsible>
 
+        <LapsedSection items={d.lapsed} canEdit={canEdit} />
+
         <WaitingSection items={d.waiting} />
         </div>
 
@@ -217,7 +259,7 @@ export default async function AgreementsDashboard() {
           <div className="rounded-lg border bg-card p-4">
             <h2 className="font-semibold">Renewals by month</h2>
             <p className="text-xs text-muted-foreground">Value of agreements ending each month (active, pending and expired – waiting customers)</p>
-            <RenewalsChart data={d.renewalsByMonth} />
+            <RenewalsChart data={d.renewalsByMonth} canEdit={canEdit} />
           </div>
 
           <div className="rounded-lg border bg-card">

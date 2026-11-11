@@ -62,7 +62,65 @@ describe("customerRenewal", () => {
   });
 
   it("no lines → NO_CONTRACT", () => {
-    expect(customerRenewal([], [], "2026-11-05", 90)).toMatchObject({ state: "NO_CONTRACT", currentYear: null, annualValue: 0 });
+    expect(customerRenewal([], [], "2026-11-05", 90)).toMatchObject({ state: "NO_CONTRACT", currentYear: null, annualValue: 0, lapsedLines: [] });
+  });
+});
+
+describe("customerRenewal — lapsed agreements", () => {
+  // SCADA renewed for 2027 (signed); RTU Hardware 2026 ended Jun 30, 2026 and was never renewed.
+  const partly = () => [
+    line({ year: 2026, agreement: "SCADA_SOFTWARE", price: 8000, endDate: "2026-12-31" }),
+    line({ year: 2026, agreement: "RTU_HARDWARE", price: 2000, endDate: "2026-06-30" }),
+    line({ year: 2027, agreement: "SCADA_SOFTWARE", price: 8400, endDate: "2027-12-31" }),
+  ];
+  const signed27 = prop({ year: 2027, status: "SIGNED", agreements: ["SCADA_SOFTWARE"] });
+
+  it("lists an agreement that ended a year behind the newest signed year", () => {
+    const r = customerRenewal(partly(), [signed27], "2026-11-10", 90);
+    expect(r.state).toBe("CURRENT");
+    expect(r.currentLines.map((l) => l.agreement)).toEqual(["SCADA_SOFTWARE"]);
+    expect(r.lapsedLines.map((l) => [l.agreement, l.year, l.endDate])).toEqual([["RTU_HARDWARE", 2026, "2026-06-30"]]);
+  });
+
+  it("not lapsed while its term still runs", () => {
+    const r = customerRenewal(partly(), [signed27], "2026-05-01", 90);
+    expect(r.lapsedLines).toEqual([]);
+    expect(r.currentLines.map((l) => l.agreement)).toEqual(["SCADA_SOFTWARE", "RTU_HARDWARE"]);
+  });
+
+  it("a live proposal for a later year that includes it ends the lapse (and counts as open)", () => {
+    const draft = prop({ year: 2027, status: "DRAFT", agreements: ["RTU_HARDWARE"] });
+    const r = customerRenewal(partly(), [signed27, draft], "2026-11-10", 90);
+    expect(r.lapsedLines).toEqual([]);
+    expect(r.state).toBe("DRAFT");
+    expect(r.openProposal?.id).toBe(draft.id);
+    // A declined or withdrawn one does not.
+    const declined = prop({ year: 2027, status: "DECLINED", agreements: ["RTU_HARDWARE"] });
+    expect(customerRenewal(partly(), [signed27, declined], "2026-11-10", 90).lapsedLines.map((l) => l.agreement)).toEqual(["RTU_HARDWARE"]);
+  });
+
+  it("marking the newest line Cancelled dismisses it", () => {
+    const ls = partly().map((l) => (l.agreement === "RTU_HARDWARE" ? { ...l, status: "CANCELLED" as const } : l));
+    expect(customerRenewal(ls, [signed27], "2026-11-10", 90).lapsedLines).toEqual([]);
+  });
+
+  it("older drops (two or more years behind) are history, not lapses", () => {
+    const ls = [
+      line({ year: 2025, agreement: "ONSITE", price: 900, endDate: "2025-06-30" }),
+      line({ year: 2027, agreement: "SCADA_SOFTWARE", price: 8400, endDate: "2027-12-31" }),
+    ];
+    expect(customerRenewal(ls, [], "2026-11-10", 90).lapsedLines).toEqual([]);
+  });
+
+  it("an agreement of the newest year that ended is EXPIRED, not lapsed; no end date is never lapsed", () => {
+    const r = customerRenewal(lines, [], "2027-04-10", 90);
+    expect(r.state).toBe("EXPIRED");
+    expect(r.lapsedLines).toEqual([]);
+    const noEnd = [
+      line({ year: 2026, agreement: "QWEB", price: 300 }),
+      line({ year: 2027, agreement: "SCADA_SOFTWARE", price: 8400, endDate: "2027-12-31" }),
+    ];
+    expect(customerRenewal(noEnd, [], "2026-11-10", 90).lapsedLines).toEqual([]);
   });
 });
 

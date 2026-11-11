@@ -1,12 +1,19 @@
 ---
 name: project-phase-status
-description: "Team Planner status — v0.0.10 on GitHub + dev (Eastern-time fixes); SCADA still on v0.0.8; WIP branches wip/sales-orders + wip/excel-live-data; all releases git-tagged"
+description: "Team Planner status — production moved 2026-11-06 to PC 10.210.6.233 (v0.0.10, git clone, docker-compose.offline.yml); SCADA retired; dev at v0.0.43; WIP branches wip/sales-orders + wip/excel-live-data"
 metadata:
   node_type: memory
   type: project
   originSessionId: e7ebfd06-a5d0-4cb7-8fa5-07220b6c1342
   modified: 2026-08-20T13:39:49.162Z
 ---
+
+**Update 2026-11-10 (supersedes the SCADA notes below):** production runs on
+the PC `10.210.6.233` since 2026-11-06 — a git clone of `main` (v0.0.10) in
+`C:\TeamPlanner`, `docker-compose.offline.yml`, `https://10.210.6.233:8443`,
+has internet. The old SCADA PC is retired (stopped, kept as a fallback). Dev is
+at v0.0.43 on `improve/ux-review`. Current status lives in
+`docs/PROJECT-HISTORY.md`; deployment in `DEPLOY.md`.
 
 **Update 2026-11-05:** v0.0.9 (Eastern-time helpers in `src/lib/tz.ts`, fixes hydration #418) and v0.0.10 (Tasks page overdue colour by Eastern date) are committed; SCADA has NOT been updated past v0.0.8. Dev DB was replaced with the live full backup on 2026-10-30. Sales Orders + Excel-live-data work was pulled out of main and kept as branches `wip/sales-orders` and `wip/excel-live-data` (Excel feature dropped by the user). User is moving to a new PC — see `MOVING-TO-NEW-PC.md` and `docs/PROJECT-HISTORY.md` in the repo.
 

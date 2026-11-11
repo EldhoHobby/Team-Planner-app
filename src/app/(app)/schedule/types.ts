@@ -7,6 +7,20 @@ export type TechnicianOption = {
   name: string;
   color: string;
   active: boolean;
+  /** An archived person who still holds jobs — shown on an "(archived)" lane
+   *  so their work never vanishes from the board. Never offered for new work. */
+  archived?: boolean;
+};
+
+/** One row of the timeline (and of the week printout). id null = Unassigned. */
+export type BoardLane = {
+  id: string | null;
+  name: string;
+  color: string;
+  /** Accepts drops / new jobs (false for inactive or archived people). */
+  droppable: boolean;
+  inactive?: boolean;
+  archived?: boolean;
 };
 
 export type JobRow = {
@@ -56,5 +70,7 @@ export type AuditEntry = {
   action: string;
   summary: string;
   actorEmail: string | null;
+  /** Display name of the person (name → username → email), when known. */
+  actorName?: string | null;
   createdAt: string; // ISO timestamp
 };

@@ -3,7 +3,7 @@
 import { fmtEastern } from "@/lib/tz";
 import { startTransition, useActionState, useCallback, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { Archive, FolderOpen, History, Plus } from "lucide-react";
+import { Archive, ArchiveRestore, FolderOpen, History, Pencil, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,7 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { FormMessage } from "@/components/ui/form-message";
 import { PageHeader } from "@/components/ui/page-header";
-import { createProjectAction, archiveProjectAction } from "./actions";
+import { createProjectAction, archiveProjectAction, restoreProjectAction, renameProjectAction } from "./actions";
 import { listProjectHistoryAction } from "../tasks/actions";
 import type { ProjectRow, TeamOption, CreateProjectState, AuditEntry } from "./types";
 
@@ -111,6 +111,69 @@ function NewProjectDialog({
   );
 }
 
+// ─── Rename dialog ───
+
+/** Rename a project (validated + audited server-side). Mount only while open. */
+function RenameProjectDialog({ project, onClose }: { project: ProjectRow; onClose: () => void }) {
+  const [name, setName] = useState(project.name);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (pending) return;
+    const next = name.trim();
+    if (!next) return setError("Name is required.");
+    if (next === project.name) return onClose();
+    setPending(true);
+    setError(null);
+    try {
+      const res = await renameProjectAction({ projectId: project.id, name: next });
+      if (res.error) setError(res.error);
+      else onClose();
+    } catch {
+      setError("Could not rename the project — try again.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Rename project"
+      size="sm"
+      canClose={() => !pending}
+      dirty={name.trim() !== project.name}
+      confirmClose="The new name has not been saved."
+    >
+      <form onSubmit={(e) => void submit(e)} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="proj-rename">Name</Label>
+          <Input
+            id="proj-rename"
+            autoFocus
+            required
+            maxLength={MAX.name}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <FormMessage tone="error">{error}</FormMessage>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" disabled={pending} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={pending}>
+            {pending ? "Saving…" : "Rename"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 // ─── Main client component ───
 export function ProjectsClient({
   projects,
@@ -124,16 +187,37 @@ export function ProjectsClient({
   const closeCreate = useCallback(() => setCreateOpen(false), []);
   const [historyProject, setHistoryProject] = useState<ProjectRow | null>(null);
   const [history, setHistory] = useState<AuditEntry[] | null>(null);
+  // Busy project id (archive / restore in flight) + per-card errors.
   const [archiving, setArchiving] = useState<string | null>(null);
   const [archiveErrors, setArchiveErrors] = useState<Record<string, string>>({});
+  const [renaming, setRenaming] = useState<ProjectRow | null>(null);
+  // "Show archived" — remembered per browser (new key; read after mount).
+  const [showArchived, setShowArchived] = useState(false);
+  useEffect(() => {
+    try {
+      setShowArchived(localStorage.getItem("projects.showArchived") === "1");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const toggleArchived = (v: boolean) => {
+    setShowArchived(v);
+    try {
+      localStorage.setItem("projects.showArchived", v ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
 
-  const archive = async (p: ProjectRow) => {
-    const ok = await confirm({
-      title: `Archive project “${p.name}”?`,
-      message: "Its tasks are kept, but the project is hidden from the Projects and Tasks pages.",
-      confirmLabel: "Archive",
-    });
-    if (!ok) return;
+  const activeProjects = projects.filter((p) => !p.archived);
+  const archivedProjects = projects.filter((p) => p.archived);
+  const shown = showArchived ? [...activeProjects, ...archivedProjects] : activeProjects;
+
+  const runCardAction = async (
+    p: ProjectRow,
+    fn: () => Promise<{ error?: string }>,
+    failText: string,
+  ) => {
     setArchiving(p.id);
     setArchiveErrors((m) => {
       const next = { ...m };
@@ -141,14 +225,26 @@ export function ProjectsClient({
       return next;
     });
     try {
-      const res = await archiveProjectAction({ projectId: p.id });
+      const res = await fn();
       if (res.error) setArchiveErrors((m) => ({ ...m, [p.id]: res.error! }));
     } catch {
-      setArchiveErrors((m) => ({ ...m, [p.id]: "Could not archive the project — try again." }));
+      setArchiveErrors((m) => ({ ...m, [p.id]: failText }));
     } finally {
       setArchiving(null);
     }
   };
+
+  const archive = async (p: ProjectRow) => {
+    const ok = await confirm({
+      title: `Archive project “${p.name}”?`,
+      message: "Its tasks are kept, but the project is hidden from the Projects and Tasks pages. You can restore it later from “Show archived”.",
+      confirmLabel: "Archive",
+    });
+    if (!ok) return;
+    await runCardAction(p, () => archiveProjectAction({ projectId: p.id }), "Could not archive the project — try again.");
+  };
+  const restore = (p: ProjectRow) =>
+    runCardAction(p, () => restoreProjectAction({ projectId: p.id }), "Could not restore the project — try again.");
 
   useEffect(() => {
     if (historyProject) {
@@ -175,7 +271,19 @@ export function ProjectsClient({
           }
         />
 
-        {projects.length === 0 ? (
+        {archivedProjects.length > 0 ? (
+          <label className="mb-3 inline-flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => toggleArchived(e.target.checked)}
+              className="h-4 w-4 rounded border-input accent-primary"
+            />
+            Show archived ({archivedProjects.length})
+          </label>
+        ) : null}
+
+        {shown.length === 0 ? (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed py-16 text-center">
             <FolderOpen className="h-10 w-10 text-muted-foreground/40" />
             <div>
@@ -195,65 +303,121 @@ export function ProjectsClient({
           </div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {projects.map((p) => (
-              <div
-                key={p.id}
-                className="flex flex-col gap-2 rounded-xl border bg-card p-4 shadow-sm"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <Link
-                      href={`/tasks?project=${p.id}`}
-                      className="block truncate font-medium hover:underline"
-                    >
-                      {p.name}
-                    </Link>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {p.teamName}
+            {shown.map((p) => {
+              const busy = archiving === p.id;
+              const actionBtn =
+                "inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50";
+              return (
+                <div
+                  key={p.id}
+                  className={`flex flex-col gap-2 rounded-xl border bg-card p-4 shadow-sm ${p.archived ? "border-dashed opacity-75" : ""}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <Link
+                        href={p.isSystem ? "/schedule" : `/tasks?project=${p.id}`}
+                        className="block truncate font-medium hover:underline"
+                      >
+                        {p.name}
+                      </Link>
+                      <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        {p.teamName}
+                        {p.isSystem ? (
+                          <span
+                            className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300"
+                            title="Created automatically. Holds the schedule's jobs, so it can't be renamed or archived."
+                          >
+                            System · Holds the schedule&apos;s jobs
+                          </span>
+                        ) : null}
+                        {p.archived ? (
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">Archived</span>
+                        ) : null}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setHistoryProject(p)}
+                        className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
+                        title="View history"
+                        aria-label={`View history of project ${p.name}`}
+                      >
+                        <History className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                      {p.isSystem ? null : p.archived ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void restore(p)}
+                          className={actionBtn}
+                          title="Restore project"
+                          aria-label={`Restore project ${p.name}`}
+                        >
+                          <ArchiveRestore className="h-3.5 w-3.5" aria-hidden />
+                          {busy ? "Restoring…" : "Restore"}
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => setRenaming(p)}
+                            className={actionBtn}
+                            title="Rename project"
+                            aria-label={`Rename project ${p.name}`}
+                          >
+                            <Pencil className="h-3.5 w-3.5" aria-hidden />
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void archive(p)}
+                            className={actionBtn}
+                            title="Archive project"
+                            aria-label={`Archive project ${p.name}`}
+                          >
+                            <Archive className="h-3.5 w-3.5" aria-hidden />
+                            {busy ? "Archiving…" : "Archive"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <FormMessage tone="error" className="text-xs">{archiveErrors[p.id]}</FormMessage>
+
+                  {p.description && (
+                    <p className="line-clamp-2 text-xs text-muted-foreground">
+                      {p.description}
                     </p>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setHistoryProject(p)}
-                      className="rounded p-1 text-muted-foreground/50 hover:bg-muted hover:text-foreground"
-                      title="View history"
-                      aria-label={`View history of project ${p.name}`}
-                    >
-                      <History className="h-3.5 w-3.5" aria-hidden />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={archiving === p.id}
-                      onClick={() => void archive(p)}
-                      className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-                      title="Archive project"
-                      aria-label={`Archive project ${p.name}`}
-                    >
-                      <Archive className="h-3.5 w-3.5" aria-hidden />
-                      {archiving === p.id ? "Archiving…" : "Archive"}
-                    </button>
-                  </div>
-                </div>
+                  )}
 
-                <FormMessage tone="error" className="text-xs">{archiveErrors[p.id]}</FormMessage>
-
-                {p.description && (
-                  <p className="line-clamp-2 text-xs text-muted-foreground">
-                    {p.description}
+                  <p className="mt-auto text-xs text-muted-foreground">
+                    {p.isSystem ? (
+                      <>
+                        {p.jobCount} job{p.jobCount !== 1 ? "s" : ""} —{" "}
+                        <Link href="/schedule" className="font-medium text-primary hover:underline">
+                          open the Schedule
+                        </Link>
+                        {p.taskCount > 0 ? ` · ${p.taskCount} task${p.taskCount !== 1 ? "s" : ""}` : ""}
+                      </>
+                    ) : (
+                      <>
+                        {p.taskCount} task{p.taskCount !== 1 ? "s" : ""}
+                      </>
+                    )}
                   </p>
-                )}
-
-                <p className="mt-auto text-xs text-muted-foreground">
-                  {p.taskCount} task{p.taskCount !== 1 ? "s" : ""}
-                </p>
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
 
       {createOpen && <NewProjectDialog teams={teams} onClose={closeCreate} />}
+      {renaming && <RenameProjectDialog project={renaming} onClose={() => setRenaming(null)} />}
 
       <Modal
         open={!!historyProject}

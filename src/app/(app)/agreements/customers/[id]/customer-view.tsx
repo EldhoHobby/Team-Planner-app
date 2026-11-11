@@ -19,7 +19,7 @@ import {
   AGREEMENT_LABELS, SA_AGREEMENTS, SOFTWARE_LABELS, fmtDate, fmtMoney, type SaAgreement, type SaLineStatus,
 } from "@/lib/agreements/constants";
 import type { ContractRow, CustomerDetail } from "@/lib/services/agreements/customers";
-import { CustomerStatusBadge, ProposalBadge, RenewalBadge, UnconfirmedSo } from "../../badges";
+import { CustomerStatusBadge, LapsedBadge, ProposalBadge, RenewalBadge, UnconfirmedSo } from "../../badges";
 import { CustomerEditor } from "../../customer-editor";
 import { MAX_SERIES, StackedBarChart } from "../../renewals-chart";
 import { StartProposalButton } from "../../start-proposal-button";
@@ -49,7 +49,15 @@ function pct(n: number | null | undefined) {
   return `${n > 0 ? "+" : ""}${n}%`;
 }
 
-export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; canEdit: boolean; tab: CustomerTab }) {
+export function CustomerView({
+  data, canEdit, tab, backQs = "",
+}: {
+  data: CustomerDetail;
+  canEdit: boolean;
+  tab: CustomerTab;
+  /** The Customers list's filters (sanitised query string) to return to; "" = the default list. */
+  backQs?: string;
+}) {
   const router = useRouter();
   // One save indicator for the page's autosave fields (the Calls & repairs counts).
   const save = useSaveStatus();
@@ -57,7 +65,15 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
   const c = data.customer;
   const r = data.renewal;
   const open = r.openProposal;
-  const setTab = (t: CustomerTab) => router.replace(`/agreements/customers/${c.id}${t === "agreements" ? "" : `?tab=${t}`}`, { scroll: false });
+  const backHref = `/agreements/customers${backQs ? `?${backQs}` : ""}`;
+  // Switching tabs keeps the ?back= filters, so "‹ Customers" still returns to the list as it was.
+  const setTab = (t: CustomerTab) => {
+    const qs = new URLSearchParams();
+    if (t !== "agreements") qs.set("tab", t);
+    if (backQs) qs.set("back", backQs);
+    const s = qs.toString();
+    router.replace(`/agreements/customers/${c.id}${s ? `?${s}` : ""}`, { scroll: false });
+  };
 
   const facts: [string, string][] = [
     ["Software", [c.software ? SOFTWARE_LABELS[c.software] : null, c.softwareVersion].filter(Boolean).join(" ") || "—"],
@@ -72,12 +88,13 @@ export function CustomerView({ data, canEdit, tab }: { data: CustomerDetail; can
     <div className="space-y-4">
       <PageHeader
         className="mb-0 print:hidden"
-        back={{ href: "/agreements/customers", label: "Customers" }}
+        back={{ href: backHref, label: "Customers" }}
         title={
           <span className="flex flex-wrap items-center gap-2">
             {c.name}
             <CustomerStatusBadge status={c.status} />
             <RenewalBadge state={r.state} />
+            <LapsedBadge lines={r.lapsedLines} />
           </span>
         }
         description={
@@ -197,6 +214,27 @@ function AgreementsTab({ data, canEdit }: { data: CustomerDetail; canEdit: boole
           </Button>
         )}
       </div>
+      {r.lapsedLines.length > 0 && (
+        <div role="note" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+          <p className="font-medium">Lapsed — ended and not renewed while the other agreements were:</p>
+          <ul className="mt-1 space-y-1">
+            {r.lapsedLines.map((l) => {
+              const row = data.contracts.find((x) => x.id === l.id);
+              return (
+                <li key={l.id} className="flex flex-wrap items-center gap-x-2">
+                  <span>{l.year} {AGREEMENT_LABELS[l.agreement]} · {fmtMoney(l.price)} · ended {fmtDate(l.endDate)}</span>
+                  {canEdit && row && (
+                    <button type="button" className="text-primary hover:underline" onClick={() => setEditing(row)}>Edit</button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Renewing? Use Start proposal — lapsed agreements are included. Not renewing? Mark the agreement Cancelled (Edit → Status) and it stops showing as lapsed.
+          </p>
+        </div>
+      )}
       {!rows.length ? (
         <p className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">No signed agreements yet.</p>
       ) : (

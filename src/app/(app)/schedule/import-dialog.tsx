@@ -4,6 +4,7 @@ import { startTransition, useActionState, useEffect, useRef, useState, type Form
 import { useRouter } from "next/navigation";
 import { importScheduleXlsxAction } from "../tasks/actions";
 import type { ImportState } from "./types";
+import { importSizeError } from "../settings/data/types";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,8 @@ export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const formRef = useRef<HTMLFormElement | null>(null);
   // A file is chosen but not imported yet → closing asks first.
   const [hasFile, setHasFile] = useState(false);
+  // Size / type problem with the chosen file — caught before uploading.
+  const [pickError, setPickError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!state.message) return;
@@ -50,8 +53,17 @@ export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => 
             id="import-file"
             name="file"
             type="file"
-            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            onChange={(e) => setHasFile(!!e.target.files?.length)}
+            accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              setHasFile(!!f);
+              // Server actions are capped at 10 MB — say so before uploading.
+              const err = !f
+                ? null
+                : (importSizeError(f.size) ??
+                  (/\.xls[xm]$/i.test(f.name) ? null : "That isn't an Excel workbook — choose the exported .xlsx file."));
+              setPickError(err);
+            }}
           />
         </div>
         <p className="text-xs text-muted-foreground">
@@ -61,14 +73,14 @@ export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => 
           startDate + durationDays.
         </p>
 
-        <FormMessage tone="error">{state.error}</FormMessage>
+        <FormMessage tone="error">{pickError ?? state.error}</FormMessage>
         <FormMessage tone="success">{state.message}</FormMessage>
 
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" disabled={pending} onClick={onClose}>
             Close
           </Button>
-          <Button type="submit" disabled={pending}>
+          <Button type="submit" disabled={pending || !!pickError}>
             {pending ? "Importing…" : "Import"}
           </Button>
         </div>

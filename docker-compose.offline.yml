@@ -1,16 +1,26 @@
-# OFFLINE stack for a host with NO internet. Uses locally-loaded images only —
-# `pull_policy: never` makes Docker fail loudly instead of trying to reach a
-# registry. Load the image bundle first (docker load -i ...), then:
+# PRODUCTION stack (10.210.6.233, C:\TeamPlanner) — and any host that runs
+# prebuilt, locally present images. `pull_policy: never` makes Docker fail
+# loudly instead of trying to reach a registry. Build (or `docker load`) the
+# images first, then:
 #
 #   docker compose -f docker-compose.offline.yml up -d
+#   docker compose -f docker-compose.offline.yml --profile ai up -d   # only with EMAIL_AI_ENABLED=true
 #
-# The five images below must already be present on the host (from the bundle),
-# with exactly these tags (they are what this file references):
-#   team-planner-app:latest            (your app, built on the dev PC)
-#   team-planner-app-migrator:latest   (schema sync, built on the dev PC)
-#   caddy:2.11.8-alpine                (proxy; pulled on the dev PC, then saved)
-#   postgres:16.15-alpine              (db + backup; pulled on the dev PC, then saved)
-#   ollama/ollama:0.40.14              (local AI + its one-shot model pull)
+# These images must already be present on the host with exactly these tags:
+#   team-planner-app:latest            (the app; `docker build --target runner`)
+#   team-planner-app-migrator:latest   (migrations; `docker build --target migrator`)
+#   caddy:2.11.8-alpine                (proxy)
+#   postgres:16.15-alpine              (db + backup)
+#   ollama/ollama:0.40.14              (ONLY for the "ai" profile: local AI + model pull)
+#
+# Set LAN_IP=<this host's IP> in .env — the Caddyfile reads it (no local edit).
+
+# Log rotation for every service (Docker's default json-file log never shrinks).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   proxy:
@@ -26,17 +36,21 @@ services:
     ports:
       - "${HTTPS_PORT:-8443}:443"
     environment:
-      APP_DOMAIN: ${APP_DOMAIN:-planner.localhost}
+      # The host's LAN IP — the Caddyfile reads it ({$LAN_IP}). Set it in .env.
+      LAN_IP: ${LAN_IP:-127.0.0.1}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - app
+      app:
+        condition: service_healthy   # no 502s while the app is still starting
     networks:
       - web
+    logging: *default-logging
 
-  # One-shot: syncs the DB schema, then exits. Runs before app starts.
+  # One-shot: applies the versioned migrations (prisma/migrate.sh), then exits.
+  # Runs before app starts.
   migrate:
     image: team-planner-app-migrator:latest
     pull_policy: never
@@ -48,6 +62,7 @@ services:
     networks:
       - internal
     restart: "no"
+    logging: *default-logging
 
   app:
     image: team-planner-app:latest
@@ -56,11 +71,7 @@ services:
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
       APP_URL: ${APP_URL:-https://planner.localhost}
-      SMTP_URL: ${SMTP_URL:-}
-      SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
       AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
-      SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
       TIMESHEET_TEMPLATE_PATH: ${TIMESHEET_TEMPLATE_PATH:-/app/timesheet-template/Time_Sheet_Template.xlsm}
       # ── Email → task ingest (needs OUTBOUND internet to imap.gmail.com:993) ──
       EMAIL_INGEST_ENABLED: ${EMAIL_INGEST_ENABLED:-false}
@@ -69,7 +80,7 @@ services:
       IMAP_USER: ${IMAP_USER:-}
       IMAP_PASSWORD: ${IMAP_PASSWORD:-}
       EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-120}
-      # ── Local AI email summarizer (Ollama container below) ──
+      # ── Local AI email assist (Ollama, `--profile ai`; false = feature off) ──
       EMAIL_AI_ENABLED: ${EMAIL_AI_ENABLED:-false}
       EMAIL_AI_MODEL: ${EMAIL_AI_MODEL:-qwen2.5:3b-instruct}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
@@ -82,9 +93,17 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # node:alpine ships BusyBox wget; /api/health answers 503 when the DB is down.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     networks:
       - web
       - internal
+    logging: *default-logging
 
   db:
     image: postgres:16.15-alpine   # pinned; bump deliberately
@@ -104,23 +123,28 @@ services:
       retries: 10
     networks:
       - internal
+    logging: *default-logging
 
-  # Local LLM runtime for the email→task summarizer. The IMAGE must be loaded
-  # from the USB bundle (pull_policy: never); the MODEL is downloaded once by
+  # Local LLM runtime for the email→task assist. Only started with the "ai"
+  # profile (`--profile ai`); the app does not depend on it. The IMAGE must be
+  # present locally (pull_policy: never); the MODEL is downloaded once by
   # ollama-init below, which needs outbound internet (registry.ollama.ai).
   ollama:
     image: ollama/ollama:0.40.14   # pinned; bump deliberately
+    profiles: ["ai"]
     pull_policy: never
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
     networks:
       - internal
+    logging: *default-logging
 
-  # One-shot: downloads the summarizer model (only when the feature is on),
+  # One-shot ("ai" profile): downloads the model (only when the feature is on),
   # then exits. The app does NOT wait for it — AI is optional and lazy.
   ollama-init:
     image: ollama/ollama:0.40.14   # pinned; bump deliberately
+    profiles: ["ai"]
     pull_policy: never
     environment:
       OLLAMA_HOST: http://ollama:11434
@@ -146,6 +170,7 @@ services:
     networks:
       - internal
     restart: "no"
+    logging: *default-logging
 
   # Postgres backups → ./backups on the host (compressed pg_dump format).
   # Dumps once at startup, then every 24 h (retries after 1 h if a dump fails):
@@ -215,6 +240,7 @@ services:
         condition: service_healthy
     networks:
       - internal
+    logging: *default-logging
 
 volumes:
   db_data:

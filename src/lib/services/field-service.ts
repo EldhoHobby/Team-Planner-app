@@ -1,10 +1,11 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
-import type { JobType, JobStatus, TaskKind } from "@prisma/client";
-import { endFromDuration, inclusiveDayCount, toUtcMidnight } from "@/lib/scheduling/calc";
-import { writeAudit } from "@/lib/services/audit";
-import { logError } from "@/lib/log";
+import type { JobType, JobStatus, TaskKind, Prisma } from "@prisma/client";
+import { endFromDuration, toUtcMidnight } from "@/lib/scheduling/calc";
+import { todayUtcMs } from "@/lib/tz";
+import { listAudit, writeAudit } from "@/lib/services/audit";
+import { assertPersonInScope } from "@/lib/services/people";
 
 export type { JobType, JobStatus };
 
@@ -42,14 +43,6 @@ const lbl = (map: Record<string, string>, v: string | null | undefined): string 
 // schedule UI is unchanged.
 
 /**
- * No-op retained for the schedule page's call site. People are created as login
- * users on the People settings page, so there's no demo-crew seeding any more.
- */
-export async function ensureDefaultTechnicians(_scope: TenantScope): Promise<void> {
-  // Intentionally empty — kept so callers don't need to change.
-}
-
-/**
  * Org people available for scheduling (not archived). `active` = schedulable.
  * Pass `workGroupId` to narrow the assignable pool to one cross-functional work
  * group (e.g. Field Service) — the pool cuts across departments by design.
@@ -74,15 +67,32 @@ export async function listTechnicians(scope: TenantScope, workGroupId?: string) 
   }));
 }
 
-async function assertTechnicianInScope(scope: TenantScope, technicianId: string) {
-  const membership = await prisma.membership.findFirst({
-    where: { userId: technicianId, orgId: scope.ctx.orgId },
-    select: { id: true },
+/**
+ * People (in this org) by id, INCLUDING archived ones — used to name the
+ * "(archived)" lanes for jobs still assigned to someone who left the
+ * schedulable list. Shaped like listTechnicians() rows (never schedulable).
+ */
+export async function listPeopleByIds(scope: TenantScope, ids: string[]) {
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return [];
+  const people = await prisma.user.findMany({
+    where: { id: { in: unique }, memberships: { some: { orgId: scope.ctx.orgId } } },
+    select: { id: true, name: true, email: true, username: true, color: true, archived: true },
   });
-  if (!membership) throw new ForbiddenError("That person is not in your organization");
+  return people.map((p) => ({
+    id: p.id,
+    name: p.name ?? p.email ?? p.username,
+    color: p.color,
+    active: false,
+    archived: p.archived,
+  }));
 }
 
 // ─── Default container: field-service tasks still need a team + project ───
+
+/** Name of the system project that holds the schedule's jobs. Looked up BY
+ *  NAME, so it can't be renamed (see services/projects.ts). */
+export const CONTAINER_PROJECT_NAME = "Field Service";
 
 /**
  * Ensure a team + a "Field Service" project exist to hang jobs on, so creating a
@@ -104,12 +114,12 @@ async function ensureContainer(
   }
 
   let project = await prisma.project.findFirst({
-    where: { orgId: scope.ctx.orgId, teamId: team.id, name: "Field Service" },
+    where: { orgId: scope.ctx.orgId, teamId: team.id, name: CONTAINER_PROJECT_NAME },
     select: { id: true },
   });
   if (!project) {
     project = await prisma.project.create({
-      data: { orgId: scope.ctx.orgId, teamId: team.id, name: "Field Service" },
+      data: { orgId: scope.ctx.orgId, teamId: team.id, name: CONTAINER_PROJECT_NAME },
       select: { id: true },
     });
   }
@@ -118,12 +128,61 @@ async function ensureContainer(
 
 // ─────────────────────────── Jobs (field-service tasks) ───────────────────────────
 
-export function listFieldJobs(scope: TenantScope) {
+/** How far back the board loads COMPLETED jobs by default (by end date). */
+export const COMPLETED_JOBS_WINDOW_DAYS = 365;
+
+/**
+ * Jobs for the schedule board. Performance guard: COMPLETED jobs whose end date
+ * is more than 12 months ago are left out unless `includeOldCompleted` is set
+ * (the board's "Show older completed jobs" toggle) — every other job (open,
+ * undated, recently completed) is always returned.
+ */
+export function listFieldJobs(scope: TenantScope, opts: { includeOldCompleted?: boolean } = {}) {
+  const recent: Prisma.TaskWhereInput[] = [
+    { jobStatus: null },
+    { jobStatus: { not: "COMPLETED" } },
+    { endDate: null },
+    { endDate: { gte: new Date(todayUtcMs() - COMPLETED_JOBS_WINDOW_DAYS * 86_400_000) } },
+  ];
   return prisma.task.findMany({
-    where: scope.whereTeam({ kind: "FIELD_SERVICE" as TaskKind }),
+    where: scope.whereTeam({
+      kind: "FIELD_SERVICE" as TaskKind,
+      ...(opts.includeOldCompleted ? {} : { OR: recent }),
+    }),
     include: JOB_INCLUDE,
     orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
   });
+}
+
+/** True when there are completed jobs older than the board's default window. */
+export async function hasOlderCompletedJobs(scope: TenantScope): Promise<boolean> {
+  const n = await prisma.task.count({
+    where: scope.whereTeam({
+      kind: "FIELD_SERVICE" as TaskKind,
+      jobStatus: "COMPLETED" as JobStatus,
+      endDate: { lt: new Date(todayUtcMs() - COMPLETED_JOBS_WINDOW_DAYS * 86_400_000) },
+    }),
+  });
+  return n > 0;
+}
+
+/**
+ * Id of the auto-created "Field Service" container project that holds the
+ * schedule's jobs, WITHOUT creating it (same lookup as ensureContainer). Null
+ * when none exists yet.
+ */
+export async function findContainerProjectId(scope: TenantScope): Promise<string | null> {
+  const team = await prisma.team.findFirst({
+    where: { orgId: scope.ctx.orgId },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  if (!team) return null;
+  const project = await prisma.project.findFirst({
+    where: { orgId: scope.ctx.orgId, teamId: team.id, name: CONTAINER_PROJECT_NAME },
+    select: { id: true },
+  });
+  return project?.id ?? null;
 }
 
 export interface CreateJobInput {
@@ -200,7 +259,7 @@ function deriveSchedule(input: {
 
 export async function createJob(scope: TenantScope, input: CreateJobInput) {
   const { teamId, projectId } = await ensureContainer(scope);
-  if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
+  if (input.technicianId) await assertPersonInScope(scope, input.technicianId);
   if (input.workGroupId) await assertWorkGroupInScope(scope, input.workGroupId);
   await assertUniqueSoTitle(scope, input.soNumber, input.title.trim());
 
@@ -308,7 +367,7 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
   });
   if (!job) throw new ForbiddenError("Job not found");
 
-  if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
+  if (input.technicianId) await assertPersonInScope(scope, input.technicianId);
   if (input.workGroupId) await assertWorkGroupInScope(scope, input.workGroupId);
 
   // Keep SO + title unique when either is being changed.
@@ -428,7 +487,7 @@ export async function rescheduleJob(
     where: { id, kind: "FIELD_SERVICE", ...scope.team() },
   });
   if (!job) throw new ForbiddenError("Job not found");
-  if (input.technicianId) await assertTechnicianInScope(scope, input.technicianId);
+  if (input.technicianId) await assertPersonInScope(scope, input.technicianId);
 
   const nextStart =
     input.startDate !== undefined ? input.startDate : job.startDate;
@@ -528,153 +587,6 @@ export async function deleteJob(scope: TenantScope, id: string) {
   await writeAudit(scope, { entity: "job", entityId: id, action: "deleted", summary: `Deleted ${jobRef(job)}` });
 }
 
-// ─────────────────────────── CSV import/export ───────────────────────────
-
-export const CSV_HEADERS = [
-  "SO Number",
-  "Customer",
-  "Title",
-  "Scope of Work",
-  "Job Type",
-  "Hardware",
-  "Technician",
-  "Start Date",
-  "Duration Days",
-  "Status",
-] as const;
-
-function csvCell(value: string): string {
-  // Quote if it contains comma, quote, or newline; escape embedded quotes.
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
-}
-
-type JobWithTech = Awaited<ReturnType<typeof listFieldJobs>>[number];
-
-export function serializeJobsCsv(jobs: JobWithTech[]): string {
-  const lines = [CSV_HEADERS.join(",")];
-  for (const j of jobs) {
-    lines.push(
-      [
-        j.soNumber ?? "",
-        j.customerName ?? "",
-        j.title,
-        j.description ?? "",
-        j.jobType ?? "",
-        j.hardwareTarget ?? "",
-        j.technician?.name ?? "",
-        j.startDate ? j.startDate.toISOString().slice(0, 10) : "",
-        j.durationDays != null ? String(j.durationDays) : "",
-        j.jobStatus ?? "",
-      ]
-        .map((c) => csvCell(String(c)))
-        .join(","),
-    );
-  }
-  return lines.join("\n");
-}
-
-/** Minimal RFC-4180-ish CSV parser (handles quotes, commas, CRLF). */
-export function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; }
-        else inQuotes = false;
-      } else field += c;
-    } else if (c === '"') inQuotes = true;
-    else if (c === ",") { row.push(field); field = ""; }
-    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
-    else if (c === "\r") { /* skip */ }
-    else field += c;
-  }
-  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
-  return rows.filter((r) => r.some((c) => c.trim() !== ""));
-}
-
-const JOB_TYPE_BY_LABEL: Record<string, JobType> = {
-  commissioning: "COMMISSIONING",
-  training: "TRAINING",
-  "annual maintenance": "ANNUAL_MAINTENANCE",
-  "emergency support": "EMERGENCY_SUPPORT",
-};
-const STATUS_BY_LABEL: Record<string, JobStatus> = {
-  unconfirmed: "UNCONFIRMED",
-  scheduled: "SCHEDULED",
-  "in progress": "IN_PROGRESS",
-  in_progress: "IN_PROGRESS",
-  completed: "COMPLETED",
-};
-
-export interface ImportResult {
-  created: number;
-  skipped: number;
-  errors: string[];
-}
-
-/** Import jobs from CSV text. Unknown technicians are matched by name (or left blank). */
-export async function importJobsCsv(
-  scope: TenantScope,
-  text: string,
-): Promise<ImportResult> {
-  const rows = parseCsv(text);
-  if (rows.length === 0) return { created: 0, skipped: 0, errors: ["Empty file"] };
-
-  // Detect + drop a header row if present.
-  const first = rows[0].map((c) => c.trim().toLowerCase());
-  const hasHeader = first.includes("title") || first.includes("so number");
-  const dataRows = hasHeader ? rows.slice(1) : rows;
-
-  const techs = await listTechnicians(scope);
-  const techByName = new Map(techs.map((t) => [t.name.trim().toLowerCase(), t.id]));
-
-  const result: ImportResult = { created: 0, skipped: 0, errors: [] };
-
-  for (let i = 0; i < dataRows.length; i++) {
-    const r = dataRows[i];
-    const [so, customer, title, scopeText, jobTypeRaw, hardware, techName, startRaw, durRaw, statusRaw] = r;
-    if (!title || !title.trim()) {
-      result.skipped++;
-      result.errors.push(`Row ${i + 1}: missing Title`);
-      continue;
-    }
-    const jobType = jobTypeRaw ? JOB_TYPE_BY_LABEL[jobTypeRaw.trim().toLowerCase()] : undefined;
-    const jobStatus = statusRaw ? STATUS_BY_LABEL[statusRaw.trim().toLowerCase()] : undefined;
-    const technicianId = techName ? techByName.get(techName.trim().toLowerCase()) ?? null : null;
-    const start = startRaw && startRaw.trim() ? new Date(startRaw.trim()) : null;
-    const validStart = start && !Number.isNaN(start.getTime()) ? start : null;
-    const duration = durRaw && durRaw.trim() ? Number(durRaw.trim()) : null;
-
-    try {
-      await createJob(scope, {
-        title,
-        soNumber: so || null,
-        customerName: customer || null,
-        description: scopeText || null,
-        jobType: jobType ?? null,
-        hardwareTarget: hardware || null,
-        technicianId,
-        startDate: validStart,
-        durationDays: duration && duration > 0 ? duration : null,
-        jobStatus,
-      });
-      result.created++;
-    } catch (e) {
-      logError(`importJobsCsv row ${i + 1}`, e);
-      result.skipped++;
-      result.errors.push(`Row ${i + 1}: could not import`);
-    }
-  }
-  return result;
-}
-
-export { inclusiveDayCount };
-
 // ─────────────────────────── Job comment thread ───────────────────────────
 // A freeform comment thread on a job (the "reason for the change" and any
 // discussion). Comments live in JobNote; the change history stays in AuditLog
@@ -717,6 +629,40 @@ async function assertJobInScope(
   });
   if (!job) throw new ForbiddenError("Job not found");
   return job;
+}
+
+export interface JobHistoryRow {
+  action: string;
+  summary: string;
+  actorEmail: string | null;
+  /** The person's display name (name → username → email), like comment authors. */
+  actorName: string | null;
+  createdAt: string; // ISO
+}
+
+/**
+ * A job's change history from the AuditLog (comments excluded — they come from
+ * JobNote). NOTE: the AuditLog is pruned after AUDIT_RETENTION_DAYS and capped
+ * at 100 rows, so this is "recent changes", not the full history.
+ */
+export async function listJobHistory(scope: TenantScope, jobId: string): Promise<JobHistoryRow[]> {
+  await assertJobInScope(scope, jobId);
+  const rows = await listAudit(scope, "job", jobId, { excludeActions: ["commented"] });
+  const ids = [...new Set(rows.map((r) => r.actorId).filter((x): x is string => !!x))];
+  const users = ids.length
+    ? await prisma.user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, name: true, username: true, email: true },
+      })
+    : [];
+  const nameOf = new Map(users.map((u) => [u.id, u.name ?? u.username ?? u.email ?? null]));
+  return rows.map((r) => ({
+    action: r.action,
+    summary: r.summary,
+    actorEmail: r.actorEmail,
+    actorName: (r.actorId ? nameOf.get(r.actorId) : null) ?? r.actorEmail ?? null,
+    createdAt: r.createdAt.toISOString(),
+  }));
 }
 
 /** All comments on a job, oldest first. Permission = job visibility (team scope). */

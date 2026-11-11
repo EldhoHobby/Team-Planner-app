@@ -2,9 +2,9 @@
 
 import { startTransition, useCallback, useEffect, useActionState, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { History, ListChecks, Plus } from "lucide-react";
+import { History, ListChecks, Plus, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { daysFromToday, fmtDateOnly, fmtEastern } from "@/lib/tz";
+import { daysFromToday, fmtDateOnly, fmtEastern, todayYmd } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -473,6 +473,16 @@ function TaskFormDialog({
 
 // ─── Task row ───
 
+/** Due date label; the year is shown only when it is not the current year
+ *  (Eastern "today", so server and browser renders agree). */
+function fmtDue(iso: string): string {
+  const sameYear = new Date(iso).getUTCFullYear() === Number(todayYmd().slice(0, 4));
+  return fmtDateOnly(
+    iso,
+    sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" },
+  );
+}
+
 function TaskRow({
   task,
   onEdit,
@@ -485,6 +495,11 @@ function TaskRow({
   const daysLeft = task.status !== "DONE" && task.dueDate ? daysFromToday(task.dueDate) : null;
   const overdue = daysLeft !== null && daysLeft < 0;
   const dueSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 2;
+  const dueClass = overdue
+    ? "font-medium text-destructive"
+    : dueSoon
+      ? "font-medium text-amber-600 dark:text-amber-400"
+      : "text-muted-foreground";
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 hover:bg-muted/30">
@@ -519,6 +534,19 @@ function TaskRow({
             {task.location ? ` · ${task.location}` : ""}
           </span>
         </p>
+        {/* Small screens: the chips and the due date are hidden on the right,
+            so show "status · due date" under the title instead. */}
+        <p className="mt-0.5 flex items-center gap-1.5 text-xs sm:hidden">
+          <span className={cn("rounded-full px-1.5 py-px text-[10px] font-medium", STATUS_COLORS[task.status])}>
+            {STATUS_LABELS[task.status]}
+          </span>
+          {task.dueDate ? (
+            <span className={dueClass}>
+              Due {fmtDue(task.dueDate)}
+              {overdue ? " · overdue" : ""}
+            </span>
+          ) : null}
+        </p>
       </div>
 
       {/* Chips */}
@@ -530,20 +558,11 @@ function TaskRow({
 
       {/* Due date */}
       {task.dueDate ? (
-        <span
-          className={cn(
-            "hidden whitespace-nowrap text-xs lg:block",
-            overdue
-              ? "font-medium text-destructive"
-              : dueSoon
-                ? "font-medium text-amber-600 dark:text-amber-400"
-                : "text-muted-foreground",
-          )}
-        >
-          {fmtDateOnly(task.dueDate)}
+        <span className={cn("hidden whitespace-nowrap text-xs sm:block", dueClass)}>
+          {fmtDue(task.dueDate)}
         </span>
       ) : (
-        <span className="hidden w-16 lg:block" />
+        <span className="hidden w-16 sm:block" />
       )}
 
       {/* Assignee bubbles */}
@@ -580,11 +599,15 @@ function FilterBar({
   projectFilter,
   originFilter,
   mine,
+  query,
+  hideDone,
   onStatus: setStatus,
   onPriority: setPriority,
   onProject: setProject,
   onOrigin: setOrigin,
   onMine: setMine,
+  onQuery: setQuery,
+  onHideDone: setHideDone,
 }: {
   projects: ProjectOption[];
   statusFilter: string;
@@ -592,17 +615,42 @@ function FilterBar({
   projectFilter: string;
   originFilter: string;
   mine: boolean;
+  query: string;
+  hideDone: boolean;
   onStatus: (v: string) => void;
   onPriority: (v: string) => void;
   onProject: (v: string) => void;
   onOrigin: (v: string) => void;
   onMine: (v: boolean) => void;
+  onQuery: (v: string) => void;
+  onHideDone: (v: boolean) => void;
 }) {
   const filterSelect =
     "h-8 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-  const hasFilter = statusFilter || priorityFilter || projectFilter || originFilter || mine;
+  const hasFilter = statusFilter || priorityFilter || projectFilter || originFilter || mine || query;
   return (
     <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2">
+      <div className="relative w-full sm:w-56">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search title / description"
+          aria-label="Search tasks"
+          className={`${filterSelect} w-full pl-7`}
+        />
+      </div>
+      <label className="flex items-center gap-1.5 rounded-md border border-input px-2 py-1 text-xs">
+        <input
+          type="checkbox"
+          checked={hideDone}
+          disabled={statusFilter === "DONE"}
+          onChange={(e) => setHideDone(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-input accent-primary"
+        />
+        Hide done
+      </label>
       <label className="flex items-center gap-1.5 rounded-md border border-input px-2 py-1 text-xs">
         <input
           type="checkbox"
@@ -670,6 +718,7 @@ function FilterBar({
             setProject("");
             setOrigin("");
             setMine(false);
+            setQuery("");
           }}
           className="text-xs text-muted-foreground hover:text-foreground"
         >
@@ -685,14 +734,12 @@ function FilterBar({
 export function TasksClient({
   tasks,
   projects,
-  teams,
   teamMembers,
   currentUserId,
   initialProjectId = "",
 }: {
   tasks: TaskRow[];
   projects: ProjectOption[];
-  teams: { id: string; name: string }[];
   teamMembers: TeamMember[];
   currentUserId: string;
   /** From /tasks?project=<id> (validated server-side); "" = all projects. */
@@ -703,19 +750,44 @@ export function TasksClient({
   const [projectFilter, setProjectFilter] = useState(initialProjectId);
   const [originFilter, setOriginFilter] = useState("");
   const [mine, setMine] = useState(false);
+  const [query, setQuery] = useState("");
+  // "Hide done" is on by default and remembered per browser. Read after mount
+  // (localStorage is browser-only) to keep the server and browser renders equal.
+  const [hideDone, setHideDoneState] = useState(true);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("tasks.hideDone");
+      if (v === "0") setHideDoneState(false);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const setHideDone = (v: boolean) => {
+    setHideDoneState(v);
+    try {
+      localStorage.setItem("tasks.hideDone", v ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
   const [createOpen, setCreateOpen] = useState(false);
   const [editTask, setEditTask] = useState<TaskRow | null>(null);
   const closeCreate = useCallback(() => setCreateOpen(false), []);
   const closeEdit = useCallback(() => setEditTask(null), []);
 
+  const q = query.trim().toLowerCase();
   const filtered = tasks.filter(
     (t) =>
       (!statusFilter || t.status === statusFilter) &&
+      // An explicit "Done" status filter wins over "Hide done".
+      (!hideDone || statusFilter === "DONE" || t.status !== "DONE") &&
       (!priorityFilter || t.priority === priorityFilter) &&
       (!projectFilter || t.projectId === projectFilter) &&
       (!originFilter || t.origin === originFilter) &&
-      (!mine || t.assignees.some((a) => a.id === currentUserId)),
+      (!mine || t.assignees.some((a) => a.id === currentUserId)) &&
+      (!q || t.title.toLowerCase().includes(q) || (t.description ?? "").toLowerCase().includes(q)),
   );
+  const hiddenDone = hideDone && statusFilter !== "DONE" ? tasks.filter((t) => t.status === "DONE").length : 0;
 
   const noProjects = projects.length === 0;
 
@@ -746,11 +818,15 @@ export function TasksClient({
             projectFilter={projectFilter}
             originFilter={originFilter}
             mine={mine}
+            query={query}
+            hideDone={hideDone}
             onStatus={setStatusFilter}
             onPriority={setPriorityFilter}
             onProject={setProjectFilter}
             onOrigin={setOriginFilter}
             onMine={setMine}
+            onQuery={setQuery}
+            onHideDone={setHideDone}
           />
         )}
 
@@ -781,7 +857,9 @@ export function TasksClient({
                 <p className="mt-1 text-sm text-muted-foreground">
                   {tasks.length === 0
                     ? "Create your first task to get started."
-                    : "Try clearing the filters."}
+                    : hiddenDone
+                      ? `Try clearing the filters — ${hiddenDone} done task${hiddenDone === 1 ? " is" : "s are"} hidden.`
+                      : "Try clearing the filters."}
                 </p>
               </div>
               {tasks.length === 0 ? (
@@ -797,6 +875,7 @@ export function TasksClient({
                     setProjectFilter("");
                     setOriginFilter("");
                     setMine(false);
+                    setQuery("");
                   }}
                   className="text-sm text-primary hover:underline"
                 >
@@ -810,6 +889,18 @@ export function TasksClient({
               {filtered.map((task) => (
                 <TaskRow key={task.id} task={task} onEdit={setEditTask} />
               ))}
+              {hiddenDone ? (
+                <div className="px-4 py-3 text-xs text-muted-foreground">
+                  {hiddenDone} done task{hiddenDone === 1 ? "" : "s"} hidden ·{" "}
+                  <button
+                    type="button"
+                    onClick={() => setHideDone(false)}
+                    className="font-medium text-primary hover:underline"
+                  >
+                    Show done
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
         </div>

@@ -153,6 +153,46 @@ export function TimesheetClient({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
+  // In-app navigation (sidebar links etc.) never fires beforeunload, so while
+  // there are unsaved hours intercept same-origin <a> clicks in the CAPTURE
+  // phase (before Next's <Link> handler), ask, and only then navigate.
+  useEffect(() => {
+    if (!dirty) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0) return;
+      // Modified clicks open a new tab/window — this page stays, nothing is lost.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.("a");
+      if (!a || !a.href) return;
+      if (a.target && a.target !== "_self") return;
+      if (a.hasAttribute("download")) return;
+      let url: URL;
+      try {
+        url = new URL(a.href, window.location.href);
+      } catch {
+        return;
+      }
+      if (url.origin !== window.location.origin) return;
+      // Same page, only a hash change: nothing is unloaded.
+      if (url.pathname === window.location.pathname && url.search === window.location.search && url.hash) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const href = `${url.pathname}${url.search}${url.hash}`;
+      void (async () => {
+        const ok = await confirm({
+          title: "Leave without saving this week's hours?",
+          message: `Your changes to the week ending ${fmtDateOnly(data.weekEnding)} have not been saved.`,
+          confirmLabel: "Leave without saving",
+          cancelLabel: "Stay",
+          tone: "danger",
+        });
+        if (ok) router.push(href);
+      })();
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, [dirty, confirm, router, data.weekEnding]);
+
   const markDirty = () => {
     setDirty(true);
     setMsg((m) => (m?.kind === "ok" ? null : m));

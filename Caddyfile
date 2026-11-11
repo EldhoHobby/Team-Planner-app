@@ -1,14 +1,21 @@
 # Reverse proxy + TLS termination.
 #
 # Offline / LAN setup: a single self-signed (internal) certificate serves the app
-# over HTTPS for localhost and this host's LAN IP — no internet / Let's Encrypt
-# needed. Change/add the IP below to match the host, and use a static IP or DHCP
-# reservation so it doesn't change out from under you.
+# over HTTPS for planner.localhost and this host's LAN IP — no internet / Let's
+# Encrypt needed.
+#
+# The LAN IP is NOT edited here: it comes from LAN_IP in .env (the compose files
+# pass it to this container). {$LAN_IP:127.0.0.1} is replaced when Caddy loads
+# this file; 127.0.0.1 is only the fallback when LAN_IP is unset. Use a static IP
+# or DHCP reservation so it doesn't change out from under you. After changing
+# LAN_IP in .env: `docker compose up -d proxy` (a plain restart does not re-read
+# .env).
 #
 # To expose a public domain with a trusted Let's Encrypt cert instead (requires
 # internet + ports 80/443 reachable from outside), add a block like:
 #   your-domain.example.org {
 #     encode gzip
+#     import security_headers
 #     reverse_proxy app:3000 {
 #       header_up X-Real-IP {remote_host}
 #     }
@@ -19,16 +26,34 @@
 # keep this line in every site block.
 
 # Global options must come first. default_sni picks the certificate when a client
-# connects by IP and sends no server name (Windows/browsers do this for IPs);
-# keep it in step with the LAN IP below.
+# connects by IP and sends no server name (Windows/browsers do this for IPs).
 {
-  default_sni 10.210.4.130
+	default_sni {$LAN_IP:127.0.0.1}
 }
 
-planner.localhost, 10.210.4.130 {
-  encode gzip
-  reverse_proxy app:3000 {
-    header_up X-Real-IP {remote_host}
-  }
-  tls internal
+# Response headers for every site block (`import security_headers`).
+#  - HSTS: max-age only (no includeSubDomains / preload). Browsers ignore it for
+#    bare IPs and self-signed certs, so it only bites on a trusted hostname.
+#  - X-Frame-Options SAMEORIGIN, not DENY: Agreements "Print" loads the print
+#    page in an off-screen SAME-ORIGIN iframe (print-frame.ts); DENY breaks it.
+#  - Removing a header (-Server) makes Caddy apply the whole block after the
+#    app has answered, so these also replace anything the app sets.
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "same-origin"
+		-Server
+		-X-Powered-By
+	}
+}
+
+planner.localhost, {$LAN_IP:127.0.0.1} {
+	encode gzip
+	import security_headers
+	reverse_proxy app:3000 {
+		header_up X-Real-IP {remote_host}
+	}
+	tls internal
 }

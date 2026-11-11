@@ -1,7 +1,7 @@
 "use client";
 
 import { todayYmd, ymdEastern } from "@/lib/tz";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Printer } from "lucide-react";
@@ -36,7 +36,7 @@ function matchesCustomer(filter: string, s: SaCustomerStatus) {
 export type ProposalSort = { key: "customer" | "total" | "end" | "changed"; dir: 1 | -1 };
 
 export function ProposalsClient({
-  rows, canEdit, initialStatus, initialCustomer, initialQ, initialMonth, initialSort,
+  rows, canEdit, initialStatus, initialCustomer, initialQ, initialMonth, initialSort, initialSigned = "", openBulk = "",
 }: {
   rows: ProposalListRow[];
   canEdit: boolean;
@@ -45,16 +45,22 @@ export function ProposalsClient({
   initialQ: string;
   initialMonth: string;
   initialSort: ProposalSort;
+  /** "YYYY": only proposals SIGNED in that calendar year (the dashboard's "Signed in <year>" tile). */
+  initialSigned?: string;
+  /** "YYYY-MM": open the bulk-create preview for that month on load (renewals chart). */
+  openBulk?: string;
 }) {
   const router = useRouter();
   const [q, setQ] = useState(initialQ);
   const [status, setStatus] = useState(initialStatus);
   const [month, setMonth] = useState(initialMonth);
   const [customer, setCustomer] = useState(initialCustomer);
+  const [signed, setSigned] = useState(initialSigned);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkMonth, setBulkMonth] = useState("");
-  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkMonth, setBulkMonth] = useState(openBulk);
+  const [bulkOpen, setBulkOpen] = useState(!!openBulk);
   const [sort, setSort] = useState<ProposalSort>(initialSort);
+  const inYear = (r: ProposalListRow) => !signed || (!!r.signedDate && r.signedDate.startsWith(signed));
 
   // Keep the filters in the URL (defaults left out) so a reload / browser Back restores the list, and pass
   // them to each proposal as ?back=… so its "← Proposals" link returns to this exact view.
@@ -64,10 +70,11 @@ export function ProposalsClient({
     if (status !== "OPEN") p.set("status", status);
     if (month) p.set("month", month);
     if (customer !== "DEFAULT") p.set("customer", customer);
+    if (signed) p.set("signed", signed);
     const s = `${sort.dir === -1 ? "-" : ""}${sort.key}`;
     if (s !== "-changed") p.set("sort", s);
     return p.toString();
-  }, [q, status, month, customer, sort]);
+  }, [q, status, month, customer, signed, sort]);
   useEffect(() => {
     // Native replaceState (synced with the Next router) — no server round-trip on every keystroke.
     const url = `${window.location.pathname}${listQs ? `?${listQs}` : ""}`;
@@ -88,11 +95,13 @@ export function ProposalsClient({
       if (!r.renewsMonth) continue;
       if (!(status === "" || (status === "OPEN" ? r.status === "DRAFT" || r.status === "SENT" : r.status === status))) continue;
       if (!matchesCustomer(customer, r.customerStatus)) continue;
+      if (!inYear(r)) continue;
       if (n && !r.customerName.toLowerCase().includes(n) && !r.soNumber.toLowerCase().includes(n)) continue;
       c[r.renewsMonth] = (c[r.renewsMonth] ?? 0) + 1;
     }
     return c;
-  }, [rows, q, status, customer]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- inYear only reads `signed`
+  }, [rows, q, status, customer, signed]);
   const [printing, setPrinting] = useState(false);
   const printSelected = () => {
     setPrinting(true);
@@ -107,9 +116,11 @@ export function ProposalsClient({
         (status === "" || (status === "OPEN" ? r.status === "DRAFT" || r.status === "SENT" : r.status === status)) &&
         (!month || r.renewsMonth === month) &&
         matchesCustomer(customer, r.customerStatus) &&
+        inYear(r) &&
         (!n || r.customerName.toLowerCase().includes(n) || r.soNumber.toLowerCase().includes(n)),
     );
-  }, [rows, q, status, month, customer]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- inYear only reads `signed`
+  }, [rows, q, status, month, customer, signed]);
   const sorted = useMemo(() => {
     const v = (r: ProposalListRow): string | number =>
       sort.key === "customer" ? r.customerName.toLowerCase() : sort.key === "total" ? r.total : sort.key === "end" ? r.endDate ?? "9999" : r.updatedAt;
@@ -139,14 +150,22 @@ export function ProposalsClient({
   const toggle = (id: string) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const printIds = [...selected].filter((id) => shown.some((r) => r.id === id));
 
-  const previewBulk = () =>
+  const previewBulk = (forMonth: string = bulkMonth) =>
     start(async () => {
       setError(null);
       setResult(null);
-      const r = await bulkProposalsAction({ month: bulkMonth, apply: false });
+      const r = await bulkProposalsAction({ month: forMonth, apply: false });
       if (r.error) setError(r.error);
       else setPreview(r.rows ?? []);
     });
+  // ?bulk=YYYY-MM (renewals chart "Create proposals for this month"): open that month's preview once.
+  const bulkOpened = useRef(false);
+  useEffect(() => {
+    if (!openBulk || bulkOpened.current) return;
+    bulkOpened.current = true;
+    previewBulk(openBulk);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on load
+  }, [openBulk]);
   const applyBulk = () =>
     start(async () => {
       const r = await bulkProposalsAction({ month: bulkMonth, apply: true });
@@ -212,7 +231,7 @@ export function ProposalsClient({
                   <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">
                     No {noun} match these filters.{" "}
                     {withClear && (
-                      <button type="button" className="text-primary hover:underline" onClick={() => { setQ(""); setStatus(""); setMonth(""); setCustomer(""); }}>
+                      <button type="button" className="text-primary hover:underline" onClick={() => { setQ(""); setStatus(""); setMonth(""); setCustomer(""); setSigned(""); }}>
                         Clear filters
                       </button>
                     )}
@@ -258,7 +277,7 @@ export function ProposalsClient({
             <span className="block text-muted-foreground">Agreements ending in</span>
             <MonthPicker value={bulkMonth} onChange={setBulkMonth} allowClear={false} placeholder="Pick a month" ariaLabel="Agreements ending in" />
           </label>
-          <Button disabled={!bulkMonth || pending} onClick={previewBulk}>Preview</Button>
+          <Button disabled={!bulkMonth || pending} onClick={() => previewBulk()}>Preview</Button>
           <Button variant="ghost" onClick={() => setBulkOpen(false)}>Close</Button>
         </section>
       )}
@@ -307,6 +326,12 @@ export function ProposalsClient({
           ))}
           <option value="">All customer statuses</option>
         </select>
+        {signed && (
+          <span className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-xs">
+            Signed in {signed}
+            <button type="button" className="ml-0.5 text-muted-foreground hover:text-foreground" aria-label="Clear the signed-year filter" onClick={() => setSigned("")}>×</button>
+          </span>
+        )}
         <Button variant="outline" className="ml-auto" disabled={!printIds.length || printing} onClick={printSelected}>
           <Printer className="h-4 w-4" /> {printing ? "Preparing…" : printIds.length ? `Print ${printIds.length} selected` : "Print selected"}
         </Button>

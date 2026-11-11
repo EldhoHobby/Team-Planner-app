@@ -5,7 +5,6 @@ import { requireScope } from "@/lib/auth/current-user";
 import {
   createTechTask,
   updateTechTask,
-  setTechTaskState,
   deleteTechTask,
   getTaskThread,
   addTaskComment,
@@ -73,17 +72,6 @@ export async function updateTechTaskAction(input: {
       return { error: e.message, stale: true };
     }
     return actionError("updateTechTask", e, "Could not update the task. Please try again.");
-  }
-}
-
-export async function setTechTaskStateAction(input: { id: string; state: TechTaskState }): Promise<State> {
-  const { scope } = await requireScope();
-  try {
-    await setTechTaskState(scope, input.id, input.state);
-    revalidatePath("/dashboard");
-    return { success: true };
-  } catch (e) {
-    return actionError("setTechTaskState", e, "Could not update the task. Please try again.");
   }
 }
 

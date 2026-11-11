@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
-import { isOpenCustomer, type SaCustomerStatus, type SaProposalStatus } from "@/lib/agreements/constants";
+import { isOpenCustomer, type SaAgreement, type SaCustomerStatus, type SaProposalStatus } from "@/lib/agreements/constants";
 import type { RenewalState } from "@/lib/agreements/renewal";
 import { formatChange } from "@/lib/agreements/history-format";
 import { todayYmd } from "@/lib/tz";
@@ -49,6 +49,17 @@ export interface WaitingItem {
   notes: string | null;
 }
 
+/** An Active customer with agreements that lapsed after a partial renewal. */
+export interface LapsedItem {
+  customerId: string;
+  name: string;
+  soNumber: string;
+  lines: { id: string; year: number; agreement: SaAgreement; price: number; endDate: string | null }[];
+  /** Annual value of the lapsed agreements (their last signed prices). */
+  value: number;
+  notes: string | null;
+}
+
 /** Customer statuses that park a customer outside the normal renewal follow-up. */
 export const WAITING_STATUSES: readonly SaCustomerStatus[] = ["PENDING", "EXPIRED_WAITING"];
 
@@ -60,8 +71,12 @@ export async function getDashboard(scope: TenantScope) {
   const active = rows.filter((r) => r.status === "ACTIVE");
   const year = today.slice(0, 4);
 
-  const allProposals = rows.flatMap((r) => r.proposals.map((p) => ({ ...p, customerId: r.id })));
-  const sent = allProposals.filter((p) => p.status === "SENT");
+  const allProposals = rows.flatMap((r) => r.proposals.map((p) => ({ ...p, customerId: r.id, customerStatus: r.status })));
+  // Same rule as the Proposals list's default view (?status=SENT): open customers' sent proposals —
+  // Active in the main table, Pending / Expired – still waiting in the section below; Not renewed /
+  // Inactive are not shown there, so they are not counted here either.
+  const sent = allProposals.filter((p) => p.status === "SENT" && isOpenCustomer(p.customerStatus));
+  // Every customer, signed date in this calendar year — the list link uses ?signed=<year>&customer= (all).
   const signedThisYear = allProposals.filter((p) => p.status === "SIGNED" && p.signedDate?.startsWith(year));
 
   const kpis = {
@@ -72,6 +87,8 @@ export async function getDashboard(scope: TenantScope) {
     expired: active.filter((r) => r.renewal.state === "EXPIRED").length,
     awaitingSignature: sent.length,
     awaitingValue: sent.reduce((a, p) => a + p.total, 0),
+    /** Of awaitingSignature: proposals of Pending / Expired – still waiting customers (listed in their own section). */
+    awaitingWaiting: sent.filter((p) => p.customerStatus !== "ACTIVE").length,
     signedThisYear: signedThisYear.length,
     signedThisYearValue: signedThisYear.reduce((a, p) => a + p.total, 0),
     unconfirmedSo: rows.filter((r) => !r.soConfirmed).length,
@@ -154,7 +171,18 @@ export async function getDashboard(scope: TenantScope) {
     })
     .sort((a, b) => a.status.localeCompare(b.status) || a.name.localeCompare(b.name));
 
-  return { kpis, actions, waiting, renewalsByMonth, activity, today, dueWindowDays, empty: rows.length === 0 };
+  // Lapsed agreements (renewal.ts lapsedLines), Active customers only like Needs action.
+  const lapsed: LapsedItem[] = active
+    .filter((r) => r.renewal.lapsedLines.length > 0)
+    .map((r) => ({
+      customerId: r.id, name: r.name, soNumber: r.soNumber,
+      lines: r.renewal.lapsedLines.map((l) => ({ id: l.id, year: l.year, agreement: l.agreement, price: l.price, endDate: l.endDate })),
+      value: r.renewal.lapsedLines.reduce((a, l) => a + l.price, 0),
+      notes: r.notes,
+    }))
+    .sort((a, b) => (a.lines[0]?.endDate ?? "").localeCompare(b.lines[0]?.endDate ?? "") || a.name.localeCompare(b.name));
+
+  return { kpis, actions, waiting, lapsed, renewalsByMonth, activity, today, dueWindowDays, empty: rows.length === 0 };
 }
 export type DashboardData = Awaited<ReturnType<typeof getDashboard>>;
 
@@ -180,6 +208,8 @@ export interface PipelineCard {
   daysToEnd: number | null;
   dateLabel: string | null;
   customerStatus: SaCustomerStatus;
+  /** The proposal's sent date (SENT only) — the signed date can't be before it. */
+  sentDate: string | null;
 }
 
 /** Board: Due (Active only, due/expired, no open proposal) → Draft → Sent → Signed / Closed (last 60 days). */
@@ -195,7 +225,7 @@ export async function getPipeline(scope: TenantScope) {
         key: `due-${r.id}`, column: "DUE", customerId: r.id, name: r.name, soNumber: r.soNumber,
         proposalId: null, proposalVersion: null, status: null, year: r.renewal.currentYear === null ? null : r.renewal.currentYear + 1,
         value: r.renewal.annualValue, agreements: r.renewal.currentLines.length, endDate: r.renewal.nextEndDate, daysToEnd: r.renewal.daysToEnd,
-        dateLabel: r.renewal.state === "EXPIRED" ? "Expired" : null, customerStatus: r.status,
+        dateLabel: r.renewal.state === "EXPIRED" ? "Expired" : null, customerStatus: r.status, sentDate: null,
       });
     }
     for (const p of r.proposals) {
@@ -212,6 +242,7 @@ export async function getPipeline(scope: TenantScope) {
         key: p.id, column, customerId: r.id, name: r.name, soNumber: r.soNumber, proposalId: p.id,
         proposalVersion: versions.get(p.id) ?? null, status: p.status, year: p.year, value: p.total, agreements: p.agreements.length,
         endDate: p.endDate, daysToEnd: null, dateLabel, customerStatus: r.status,
+        sentDate: p.status === "SENT" ? p.sentDate : null,
       });
     }
   }

@@ -599,7 +599,12 @@ export async function setManagerLinks(scope: TenantScope, memberId: string, mana
 
 // ─────────────────────────── guards ───────────────────────────
 
-async function assertPersonInScope(scope: TenantScope, userId: string) {
+/**
+ * Throws unless `userId` is a member of the caller's org. The ONE tenancy guard
+ * for "this person id came from the client" — also used by field-service.ts
+ * (job assignee) and technicians.ts (time-off owner).
+ */
+export async function assertPersonInScope(scope: TenantScope, userId: string) {
   assertId(userId);
   const membership = await prisma.membership.findFirst({
     where: { userId, orgId: scope.ctx.orgId },

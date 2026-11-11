@@ -10,7 +10,7 @@ import {
   type ContractInput, type CustomerInput,
 } from "@/lib/services/agreements/customers";
 import {
-  addLine, bulkCreateProposals, createProposal, deleteDraftProposal, removeLine, setLinePrice, transitionProposal, updateProposalHeader,
+  addLine, bulkCreateProposals, createProposal, deleteDraftProposal, removeLine, setLinePrice, transitionProposal, undoSigning, updateProposalHeader,
   type ProposalAction, type ProposalEditVersions,
 } from "@/lib/services/agreements/proposals";
 import { resetAgreements } from "@/lib/services/agreements/import";
@@ -98,8 +98,11 @@ export async function saveCallsAction(input: { customerId: string; id?: string; 
 
 // ─── proposals ───
 
-export async function createProposalAction(input: { customerId: string }) {
-  return run("agreements.createProposal", "Couldn't create the proposal. Please try again.", (scope) => createProposal(scope, input.customerId));
+/** `lapsedOnly`: renew just the customer's lapsed agreements (dashboard "Lapsed agreements"). */
+export async function createProposalAction(input: { customerId: string; lapsedOnly?: boolean }) {
+  return run("agreements.createProposal", "Couldn't create the proposal. Please try again.", (scope) =>
+    createProposal(scope, input.customerId, { lapsedOnly: !!input.lapsedOnly }),
+  );
 }
 
 export async function updateProposalHeaderAction(input: { id: string; version: number; endDate: string | null; notes: string | null }) {
@@ -131,13 +134,25 @@ export async function proposalTransitionAction(input: {
   reason?: string;
   markNotRenewed?: boolean;
   restoreActive?: boolean;
+  /** send / sign: the sent / signed date ("YYYY-MM-DD"; default today). */
+  date?: string | null;
+  /** sign: set a Pending / Expired – still waiting customer back to Active. */
+  setActive?: boolean;
 }) {
   return run("agreements.proposalTransition", "Couldn't update the proposal. Please try again.", (scope) =>
     transitionProposal(scope, input.id, input.action, {
       expectedVersion: version(input.version), reason: input.reason, markNotRenewed: !!input.markNotRenewed,
       restoreActive: !!input.restoreActive,
+      date: typeof input.date === "string" && input.date ? input.date : null,
+      setActive: !!input.setActive,
     }),
   );
+}
+
+export async function undoSigningAction(input: { id: string; version: number }) {
+  return run("agreements.undoSigning", "Couldn't undo the signing. Please try again.", async (scope) => {
+    await undoSigning(scope, input.id, version(input.version));
+  });
 }
 
 export async function deleteProposalAction(input: { id: string; version: number }) {

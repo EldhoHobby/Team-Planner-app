@@ -18,7 +18,7 @@ export default async function ProjectsPage() {
     : { id: { in: scope.ctx.teamIds } };
 
   const [projects, teams] = await Promise.all([
-    listProjects(scope),
+    listProjects(scope, { includeArchived: true }),
     prisma.team.findMany({ where: teamWhere, orderBy: { name: "asc" } }),
   ]);
 
@@ -30,7 +30,10 @@ export default async function ProjectsPage() {
         description: p.description,
         teamId: p.teamId,
         teamName: p.team.name,
-        taskCount: p._count.tasks,
+        taskCount: p._count.tasks - p.jobCount,
+        jobCount: p.jobCount,
+        isSystem: p.isSystem,
+        archived: p.archived,
         createdAt: p.createdAt.toISOString(),
       }))}
       teams={teams.map((t) => ({ id: t.id, name: t.name }))}

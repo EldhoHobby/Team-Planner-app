@@ -21,10 +21,6 @@ export default async function TasksPage({
   const params = await searchParams;
   const projectParam = Array.isArray(params.project) ? params.project[0] : params.project;
 
-  const teamWhere = scope.ctx.isOrgAdmin
-    ? { orgId: scope.ctx.orgId }
-    : { id: { in: scope.ctx.teamIds } };
-
   const [tasks, projects, teamMemberships] = await Promise.all([
     listTasks(scope),
     listProjects(scope),
@@ -35,13 +31,6 @@ export default async function TasksPage({
       include: { user: { select: { id: true, name: true, email: true, username: true } } },
     }),
   ]);
-
-  // Also fetch teams for the filter bar label
-  const teams = await prisma.team.findMany({
-    where: teamWhere,
-    orderBy: { name: "asc" },
-    select: { id: true, name: true },
-  });
 
   const taskRows: TaskRow[] = tasks.map((t) => ({
     id: t.id,
@@ -88,7 +77,6 @@ export default async function TasksPage({
     <TasksClient
       tasks={taskRows}
       projects={projectOptions}
-      teams={teams}
       teamMembers={members}
       currentUserId={user.id}
       initialProjectId={initialProjectId}

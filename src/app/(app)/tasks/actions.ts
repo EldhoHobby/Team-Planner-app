@@ -17,12 +17,14 @@ import {
   addJobComment,
   editJobComment,
   deleteJobComment,
+  listJobHistory,
   type JobNoteRow,
 } from "@/lib/services/field-service";
 import { runJobsImport } from "@/lib/services/data-io";
 import { listAudit, writeAudit } from "@/lib/services/audit";
 import type { TaskFormState } from "./types";
 import type { JobFormState, ImportState, AuditEntry } from "../schedule/types";
+import { importSizeError } from "../settings/data/types";
 
 const STATUSES = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"] as const;
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -340,15 +342,10 @@ export async function setJobTentativeAction(input: {
 
 export async function listJobHistoryAction(input: { jobId: string }): Promise<AuditEntry[]> {
   const { scope } = await requireScope();
-  // Comments are rendered from JobNote in the editor thread — keep them out of
-  // the change-history fetch so they can't crowd out real changes.
-  const rows = await listAudit(scope, "job", input.jobId, { excludeActions: ["commented"] });
-  return rows.map((r) => ({
-    action: r.action,
-    summary: r.summary,
-    actorEmail: r.actorEmail,
-    createdAt: r.createdAt.toISOString(),
-  }));
+  // Comments are rendered from JobNote in the editor thread — the service keeps
+  // them out of the change-history fetch so they can't crowd out real changes,
+  // and resolves each actor to a display name (like comment authors).
+  return listJobHistory(scope, input.jobId);
 }
 
 // ─── Job comment thread (reason-for-change + discussion) ───
@@ -431,6 +428,12 @@ export async function importScheduleXlsxAction(
   if (!file || typeof file !== "object" || !("arrayBuffer" in file) || (file as File).size === 0) {
     return { error: "Choose an .xlsx file first." };
   }
+  // Check size + type BEFORE parsing: ExcelJS loads the whole workbook in memory.
+  const tooBig = importSizeError((file as File).size);
+  if (tooBig) return { error: tooBig };
+  if (!/\.xls[xm]$/i.test((file as File).name ?? "")) {
+    return { error: "That isn't an Excel workbook — choose the exported .xlsx file." };
+  }
   try {
     const buf = await (file as File).arrayBuffer();
     const summary = await runJobsImport(scope, buf, true);
@@ -470,17 +473,6 @@ export async function listTaskHistoryAction(input: { taskId: string }): Promise<
 export async function listProjectHistoryAction(input: { projectId: string }): Promise<AuditEntry[]> {
   const { scope } = await requireScope();
   const rows = await listAudit(scope, "project", input.projectId);
-  return rows.map((r) => ({
-    action: r.action,
-    summary: r.summary,
-    actorEmail: r.actorEmail,
-    createdAt: r.createdAt.toISOString(),
-  }));
-}
-
-export async function listTechnicianHistoryAction(input: { technicianId: string }): Promise<AuditEntry[]> {
-  const { scope } = await requireScope();
-  const rows = await listAudit(scope, "technician", input.technicianId);
   return rows.map((r) => ({
     action: r.action,
     summary: r.summary,

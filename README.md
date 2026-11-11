@@ -2,8 +2,10 @@
 
 A self-hosted scheduling app for a field-service team: plan multi-day jobs across
 technicians on a timeline/calendar, track time-off and capacity, and round-trip
-the whole configuration through Excel. Built on a multi-tenant team-planner
-foundation (tasks, projects, calendar). Runs entirely on-prem via Docker Compose.
+the whole configuration through Excel — plus a service-agreements module
+(`/agreements`) for renewals, proposals and pricing. Built on a multi-tenant
+team-planner foundation (tasks, projects, calendar). Runs entirely on-prem via
+Docker Compose.
 
 See `PLANNING.md` for the original architecture rationale and `CLAUDE.md` for the
 quick brief + conventions. `docs/PROJECT-HISTORY.md` has the release history and
@@ -16,8 +18,10 @@ current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
 - **UI:** Tailwind CSS v3 + shadcn/ui
 - **Auth:** local **username** + password (email also accepted at sign-in;
   Argon2id), server-side sessions
-- **Proxy:** Caddy (TLS termination, automatic certs)
-- **Deploy:** Docker Compose — `proxy` + one-shot `migrate` + `app` + `db`
+- **Proxy:** Caddy (TLS termination with an internal certificate, security
+  headers)
+- **Deploy:** Docker Compose — `proxy` + one-shot `migrate` + `app` + `db` +
+  `backup` (+ `ollama` under the optional `ai` profile)
 
 ## What's built
 
@@ -36,6 +40,11 @@ current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
   colours (admin can override), nested departments (`parentTeamId`), manager
   roles, extra-manager links, cross-functional **work groups** (e.g. Field
   Service), set-password hand-off links, and time-off.
+- **Service agreements** (`/agreements`) — dashboard (KPIs, needs-action list,
+  renewals chart), pipeline board (Due → Draft → Sent → Signed / Declined),
+  customers + customer page, proposals (bulk create, print), pricing rules and
+  a macro-enabled monthly Excel workbook that exports every view and imports
+  changes back. Editors: admins + the "Customer Service" work group.
 - **Tasks & projects** (`/tasks`, `/projects`) — generic task/project CRUD.
 - **Timesheet** (`/timesheet`) — weekly grid filled in-app, generated into the
   QEI Excel template.
@@ -54,12 +63,12 @@ current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
   inbox (IMAP + app password); "@username" tags in an email create dashboard
   tasks. Admin page has a Check-mail-now button, 30-day statistics and
   per-email history. Configure via `EMAIL_INGEST_ENABLED` / `IMAP_*` in `.env`.
-- **Local AI summarizer** (optional) — with `EMAIL_AI_ENABLED=true`, a local
-  Ollama model (bundled `ollama` container, default `qwen2.5:3b-instruct`,
-  ~2 GB one-time download, runs on CPU) rewrites each ingested email into an
-  action-oriented task title + summary and extracts the target date/priority
-  when stated. Fully on-prem — no cloud calls, no cost; if the model is down,
-  ingest falls back to the raw subject/excerpt.
+- **Local AI assist** (optional) — with `EMAIL_AI_ENABLED=true` and the
+  compose profile `ai` (`docker compose --profile ai up -d`), a local Ollama
+  model (default `qwen2.5:3b-instruct`, ~2 GB one-time download, runs on CPU)
+  reads each ingested email for a target date and priority when it states
+  them. The task title is always the email subject. Fully on-prem — no cloud
+  calls; if the model is down, the task is simply created without them.
 - **View as** — OWNER-only sidebar dropdown to render and use the whole app as
   any person (testing tool); audit logs still record the real actor.
 - **Kanban board** — a List | Board toggle on the dashboard; drag task cards
@@ -82,13 +91,27 @@ current status; `MOVING-TO-NEW-PC.md` explains setting up a new dev PC.
 
 ## Run the full stack (Docker)
 
+Copy the settings file, then set `DB_PASSWORD` and `LAN_IP` (this PC's IP) in
+`.env`:
+
 ```powershell
-copy .env.example .env          # set DB_PASSWORD (and APP_DOMAIN)
+copy .env.example .env
+```
+
+```powershell
 docker compose up -d --build
 ```
 
+With `EMAIL_AI_ENABLED=true`, start it with the `ai` profile instead (adds the
+`ollama` containers):
+
+```powershell
+docker compose --profile ai up -d --build
+```
+
 - `proxy` is the only service published to the host (80/443); `app` and `db`
-  stay on the internal Docker network.
+  stay on the internal Docker network. `proxy` starts once the `app`
+  healthcheck (`/api/health`) passes; all services rotate their logs.
 - The one-shot `migrate` service (the `migrator` image) applies the **versioned
   migrations** in `prisma/migrations/` (`prisma/migrate.sh`: `pre-push.sql` data
   fixes → one-time baseline of old `db push` databases → `prisma migrate deploy`),
@@ -106,11 +129,18 @@ back, keeping it running and off-PC backups are all in **[DEPLOY.md](DEPLOY.md)*
 `Caddyfile` lists the hostnames the app answers on. Out of the box:
 
 - **This machine:** `https://planner.localhost`
-- **Same LAN:** `https://<this-machine-ip>` (the IP is listed in the Caddyfile;
-  update it if your DHCP lease changes, then `docker compose restart proxy`).
-- **Public (optional):** a real domain (e.g. a free DuckDNS hostname) added to
-  the Caddyfile gets an automatic trusted Let's Encrypt cert — requires ports 80
-  + 443 forwarded to this host and DNS pointing at your public IP.
+- **Same LAN:** `https://<LAN_IP>` — the IP comes from `LAN_IP` in `.env`, so
+  the Caddyfile itself is never edited per machine. After changing it (e.g. a
+  new DHCP lease), recreate the proxy:
+
+  ```powershell
+  docker compose up -d proxy
+  ```
+
+- **Public (optional, not configured):** a real domain added as its own site
+  block in the Caddyfile (example in its comments) gets an automatic trusted
+  Let's Encrypt cert — requires ports 80 + 443 forwarded to this host and DNS
+  pointing at your public IP.
 
 > Going public? The app has login/reset rate-limiting but is otherwise a personal
 > self-hosted tool — keep it updated, and prefer a VPN/tunnel over exposing ports
@@ -118,10 +148,12 @@ back, keeping it running and off-PC backups are all in **[DEPLOY.md](DEPLOY.md)*
 
 ## Local (non-Docker) dev
 
+Only on a machine with Node.js 22 (the usual dev PC has none — use Docker):
+
 ```bash
 npm install
 cp .env.example .env            # point DATABASE_URL at a local Postgres
-npx prisma db push              # create tables from the schema
+npx prisma migrate deploy       # apply prisma/migrations to the database
 npm run dev                     # http://localhost:3000
 ```
 
@@ -139,8 +171,9 @@ point.
 |---------|--------------|
 | `npm run dev` | Next.js dev server |
 | `npm run build` | Production build (standalone) |
-| `npm run db:push` ( `npx prisma db push` ) | Sync schema → DB |
+| `npm run db:migrate:deploy` | Apply pending migrations |
 | `npm run db:studio` | Prisma Studio (DB browser) |
+| `npm run test` | Unit tests (also run inside the Docker build) |
 | `npm run typecheck` | TypeScript check |
 
 ## Backups
@@ -148,7 +181,8 @@ point.
 Persisted state lives in Docker volumes:
 
 - `db_data` — PostgreSQL data (dumped automatically, below)
-- `uploads` — task attachments (not in the dumps — copy with
+- `uploads` — attachment storage (the app has no upload screen today, so it is
+  normally empty; not in the dumps — copy with
   `docker compose cp app:/app/uploads backups\uploads-copy`)
 - `caddy_data` — issued TLS certificates (re-issued if lost)
 

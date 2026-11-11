@@ -1,6 +1,8 @@
 import { AlertTriangle, CheckCircle2, Clock, FilePen, MinusCircle, Send, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { CUSTOMER_STATUS_LABELS, PROPOSAL_STATUS_LABELS, type SaCustomerStatus, type SaProposalStatus } from "@/lib/agreements/constants";
+import {
+  AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, PROPOSAL_STATUS_LABELS, fmtDate, type SaAgreement, type SaCustomerStatus, type SaProposalStatus,
+} from "@/lib/agreements/constants";
 import { RENEWAL_STATE_LABELS, type RenewalState } from "@/lib/agreements/renewal";
 
 // Status is never colour alone: every badge carries an icon and a label.
@@ -54,6 +56,24 @@ export function CustomerStatusBadge({ status }: { status: SaCustomerStatus }) {
   const tone: keyof typeof TONE =
     status === "ACTIVE" ? "good" : status === "PENDING" ? "info" : status === "EXPIRED_WAITING" ? "critical" : status === "NOT_RENEWED" ? "warning" : "neutral";
   return <span className={cn(BASE, TONE[tone])}>{CUSTOMER_STATUS_LABELS[status]}</span>;
+}
+
+/**
+ * "Lapsed: RTU Hardware (ended Jun 30, 2026)" — an agreement that ended after a partial renewal and
+ * was never renewed (renewal.ts lapsedLines). Dismissed by marking that signed line Cancelled.
+ */
+export function LapsedBadge({ lines, className }: { lines: { agreement: SaAgreement; endDate: string | null }[]; className?: string }) {
+  if (!lines.length) return null;
+  const text = lines.map((l) => `${AGREEMENT_LABELS[l.agreement]}${l.endDate ? ` (ended ${fmtDate(l.endDate)})` : ""}`).join(", ");
+  return (
+    <span
+      className={cn(BASE, TONE.warning, "whitespace-normal", className)}
+      title="Ended and not renewed while the customer's other agreements were. Not renewing? Mark that agreement Cancelled on the customer's Agreements tab."
+    >
+      <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
+      Lapsed: {text}
+    </span>
+  );
 }
 
 export function UnconfirmedSo() {

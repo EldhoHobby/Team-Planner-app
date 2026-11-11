@@ -5,6 +5,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { toHex, nextIdentityColor } from "@/lib/scheduling/colors";
 import { endFromDuration } from "@/lib/scheduling/calc";
 import { createJob } from "@/lib/services/field-service";
+import { isSystemProject, reservedProjectNameError, systemProjectMessage } from "@/lib/services/projects";
 import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
 import { TECH_TASK_HISTORY_FIELDS } from "@/lib/services/tech-tasks";
 import { hashPassword } from "@/lib/auth/password";
@@ -638,9 +639,20 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
         const ex = await prisma.project.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, description: true, archived: true } });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: id not found`); continue; }
         if (ex.name === name && (ex.description ?? "") === (description ?? "") && ex.archived === archived) { res.unchanged++; continue; }
+        // The schedule finds its container project BY NAME: never rename or
+        // archive it from a sheet, and no other project may take that name.
+        const renamed = ex.name !== name;
+        const archiving = archived && !ex.archived;
+        if ((renamed || archiving) && (await isSystemProject(scope, id))) {
+          res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: ${systemProjectMessage(renamed ? "renamed" : "archived")}`); continue;
+        }
+        const reserved = renamed ? reservedProjectNameError(name) : null;
+        if (reserved) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: ${reserved}`); continue; }
         if (apply) await prisma.project.update({ where: { id }, data: { name, description, archived } });
         res.updated++;
       } else {
+        const reserved = reservedProjectNameError(name);
+        if (reserved) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: ${reserved}`); continue; }
         if (!teamId || !teamById.has(teamId)) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: unknown team`); continue; }
         if (apply) await prisma.project.create({ data: { orgId: scope.ctx.orgId, teamId, name, description, archived } });
         res.created++;
@@ -813,6 +825,25 @@ async function importHolidays(scope: TenantScope, rows: Record<string, string>[]
   return res;
 }
 
+/**
+ * Sanity cap on data rows per imported sheet. Real config workbooks are a few
+ * hundred rows; anything past this is a wrong or runaway file, and importing it
+ * row by row would tie the server up for a long time.
+ */
+export const MAX_IMPORT_ROWS_PER_SHEET = 20_000;
+
+/** sheetRows() with the row cap applied BEFORE the rows are read. */
+function cappedSheetRows(ws: ExcelJS.Worksheet): Record<string, string>[] {
+  // actualRowCount counts rows that hold values (header included).
+  if (ws.actualRowCount - 1 > MAX_IMPORT_ROWS_PER_SHEET) {
+    throw new ForbiddenError(
+      `The "${ws.name}" sheet has ${(ws.actualRowCount - 1).toLocaleString("en-US")} rows — ` +
+        `the import accepts at most ${MAX_IMPORT_ROWS_PER_SHEET.toLocaleString("en-US")} per sheet. Check you picked the right file.`,
+    );
+  }
+  return sheetRows(ws);
+}
+
 function summarize(results: SheetResult[]): ImportSummary {
   return {
     results,
@@ -860,7 +891,7 @@ export async function runJobsImport(
   const ws = wb.getWorksheet(SHEET.jobs);
   const results: SheetResult[] = [];
   if (ws) {
-    results.push(await importJobs(scope, sheetRows(ws), apply));
+    results.push(await importJobs(scope, cappedSheetRows(ws), apply));
   } else {
     results.push({ sheet: SHEET.jobs, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: ["No 'Jobs' sheet found in the workbook."] });
   }
@@ -880,13 +911,21 @@ export async function runImport(
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(data);
 
+  // Read (and size-check) every importable sheet BEFORE anything is applied, so
+  // an oversized sheet late in the order can't leave a half-applied import.
+  const rowsBySheet = new Map<string, Record<string, string>[]>();
+  for (const name of [SHEET.teams, SHEET.people, SHEET.techTasks, SHEET.projects, SHEET.timeOff, SHEET.jobs, SHEET.holidays]) {
+    const ws = wb.getWorksheet(name);
+    if (ws) rowsBySheet.set(name, cappedSheetRows(ws));
+  }
+
   const results: SheetResult[] = [];
   const run = async (
     name: string,
     fn: (s: TenantScope, rows: Record<string, string>[], apply: boolean) => Promise<SheetResult>,
   ) => {
-    const ws = wb.getWorksheet(name);
-    if (ws) results.push(await fn(scope, sheetRows(ws), apply));
+    const rows = rowsBySheet.get(name);
+    if (rows) results.push(await fn(scope, rows, apply));
   };
 
   // Order matters: teams before people (department names), people before

@@ -235,7 +235,7 @@ const RENEWAL_SERIES: Series[] = [
   { key: "notStarted", label: "No proposal yet" },
 ];
 
-export function RenewalsChart({ data }: { data: RenewalMonth[] }) {
+export function RenewalsChart({ data, canEdit = false }: { data: RenewalMonth[]; canEdit?: boolean }) {
   const [sel, setSel] = useState<string | null>(null);
   const m = sel ? data.find((d) => d.month === sel) ?? null : null;
   const year = data.reduce((a, d) => a + d.value, 0);
@@ -282,6 +282,15 @@ export function RenewalsChart({ data }: { data: RenewalMonth[] }) {
               </li>
             ))}
           </ul>
+          {/* Next steps for the month: the same customers on the Customers list, or the bulk-create preview. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-3 py-2 text-xs">
+            <Link href={`/agreements/customers?ends=${m.month}`} className="font-medium text-primary hover:underline">Show these customers</Link>
+            {canEdit && m.notStarted > 0 && (
+              <Link href={`/agreements/proposals?bulk=${m.month}`} className="font-medium text-primary hover:underline">
+                Create proposals for this month…
+              </Link>
+            )}
+          </div>
         </div>
       )}
     </>

@@ -13,6 +13,7 @@ export function CloseProposalDialog({
   year,
   onClose,
   onDone,
+  onRequest,
 }: {
   proposalId: string;
   /** The proposal's version — or a getter, read when the user confirms (edits saved meanwhile bump it). */
@@ -21,6 +22,8 @@ export function CloseProposalDialog({
   year: number;
   onClose: () => void;
   onDone: (error?: string) => void;
+  /** Called the moment the user confirms, before the action runs (the editor stops taking edits). */
+  onRequest?: (kind: "decline" | "withdraw") => void;
 }) {
   const [pending, start] = useTransition();
   const [kind, setKind] = useState<"decline" | "withdraw">("decline");
@@ -29,6 +32,7 @@ export function CloseProposalDialog({
 
   const submit = () =>
     start(async () => {
+      onRequest?.(kind);
       const r = await proposalTransitionAction({ id: proposalId, version: typeof version === "function" ? version() : version, action: kind, reason, markNotRenewed: kind === "decline" && markNotRenewed });
       onDone(r.error);
     });

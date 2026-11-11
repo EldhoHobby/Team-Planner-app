@@ -1,9 +1,33 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useTransition, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useTransition,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Plus, X, Trash2, ChevronDown, ChevronRight, CalendarClock, AlertTriangle, List, LayoutGrid, MessageSquare } from "lucide-react";
+import {
+  Plus,
+  X,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+  CalendarClock,
+  CalendarX,
+  AlertTriangle,
+  CheckCircle2,
+  Inbox,
+  List,
+  LayoutGrid,
+  MessageSquare,
+  Send,
+} from "lucide-react";
 import { KanbanBoard } from "./kanban-board";
 import { TaskTicket } from "./task-ticket";
 import { Button } from "@/components/ui/button";
@@ -17,6 +41,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { daysFromToday, fmtDateOnly, fmtEastern } from "@/lib/tz";
 import { createTechTaskAction, updateTechTaskAction, deleteTechTaskAction } from "./actions";
 import type {
+  AssignedTaskRow,
   DashboardData,
   JobRow,
   OwnerGroup,
@@ -128,6 +153,16 @@ export function dueStatus(targetIso: string | null, state: TechTaskState): DueSt
 export function matchesDueFilter(t: TechTaskRow, filter: DueFilter): boolean {
   return !filter || dueStatus(t.targetDate, t.state) === filter;
 }
+/**
+ * The ONE page filter behind the "Needs attention" strip: the task due filters
+ * (overdue / due soon — also applied to the Board) plus two job filters
+ * (jobs with nobody assigned, double-booked jobs). null = show everything.
+ */
+export type AttentionFilter = DueFilter | "unassigned" | "conflict";
+type JobFilter = "unassigned" | "conflict" | null;
+
+/** Completed tasks load in windows of this many days — matches COMPLETED_WINDOW_DAYS in tech-tasks.ts. */
+const COMPLETED_STEP_DAYS = 90;
 
 // ── Column sorting (per person section) ──
 type SortKey = "priority" | "title" | "target" | "state";
@@ -212,7 +247,9 @@ export function DashboardClient({
 }) {
   const router = useRouter();
   const confirm = useConfirm();
-  const [showDone, setShowDone] = useState(false);
+  // Opened with a wider completed window (?done=…, "Load older completed
+  // tasks") → the viewer is looking at completed work, so start with it shown.
+  const [showDone, setShowDone] = useState(data.completedDays > COMPLETED_STEP_DAYS);
   const [createOpen, setCreateOpen] = useState(false);
   const [createOwner, setCreateOwner] = useState(currentUserId);
 
@@ -251,6 +288,13 @@ export function DashboardClient({
         break;
       }
     }
+    if (!ticketTask) {
+      const a = data.assignedByMe.find((x) => x.task.id === ticketId);
+      if (a) {
+        ticketTask = a.task;
+        ticketOwner = a.ownerName;
+      }
+    }
   }
 
   // Reassigning from the ticket to someone outside this dashboard makes the
@@ -277,9 +321,10 @@ export function DashboardClient({
     try {
       const ok = await save();
       if (ok && !visibleOwnerIds.has(newOwnerId)) {
+        // The reassigner becomes the task's "assigned by", so it stays reachable.
         await confirm({
           title: `Reassigned to ${newOwnerName}`,
-          message: `${newOwnerName} has this task now, so it is no longer on your dashboard.`,
+          message: `${newOwnerName} has this task now. You'll find it under "Assigned by me" on your dashboard.`,
           alert: true,
         });
         setTicketId((cur) => (cur === id ? null : cur));
@@ -291,13 +336,69 @@ export function DashboardClient({
 
   const hasTeam = data.groups.length > 1;
 
-  // Due summary across everyone's open tasks. The chips toggle a filter that
-  // applies to both the List and the Board.
-  const allOpen = data.groups.flatMap((g) => g.open);
+  // "Needs attention" counts — everything here is limited to what this viewer's
+  // dashboard shows (themselves + the people they manage), plus the tasks they
+  // assigned to others. The strip's chips set ONE page filter.
+  const assignedOpen = data.assignedByMe.filter((a) => a.task.state !== "DONE");
+  const allOpen = [...data.groups.flatMap((g) => g.open), ...assignedOpen.map((a) => a.task)];
   const overdueCount = allOpen.filter((t) => dueStatus(t.targetDate, t.state) === "overdue").length;
   const soonCount = allOpen.filter((t) => dueStatus(t.targetDate, t.state) === "soon").length;
-  const [dueFilter, setDueFilter] = useState<DueFilter>(null);
-  const toggleDue = (kind: "overdue" | "soon") => setDueFilter((f) => (f === kind ? null : kind));
+  // Only jobs with NO person (the pool also holds jobs of people outside this
+  // view). Counted for admins and managers — the people who hand out work; a
+  // plain member's strip only counts their own items (the pool stays visible).
+  const unassignedJobs = data.pool.filter((j) => !j.technicianId);
+  const countUnassigned = isAdmin || hasTeam;
+  const conflictJobs = data.groups.flatMap((g) => g.jobs.filter((j) => j.conflict));
+  const [attention, setAttention] = useState<AttentionFilter>(null);
+  const toggleAttention = (kind: Exclude<AttentionFilter, null>) => setAttention((f) => (f === kind ? null : kind));
+  const dueFilter: DueFilter = attention === "overdue" || attention === "soon" ? attention : null;
+  const jobFilter: JobFilter = attention === "unassigned" || attention === "conflict" ? attention : null;
+
+  // Bring the unassigned-jobs pool into view when that chip is turned on.
+  const poolRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (attention === "unassigned") poolRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [attention]);
+
+  // Polite auto-refresh (same rules as the Schedule): every 60 s while the tab
+  // is visible, and on returning to the tab — but never while a dialog is open,
+  // a field has focus or a card is being dragged, so it can't disturb editing.
+  const draggingRef = useRef(false);
+  const busyRef = useRef(false);
+  busyRef.current = createOpen || ticketId !== null;
+  useEffect(() => {
+    const onDragStart = () => { draggingRef.current = true; };
+    const onDragEnd = () => { draggingRef.current = false; };
+    const idle = () => {
+      if (draggingRef.current || busyRef.current) return false;
+      if (document.visibilityState !== "visible") return false;
+      if (document.querySelector("dialog[open]")) return false;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))) return false;
+      return true;
+    };
+    const tick = () => {
+      if (idle()) router.refresh();
+    };
+    const id = setInterval(tick, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    document.addEventListener("dragstart", onDragStart);
+    document.addEventListener("dragend", onDragEnd);
+    document.addEventListener("drop", onDragEnd);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("dragstart", onDragStart);
+      document.removeEventListener("dragend", onDragEnd);
+      document.removeEventListener("drop", onDragEnd);
+    };
+  }, [router]);
+
+  const loadOlderCompleted = () =>
+    router.push(`/dashboard?done=${data.completedDays + COMPLETED_STEP_DAYS}`, { scroll: false });
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-4">
@@ -337,46 +438,6 @@ export function DashboardClient({
               <LayoutGrid className="h-3.5 w-3.5" aria-hidden /> Board
             </button>
           </div>
-          {overdueCount > 0 || dueFilter === "overdue" ? (
-            <button
-              type="button"
-              onClick={() => toggleDue("overdue")}
-              aria-pressed={dueFilter === "overdue"}
-              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                dueFilter === "overdue"
-                  ? "bg-red-600 text-white ring-2 ring-red-300 hover:bg-red-700 dark:ring-red-800"
-                  : "bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300"
-              }`}
-              title={dueFilter === "overdue" ? "Showing only overdue tasks — click to show all" : "Show only overdue tasks"}
-            >
-              <AlertTriangle className="h-3.5 w-3.5" /> {overdueCount} overdue
-            </button>
-          ) : null}
-          {soonCount > 0 || dueFilter === "soon" ? (
-            <button
-              type="button"
-              onClick={() => toggleDue("soon")}
-              aria-pressed={dueFilter === "soon"}
-              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                dueFilter === "soon"
-                  ? "bg-amber-500 text-white ring-2 ring-amber-300 hover:bg-amber-600 dark:ring-amber-800"
-                  : "bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300"
-              }`}
-              title={dueFilter === "soon" ? "Showing only tasks due soon — click to show all" : "Show only tasks due soon"}
-            >
-              <CalendarClock className="h-3.5 w-3.5" /> {soonCount} due soon
-            </button>
-          ) : null}
-          {dueFilter ? (
-            <button
-              type="button"
-              onClick={() => setDueFilter(null)}
-              className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-              title="Clear the filter and show all tasks"
-            >
-              <X className="h-3 w-3" /> Show all
-            </button>
-          ) : null}
           {view === "list" ? (
             <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
               <input
@@ -396,35 +457,95 @@ export function DashboardClient({
         }
       />
 
-      {dueFilter ? (
+      <AttentionStrip
+        overdue={overdueCount}
+        soon={soonCount}
+        unassigned={countUnassigned ? unassignedJobs.length : 0}
+        conflicts={conflictJobs.length}
+        active={attention}
+        onToggle={toggleAttention}
+        onClear={() => setAttention(null)}
+      />
+
+      {attention ? (
         <p role="status" className="text-xs text-muted-foreground">
-          Showing only tasks {dueFilter === "overdue" ? "that are overdue" : "due in the next 2 days"}.{" "}
-          <button type="button" onClick={() => setDueFilter(null)} className="font-medium text-foreground underline">
-            Show all tasks
+          {attention === "overdue"
+            ? "Showing only tasks that are overdue."
+            : attention === "soon"
+              ? "Showing only tasks due in the next 2 days."
+              : attention === "unassigned"
+                ? "Showing only jobs that nobody is assigned to."
+                : "Showing only double-booked jobs — open one to fix it on the Schedule board."}{" "}
+          <button type="button" onClick={() => setAttention(null)} className="font-medium text-foreground underline">
+            Show everything
           </button>
         </p>
       ) : null}
 
-      {view === "board" ? (
+      {jobFilter === "conflict" ? (
+        <section className="overflow-hidden rounded-md border">
+          <h2 className="flex items-center gap-1.5 border-b bg-muted/40 px-4 py-2 text-sm font-semibold">
+            <CalendarX className="h-4 w-4 text-orange-600 dark:text-orange-400" aria-hidden />
+            Double-booked jobs
+            <span className="text-xs font-normal text-muted-foreground">{conflictJobs.length}</span>
+          </h2>
+          {conflictJobs.length === 0 ? (
+            <p className="px-4 py-4 text-center text-sm text-muted-foreground">No double-booked jobs.</p>
+          ) : (
+            <ul className="divide-y px-4">
+              {conflictJobs.map((j) => (
+                <JobItem key={j.id} job={j} />
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : jobFilter === "unassigned" ? null : view === "board" ? (
         <KanbanBoard groups={data.groups} onOpenTask={setTicketId} dueFilter={dueFilter} />
       ) : (
-        data.groups.map((g) => (
-          <OwnerSection
-            key={g.owner.id}
-            group={g}
-            showDone={showDone}
-            dueFilter={dueFilter}
-            onAdd={openNew}
-            refresh={refresh}
-            onOpenTask={setTicketId}
-          />
-        ))
+        <>
+          {data.groups.map((g) => (
+            <OwnerSection
+              key={g.owner.id}
+              group={g}
+              showDone={showDone}
+              dueFilter={dueFilter}
+              onAdd={openNew}
+              refresh={refresh}
+              onOpenTask={setTicketId}
+            />
+          ))}
+        </>
       )}
 
+      {jobFilter ? null : (
+        <AssignedByMeSection
+          rows={data.assignedByMe}
+          showDone={showDone && view === "list"}
+          dueFilter={dueFilter}
+          onOpenTask={setTicketId}
+        />
+      )}
+
+      {showDone && view === "list" && !attention ? (
+        <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
+          <span>Showing tasks completed in the last {data.completedDays} days.</span>
+          {data.hasOlderCompleted ? (
+            <Button variant="outline" size="sm" onClick={loadOlderCompleted}>
+              Load older completed tasks
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Extra breathing room so the shared pool reads as separate from people. */}
-      <div className="pt-6">
-        <JobPoolSection pool={data.pool} />
-      </div>
+      {jobFilter === "conflict" ? null : (
+        <div ref={poolRef} className={jobFilter === "unassigned" ? "scroll-mt-4" : "pt-6"}>
+          <JobPoolSection
+            pool={jobFilter === "unassigned" ? unassignedJobs : data.pool}
+            onlyUnassigned={jobFilter === "unassigned"}
+          />
+        </div>
+      )}
 
       {createOpen ? (
         // Mounted only while open, so every "New task" starts empty.
@@ -453,6 +574,294 @@ export function DashboardClient({
         />
       ) : null}
     </div>
+  );
+}
+
+const CHIP_BASE = "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold";
+
+/**
+ * "Needs attention" — one compact row of counts the viewer can act on. Each
+ * chip toggles the page filter (one active at a time). Zero counts hide their
+ * chip; when everything is zero a quiet all-clear line shows instead.
+ */
+function AttentionStrip({
+  overdue,
+  soon,
+  unassigned,
+  conflicts,
+  active,
+  onToggle,
+  onClear,
+}: {
+  overdue: number;
+  soon: number;
+  unassigned: number;
+  conflicts: number;
+  active: AttentionFilter;
+  onToggle: (kind: Exclude<AttentionFilter, null>) => void;
+  onClear: () => void;
+}) {
+  const chips: {
+    kind: Exclude<AttentionFilter, null>;
+    count: number;
+    label: string;
+    title: string;
+    icon: ReactNode;
+    on: string;
+    off: string;
+  }[] = [
+    {
+      kind: "overdue",
+      count: overdue,
+      label: "overdue",
+      title: "Show only overdue tasks",
+      icon: <AlertTriangle className="h-3.5 w-3.5" aria-hidden />,
+      on: "bg-red-600 text-white ring-2 ring-red-300 hover:bg-red-700 dark:ring-red-800",
+      off: "bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300",
+    },
+    {
+      kind: "soon",
+      count: soon,
+      label: "due soon",
+      title: "Show only tasks due in the next 2 days",
+      icon: <CalendarClock className="h-3.5 w-3.5" aria-hidden />,
+      on: "bg-amber-500 text-white ring-2 ring-amber-300 hover:bg-amber-600 dark:ring-amber-800",
+      off: "bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300",
+    },
+    {
+      kind: "conflict",
+      count: conflicts,
+      label: conflicts === 1 ? "schedule conflict" : "schedule conflicts",
+      title: "Show only double-booked jobs",
+      icon: <CalendarX className="h-3.5 w-3.5" aria-hidden />,
+      on: "bg-orange-600 text-white ring-2 ring-orange-300 hover:bg-orange-700 dark:ring-orange-800",
+      off: "bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/50 dark:text-orange-300",
+    },
+    {
+      kind: "unassigned",
+      count: unassigned,
+      label: unassigned === 1 ? "unassigned job" : "unassigned jobs",
+      title: "Show only jobs nobody is assigned to",
+      icon: <Inbox className="h-3.5 w-3.5" aria-hidden />,
+      on: "bg-slate-700 text-white ring-2 ring-slate-300 hover:bg-slate-800 dark:bg-slate-200 dark:text-slate-900 dark:ring-slate-600",
+      off: "bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700",
+    },
+  ];
+  const shown = chips.filter((c) => c.count > 0 || active === c.kind);
+
+  if (shown.length === 0) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" aria-hidden />
+        Nothing needs attention.
+      </p>
+    );
+  }
+  return (
+    <div role="group" aria-label="Needs attention" className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-medium text-muted-foreground">Needs attention:</span>
+      {shown.map((c) => {
+        const isOn = active === c.kind;
+        return (
+          <button
+            key={c.kind}
+            type="button"
+            onClick={() => onToggle(c.kind)}
+            aria-pressed={isOn}
+            className={`${CHIP_BASE} ${isOn ? c.on : c.off}`}
+            title={isOn ? `${c.title} — on; click to show everything` : c.title}
+          >
+            {c.icon} {c.count} {c.label}
+          </button>
+        );
+      })}
+      {active ? (
+        <button
+          type="button"
+          onClick={onClear}
+          className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Clear the filter and show everything"
+        >
+          <X className="h-3 w-3" aria-hidden /> Show all
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Tasks the viewer assigned to people who are NOT otherwise on this dashboard.
+ * Read-only rows; the title opens the ticket (the assigner may edit it there).
+ */
+function AssignedByMeSection({
+  rows,
+  showDone,
+  dueFilter,
+  onOpenTask,
+}: {
+  rows: AssignedTaskRow[];
+  showDone: boolean;
+  dueFilter: DueFilter;
+  onOpenTask: (taskId: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("dashboard.assigned.collapsed") === "1") setCollapsed(true);
+    } catch { /* ignore */ }
+  }, []);
+  const toggle = () =>
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        if (next) localStorage.setItem("dashboard.assigned.collapsed", "1");
+        else localStorage.removeItem("dashboard.assigned.collapsed");
+      } catch { /* ignore */ }
+      return next;
+    });
+
+  const open = rows.filter((r) => r.task.state !== "DONE");
+  const done = rows
+    .filter((r) => r.task.state === "DONE")
+    .sort((a, b) => (b.task.completedAt ?? "").localeCompare(a.task.completedAt ?? ""));
+  const visibleOpen = open.filter((r) => matchesDueFilter(r.task, dueFilter));
+  const visibleDone = showDone && !dueFilter ? done : [];
+  if (open.length === 0 && visibleDone.length === 0) return null;
+  const overdue = open.filter((r) => dueStatus(r.task.targetDate, r.task.state) === "overdue").length;
+
+  return (
+    <section className="overflow-hidden rounded-md border">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex w-full items-center gap-1.5 border-b bg-muted/40 px-4 py-2 text-left"
+        aria-expanded={!collapsed}
+      >
+        {collapsed ? (
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+        )}
+        <Send className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        <h2 className="text-sm font-semibold">
+          Assigned by me
+          <span className="ml-2 text-xs font-normal text-muted-foreground">
+            {open.length} open · tasks you gave to people outside your list
+          </span>
+        </h2>
+        {overdue > 0 ? (
+          <span className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/50 dark:text-red-300">
+            <AlertTriangle className="h-2.5 w-2.5" aria-hidden /> {overdue} overdue
+          </span>
+        ) : null}
+      </button>
+      {collapsed ? null : (
+        <>
+          {visibleOpen.length === 0 ? (
+            open.length > 0 ? (
+              <p className="px-4 py-4 text-center text-sm text-muted-foreground">
+                No {dueFilter === "overdue" ? "overdue tasks" : "tasks due soon"} here.
+              </p>
+            ) : null
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/20 text-xs text-muted-foreground">
+                    <th scope="col" className="w-40 px-3 py-1.5 text-left">Person</th>
+                    <th scope="col" className="w-12 px-2 py-1.5 text-center" title="Priority (1 = highest)">
+                      <span aria-hidden>Pri</span>
+                      <span className="sr-only">Priority (1 = highest)</span>
+                    </th>
+                    <th scope="col" className="px-2 py-1.5 text-left">Task</th>
+                    <th scope="col" className="w-32 px-2 py-1.5 text-left">Target date</th>
+                    <th scope="col" className="w-28 px-2 py-1.5 text-left">State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleOpen.map((r) => (
+                    <AssignedRow key={r.task.id} row={r} onOpen={() => onOpenTask(r.task.id)} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {visibleDone.length > 0 ? (
+            <div className="border-t bg-muted/10 px-4 pb-2">
+              <p className="py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Completed ({visibleDone.length})
+              </p>
+              <ul className="divide-y">
+                {visibleDone.map((r) => (
+                  <li key={r.task.id} className="flex items-center gap-2 py-1.5 text-sm">
+                    <span className="w-36 shrink-0 truncate text-xs text-muted-foreground">{r.ownerName}</span>
+                    <button
+                      type="button"
+                      onClick={() => onOpenTask(r.task.id)}
+                      title="Open task — details, comments & history"
+                      className="flex-1 rounded px-1 text-left text-muted-foreground line-through hover:bg-muted/40 hover:text-foreground"
+                    >
+                      {r.task.title}
+                    </button>
+                    {r.task.completedAt ? (
+                      <span className="text-xs text-muted-foreground">
+                        {fmtEastern(r.task.completedAt, { month: "short", day: "numeric", year: "numeric" })}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+function AssignedRow({ row, onOpen }: { row: AssignedTaskRow; onOpen: () => void }) {
+  const t = row.task;
+  const due = dueStatus(t.targetDate, t.state);
+  const barClass =
+    due === "overdue" ? "border-l-2 border-l-red-500" : due === "soon" ? "border-l-2 border-l-amber-500" : "";
+  return (
+    <tr className={`border-b align-top last:border-0 hover:bg-muted/20 ${STATE_ROW_TINT[t.state]}`}>
+      <td className={`truncate px-3 py-1.5 text-xs text-muted-foreground ${barClass}`}>{row.ownerName}</td>
+      <td className="px-2 py-1.5 text-center tabular-nums">{t.priority}</td>
+      <td className="px-1 py-1.5">
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Open task — details, comments & history"
+          className="w-full rounded px-1.5 py-0.5 text-left text-sm font-medium hover:bg-muted/40 hover:underline"
+        >
+          {t.title}
+        </button>
+        {t.commentCount > 0 ? (
+          <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
+            <MessageSquare className="h-2.5 w-2.5" aria-hidden /> {t.commentCount}
+            <span className="sr-only"> comment{t.commentCount === 1 ? "" : "s"}</span>
+          </span>
+        ) : null}
+      </td>
+      <td className="px-2 py-1.5 text-xs">
+        {fmtDate(t.targetDate)}
+        {due === "overdue" ? (
+          <span className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/50 dark:text-red-300">
+            <AlertTriangle className="h-2.5 w-2.5" aria-hidden /> Overdue
+          </span>
+        ) : due === "soon" ? (
+          <span className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+            <CalendarClock className="h-2.5 w-2.5" aria-hidden /> Due soon
+          </span>
+        ) : null}
+      </td>
+      <td className="px-2 py-1.5">
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${STATE_COLORS[t.state]}`}>
+          {STATE_LABELS[t.state]}
+        </span>
+      </td>
+    </tr>
   );
 }
 
@@ -580,7 +989,9 @@ function OwnerSection({
                     <SortHeader label="Task" k="title" sort={sort} onSort={setSort} />
                     <SortHeader label="Target date" k="target" sort={sort} onSort={setSort} className="w-40" />
                     <SortHeader label="State" k="state" sort={sort} onSort={setSort} className="w-32" />
-                    <th className="w-9 px-1 py-1.5"></th>
+                    <th scope="col" className="w-12 py-1.5 pl-3 pr-1">
+                      <span className="sr-only">Delete</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -786,8 +1197,11 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
           ))}
         </select>
       </td>
-      <td className="px-1 py-1.5 text-center">
-        {/* Hover-revealed — but also visible on keyboard focus and on touch screens. */}
+      <td className="py-1.5 pl-3 pr-1 text-center">
+        {/* Delete is deliberately LAST in the row, set apart from the State
+            dropdown by extra left padding, and always asks first (the task's
+            comments + history go with it). Hover-revealed — but also visible
+            on keyboard focus and on touch screens. */}
         <span className="opacity-0 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
           <button
             type="button"
@@ -923,9 +1337,22 @@ function JobItem({ job }: { job: JobRow }) {
     <li>
       <Link
         href={href}
-        title="Open on the Schedule board"
+        title={
+          job.conflict
+            ? "Double-booked — open on the Schedule board to fix it"
+            : "Open on the Schedule board"
+        }
         className="flex flex-wrap items-center gap-2 rounded px-1 py-1.5 text-sm hover:bg-muted/40"
       >
+        {job.conflict ? (
+          <span
+            role="img"
+            aria-label={`Schedule conflict: ${job.technicianName ?? "this person"} is double-booked`}
+            className="inline-flex items-center gap-0.5 rounded-full bg-orange-100 px-1.5 py-0.5 text-[10px] font-semibold text-orange-700 dark:bg-orange-900/50 dark:text-orange-300"
+          >
+            <span aria-hidden>⚠</span> Conflict
+          </span>
+        ) : null}
         <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge}`}>{bucketLabel}</span>
         <span className="w-24 text-xs text-muted-foreground">{fmtDate(job.startDate)}</span>
         <span className="font-medium">{job.title}</span>
@@ -940,7 +1367,7 @@ function JobItem({ job }: { job: JobRow }) {
   );
 }
 
-function JobPoolSection({ pool }: { pool: JobRow[] }) {
+function JobPoolSection({ pool, onlyUnassigned = false }: { pool: JobRow[]; onlyUnassigned?: boolean }) {
   // Collapsed on launch (remembered per browser) — it's reference info, not the
   // viewer's own work. The header count keeps it glanceable while closed.
   const [collapsed, setCollapsed] = useState(true);
@@ -958,6 +1385,33 @@ function JobPoolSection({ pool }: { pool: JobRow[] }) {
       } catch { /* ignore */ }
       return next;
     });
+
+  // Filtered to unassigned jobs from the "Needs attention" strip: always open.
+  if (onlyUnassigned) {
+    return (
+      <section className="overflow-hidden rounded-md border">
+        <div className="border-b bg-muted/40 px-4 py-2">
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold">
+            <Inbox className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+            Unassigned jobs
+            <span className="text-xs font-normal text-muted-foreground">{pool.length}</span>
+          </h2>
+          <p className="pl-5 text-xs text-muted-foreground">
+            Jobs nobody is assigned to yet. Assign them on the Schedule board.
+          </p>
+        </div>
+        {pool.length === 0 ? (
+          <p className="px-4 py-4 text-center text-sm text-muted-foreground">Every job has someone assigned.</p>
+        ) : (
+          <ul className="divide-y px-4">
+            {pool.map((j) => (
+              <JobItem key={j.id} job={j} />
+            ))}
+          </ul>
+        )}
+      </section>
+    );
+  }
 
   if (pool.length === 0) return null;
   return (

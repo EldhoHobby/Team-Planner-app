@@ -9,10 +9,11 @@ import { PipelineBoard } from "./pipeline-board";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Agreements pipeline" };
 
-export default async function PipelinePage() {
+export default async function PipelinePage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   await requireAuth();
   const { scope } = await requireScope();
   await recordPageView(scope, "Service agreement pipeline");
+  const sp = await searchParams;
   const [{ cards, today }, canEdit] = await Promise.all([getPipeline(scope), canEditAgreements(scope)]);
   return (
     <div>
@@ -21,7 +22,7 @@ export default async function PipelinePage() {
         title="Pipeline"
         description="Every open renewal by stage: due, draft, sent, then signed or closed."
       />
-      <PipelineBoard cards={cards} canEdit={canEdit} today={today} />
+      <PipelineBoard cards={cards} canEdit={canEdit} today={today} initialQ={typeof sp.q === "string" ? sp.q.slice(0, 200) : ""} />
     </div>
   );
 }

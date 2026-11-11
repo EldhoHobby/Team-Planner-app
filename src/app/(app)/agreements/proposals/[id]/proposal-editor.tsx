@@ -18,10 +18,10 @@ import { CustomerStatusBadge, ProposalBadge, UnconfirmedSo } from "../../badges"
 import { CloseProposalDialog } from "../../close-proposal-dialog";
 import { ProposalSheet } from "../proposal-sheet";
 import { printInFrame } from "../../print-frame";
-import { SIGN_TITLE, signMessage } from "../../sign-message";
+import { SendSignDialog, type SendSignRequest } from "../../send-sign-dialog";
 import type { ActionResult } from "../../types";
 import {
-  addLineAction, deleteProposalAction, proposalTransitionAction, removeLineAction, setLinePriceAction, updateProposalHeaderAction,
+  addLineAction, deleteProposalAction, proposalTransitionAction, removeLineAction, setLinePriceAction, undoSigningAction, updateProposalHeaderAction,
 } from "../../actions";
 
 type Line = ProposalDetail["proposal"]["lines"][number];
@@ -49,8 +49,11 @@ export function ProposalEditor({
   const save = useSaveStatus();
   // `pending` covers the workflow buttons only (send / sign / delete …) — the yellow cells are never disabled.
   const [pending, start] = useTransition();
-  const [msg, setMsg] = useState<{ text: string; error?: boolean; stale?: boolean } | null>(null);
+  // `note`: an info message that stays (doesn't fade) — e.g. an edit dropped behind a sign / decline.
+  const [msg, setMsg] = useState<{ text: string; error?: boolean; stale?: boolean; note?: boolean } | null>(null);
   const [closing, setClosing] = useState(false);
+  // "Mark sent" / "Mark signed" date dialog.
+  const [asking, setAsking] = useState<SendSignRequest | null>(null);
   // Reopening a proposal of a "Not renewed" customer asks whether the customer goes back to Active.
   const [reopening, setReopening] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -95,8 +98,37 @@ export function ProposalEditor({
     queue.current = next;
     return next;
   };
+  // ── Edits after a closing step was requested are dropped, not queued ──
+  // Once sign / decline / withdraw / delete is requested, the proposal is about to stop being
+  // editable, so an edit queued behind it would only come back as a service error. Its inputs are
+  // NOT disabled mid-typing; instead a commit made after the request is ignored (the cell shows the
+  // saved value again), the banner says so, and the page refreshes. Cleared when the step fails or
+  // the status changes (e.g. undo signing makes it editable again).
+  const locked = useRef<string | null>(null);
+  // Whether an edit was dropped since the last lock, and that lock's text (kept after the lock clears,
+  // so the step's own success message can still mention it).
+  const dropped = useRef<string | null>(null);
+  useEffect(() => {
+    locked.current = null;
+  }, [p.status]);
+  const lockEdits = (text: string) => {
+    locked.current = text;
+    dropped.current = null;
+  };
+  const unlockEdits = () => {
+    locked.current = null;
+  };
+
   /** An inline edit (yellow cell, notes, add / remove): progress and errors show in the header's save status. */
-  const edit = (fn: () => Promise<ActionResult>, lineId?: string) => enqueue(fn, lineId).then((r) => !r.error);
+  const edit = (fn: () => Promise<ActionResult>, lineId?: string): Promise<boolean> => {
+    if (locked.current) {
+      dropped.current = locked.current;
+      setMsg({ text: locked.current, note: true });
+      router.refresh();
+      return Promise.resolve(false);
+    }
+    return enqueue(fn, lineId).then((r) => !r.error);
+  };
   /** A workflow step: waits for queued edits, disables the workflow buttons, confirms in the banner. */
   const step = (fn: () => Promise<ActionResult>, ok: string, after?: (r: ActionResult) => void) =>
     start(async () => {
@@ -104,6 +136,9 @@ export function ProposalEditor({
       const r = await enqueue(fn);
       if (r.error) {
         if (!r.stale) setMsg({ text: r.error, error: true });
+      } else if (dropped.current) {
+        setMsg({ text: `${ok} ${dropped.current}`, note: true });
+        dropped.current = null;
       } else setMsg({ text: ok });
       after?.(r);
     });
@@ -128,23 +163,51 @@ export function ProposalEditor({
     });
   };
 
-  const transition = (action: "send" | "unsend" | "sign" | "reopen", ok: string, extra: { restoreActive?: boolean } = {}) =>
-    step(() => proposalTransitionAction({ id: p.id, version: known.current.proposal, action, ...extra }), ok);
+  const transition = (
+    action: "send" | "unsend" | "sign" | "reopen",
+    ok: string,
+    extra: { restoreActive?: boolean; date?: string; setActive?: boolean } = {},
+  ) => {
+    // Signing ends editing: edits committed from now on are dropped (see `locked`).
+    if (action === "sign") lockEdits("This proposal was just marked signed; your last change was not saved.");
+    step(() => proposalTransitionAction({ id: p.id, version: known.current.proposal, action, ...extra }), ok, (r) => {
+      if (r.error) unlockEdits();
+    });
+  };
 
-  // Success messages fade after a few seconds; errors stay until the next action.
+  // Success messages fade after a few seconds; errors and notes stay until the next action.
   useEffect(() => {
-    if (!msg || msg.error) return;
+    if (!msg || msg.error || msg.note) return;
     const t = setTimeout(() => setMsg(null), 3500);
     return () => clearTimeout(t);
   }, [msg]);
 
-  const markSigned = async () => {
-    const ok = await confirm({
-      title: SIGN_TITLE,
-      message: signMessage({ customer: c.name, year: p.year, total, agreements: p.lines.length }),
-      confirmLabel: "Mark signed",
+  /** Opens the date dialog for "Mark sent" / "Mark signed". */
+  const askSendSign = (kind: "send" | "sign") =>
+    setAsking({
+      kind, customer: c.name, customerStatus: c.status, year: p.year, total, agreements: p.lines.length,
+      sentDate: p.status === "SENT" ? p.sentDate : null,
     });
-    if (ok) transition("sign", "Signed — the agreements are now on the customer's record.");
+
+  const undoSign = async () => {
+    const back = p.sentDate ? "Sent" : "Draft";
+    const n = p.signedLines.length;
+    const sum = p.signedLines.reduce((a, l) => a + l.price, 0);
+    const ok = await confirm({
+      title: "Undo signing?",
+      message: n
+        ? `${c.name}'s ${p.year} proposal goes back to ${back}, and the ${n} signed ${p.year} agreement line${n === 1 ? "" : "s"} this signing created ` +
+          `${n === 1 ? "is" : "are"} deleted from the customer's record:\n` +
+          p.signedLines.map((l) => `• ${AGREEMENT_LABELS[l.agreement]} ${fmtMoney(l.price)}`).join("\n") +
+          `\nTotal ${fmtMoney(sum)}.\n\nIt is refused if any of those lines was changed since signing (price, status, checked, invoiced, notes) ` +
+          "or a later year already renews them. The change is kept in the Activity tab."
+        : `${c.name}'s ${p.year} proposal goes back to ${back}. The signed agreement lines from this signing were already deleted, ` +
+          "so nothing else is removed — its agreements become free for a new proposal. The change is kept in the Activity tab.",
+      confirmLabel: "Undo signing",
+      tone: "danger",
+    });
+    if (!ok) return;
+    step(() => undoSigningAction({ id: p.id, version: known.current.proposal }), `Signing undone — the proposal is back to ${back}.`);
   };
 
   const deleteDraft = async () => {
@@ -155,10 +218,14 @@ export function ProposalEditor({
       tone: "danger",
     });
     if (!ok) return;
+    lockEdits("This draft was just deleted; your last change was not saved.");
     step(
       () => deleteProposalAction({ id: p.id, version: known.current.proposal }),
       "Draft deleted.",
-      (r) => { if (!r.error) router.push(`/agreements/customers/${c.id}?tab=proposals`); },
+      (r) => {
+        if (r.error) unlockEdits();
+        else router.push(`/agreements/customers/${c.id}?tab=proposals`);
+      },
     );
   };
 
@@ -228,14 +295,19 @@ export function ProposalEditor({
               <Printer className="h-4 w-4" aria-hidden /> {printing ? "Preparing…" : "Print / PDF"}
             </Button>
             {canEdit && p.status === "DRAFT" && (
-              <Button size="sm" disabled={pending} onClick={() => transition("send", "Marked as sent.")}><Send className="h-4 w-4" aria-hidden /> Mark sent</Button>
+              <Button size="sm" disabled={pending} onClick={() => askSendSign("send")}><Send className="h-4 w-4" aria-hidden /> Mark sent</Button>
             )}
             {canEdit && p.status === "SENT" && (
               <Button size="sm" variant="outline" disabled={pending} onClick={() => transition("unsend", "Back to draft.")}><Undo2 className="h-4 w-4" aria-hidden /> Back to draft</Button>
             )}
+            {canEdit && p.status === "SIGNED" && (
+              <Button size="sm" variant="outline" disabled={pending} onClick={undoSign}>
+                <Undo2 className="h-4 w-4" aria-hidden /> Undo signing
+              </Button>
+            )}
             {editable && (
               <>
-                <Button size="sm" variant={p.status === "SENT" ? "default" : "outline"} disabled={pending} onClick={markSigned}>
+                <Button size="sm" variant={p.status === "SENT" ? "default" : "outline"} disabled={pending} onClick={() => askSendSign("sign")}>
                   <Check className="h-4 w-4" aria-hidden /> Mark signed
                 </Button>
                 <Button size="sm" variant="outline" disabled={pending} onClick={() => setClosing(true)}>
@@ -326,8 +398,11 @@ export function ProposalEditor({
       <div aria-live="polite" className="min-h-0 print:hidden">
         {msg && (
           <FormMessage
-            tone={msg.error ? "error" : "success"}
-            className={cn("rounded-md border px-3 py-2", msg.error ? "border-destructive/40 bg-destructive/10" : "border-emerald-500/40 bg-emerald-500/10")}
+            tone={msg.error ? "error" : msg.note ? "info" : "success"}
+            className={cn(
+              "rounded-md border px-3 py-2",
+              msg.error ? "border-destructive/40 bg-destructive/10" : msg.note ? "border-amber-500/40 bg-amber-500/10 text-foreground" : "border-emerald-500/40 bg-emerald-500/10",
+            )}
           >
             {msg.text}
             {msg.stale && (
@@ -370,13 +445,32 @@ export function ProposalEditor({
           customerName={c.name}
           year={p.year}
           onClose={() => setClosing(false)}
+          onRequest={(kind) => lockEdits(`This proposal was just marked ${kind === "decline" ? "declined" : "withdrawn"}; your last change was not saved.`)}
           onDone={(err) => {
             setClosing(false);
+            if (err) unlockEdits();
             setMsg(err ? { text: err, error: true } : { text: "Proposal closed." });
             router.refresh();
           }}
         />
       )}
+
+      <SendSignDialog
+        request={asking}
+        onCancel={() => setAsking(null)}
+        onConfirm={({ date, setActive }) => {
+          const kind = asking?.kind;
+          setAsking(null);
+          if (kind === "send") transition("send", "Marked as sent.", { date });
+          else if (kind === "sign") {
+            transition(
+              "sign",
+              `Signed — the agreements are now on the customer's record${setActive ? `; ${c.name} is Active again` : ""}.`,
+              { date, setActive },
+            );
+          }
+        }}
+      />
     </div>
   );
 }

@@ -6,7 +6,8 @@ import { writeAudit } from "@/lib/services/audit";
 import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
 import { assertFreshWrite, versionGuard, StaleSaveError } from "@/lib/db/optimistic";
 import { logError } from "@/lib/log";
-import type { TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
+import { computeConflicts, toUtcMidnight, type JobLite } from "@/lib/scheduling/calc";
+import type { Prisma, TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
 
 export type { TechTaskState, TaskOrigin, NoteKind };
 
@@ -55,6 +56,13 @@ export interface JobRow {
   technicianId: string | null;
   technicianName: string | null;
   bucket: "SCHEDULED" | "TENTATIVE" | "UNSCHEDULED";
+  /** Double-booked: overlaps another open job of the same person. */
+  conflict: boolean;
+}
+/** A task the viewer assigned to someone who is not otherwise on their dashboard. */
+export interface AssignedTaskRow {
+  task: TechTaskRow;
+  ownerName: string;
 }
 export interface WeekGroup {
   weekStart: string; // ISO date of the Sunday
@@ -73,6 +81,49 @@ export interface DashboardData {
   owners: OwnerLite[];
   /** EVERY active person in the org — the reassign dropdown (cross-department). */
   people: OwnerLite[];
+  /**
+   * Tasks (open + DONE within the completed window) the viewer assigned to
+   * people who are NOT in `groups` — otherwise they'd vanish from the viewer's
+   * dashboard. Server order: priority → target date.
+   */
+  assignedByMe: AssignedTaskRow[];
+  /** How many days back completed tasks are loaded (multiple of COMPLETED_WINDOW_DAYS). */
+  completedDays: number;
+  /** True when DONE tasks older than the window exist ("Load older completed tasks"). */
+  hasOlderCompleted: boolean;
+}
+
+/** Completed tasks load in windows of this many days (default: the last 90). */
+export const COMPLETED_WINDOW_DAYS = 90;
+/** Upper bound for ?done= so a hand-edited URL can't ask for centuries. */
+export const MAX_COMPLETED_DAYS = 90 * 40;
+
+/** Parse the dashboard's `?done=` days param into a whole number of windows. */
+export function parseCompletedDays(raw: string | number | undefined | null): number {
+  const n = typeof raw === "number" ? Math.floor(raw) : Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= COMPLETED_WINDOW_DAYS) return COMPLETED_WINDOW_DAYS;
+  const windows = Math.ceil(n / COMPLETED_WINDOW_DAYS);
+  return Math.min(windows * COMPLETED_WINDOW_DAYS, MAX_COMPLETED_DAYS);
+}
+
+/**
+ * Ids of jobs that double-book a person: two dated jobs for the same person
+ * whose day ranges overlap (a null end date means a one-day job). Unassigned
+ * and unscheduled jobs never conflict. Pure — see tech-tasks.dashboard.test.ts.
+ */
+export function jobConflictIds(
+  jobs: { id: string; technicianId: string | null; startDate: Date | null; endDate: Date | null }[],
+): Set<string> {
+  const lite: JobLite[] = [];
+  for (const j of jobs) {
+    if (!j.technicianId || !j.startDate) continue;
+    const start = toUtcMidnight(j.startDate);
+    const endRaw = j.endDate ? toUtcMidnight(j.endDate) : start;
+    // A bad end-before-start row is treated as a one-day job.
+    const end = endRaw.getTime() < start.getTime() ? start : endRaw;
+    lite.push({ id: j.id, technicianId: j.technicianId, start, end });
+  }
+  return computeConflicts(lite);
 }
 
 function serialize(t: {
@@ -219,7 +270,7 @@ function serializeJob(t: {
   jobType: JobType | null; jobStatus: JobStatus | null; startDate: Date | null; endDate: Date | null;
   tentative: boolean; technicianId: string | null;
   technician: { name: string | null; email: string | null; username?: string } | null;
-}): JobRow {
+}, conflict = false): JobRow {
   return {
     id: t.id, title: t.title, soNumber: t.soNumber, customerName: t.customerName,
     jobType: t.jobType, jobStatus: t.jobStatus,
@@ -229,6 +280,27 @@ function serializeJob(t: {
     technicianId: t.technicianId,
     technicianName: t.technician ? t.technician.name ?? t.technician.email ?? t.technician.username ?? null : null,
     bucket: jobBucket(t),
+    conflict,
+  };
+}
+
+/** Prisma filter: open tasks, plus DONE tasks completed on/after `since`. */
+function openOrCompletedSince(since: Date): Prisma.TechTaskWhereInput {
+  return {
+    OR: [
+      { state: { not: "DONE" } },
+      { completedAt: { gte: since } },
+      // Legacy DONE rows without a completion stamp: fall back to createdAt
+      // (the same fallback the week grouping uses).
+      { completedAt: null, createdAt: { gte: since } },
+    ],
+  };
+}
+/** Prisma filter: DONE tasks completed before `since` (the "older" ones). */
+function completedBefore(since: Date): Prisma.TechTaskWhereInput {
+  return {
+    state: "DONE",
+    OR: [{ completedAt: { lt: since } }, { completedAt: null, createdAt: { lt: since } }],
   };
 }
 
@@ -237,50 +309,91 @@ function serializeJob(t: {
  * Also pulls each person's field-service jobs (via their linked technician) and a
  * shared pool of unscheduled / unassigned jobs, so everyone sees what's remaining.
  */
-export async function listDashboard(scope: TenantScope): Promise<DashboardData> {
+export async function listDashboard(
+  scope: TenantScope,
+  opts: { completedDays?: number } = {},
+): Promise<DashboardData> {
+  const orgId = scope.ctx.orgId;
   const owners = await assignableOwners(scope);
   const ownerIds = owners.map((o) => o.id);
+  const ownerIdSet = new Set(ownerIds);
 
+  // Completed tasks load in 90-day windows (the newest by default) — loading
+  // every DONE task ever would grow without bound.
+  const completedDays = parseCompletedDays(opts.completedDays);
+  const completedSince = new Date(Date.now() - completedDays * 24 * 60 * 60 * 1000);
+
+  // Priority takes precedence over target date; nulls sort last for ASC in Postgres.
+  const taskOrder: Prisma.TechTaskOrderByWithRelationInput[] = [
+    { priority: "asc" }, { targetDate: "asc" }, { createdAt: "asc" },
+  ];
   const tasks = await prisma.techTask.findMany({
-    where: { orgId: scope.ctx.orgId, ownerId: { in: ownerIds } },
-    // Priority takes precedence over target date; nulls sort last for ASC in Postgres.
-    orderBy: [{ priority: "asc" }, { targetDate: "asc" }, { createdAt: "asc" }],
+    where: { orgId, ownerId: { in: ownerIds }, ...openOrCompletedSince(completedSince) },
+    orderBy: taskOrder,
+  });
+
+  // "Assigned by me": tasks the viewer handed to someone who isn't on this
+  // dashboard (anyone may assign to anyone, so they'd otherwise disappear).
+  const assigned = await prisma.techTask.findMany({
+    where: {
+      orgId,
+      assignedById: scope.ctx.userId,
+      ownerId: { notIn: ownerIds },
+      ...openOrCompletedSince(completedSince),
+    },
+    include: { owner: { select: { name: true, username: true, email: true } } },
+    orderBy: taskOrder,
+  });
+
+  // Is there anything older than the window ("Load older completed tasks")?
+  const older = await prisma.techTask.findFirst({
+    where: {
+      orgId,
+      AND: [
+        { OR: [{ ownerId: { in: ownerIds } }, { assignedById: scope.ctx.userId }] },
+        completedBefore(completedSince),
+      ],
+    },
+    select: { id: true },
   });
 
   // 💬 badge counts: user comments only (system CHANGE notes don't count).
   const commentAgg = await prisma.techTaskNote.groupBy({
     by: ["taskId"],
-    where: { taskId: { in: tasks.map((t) => t.id) }, kind: "COMMENT" },
+    where: { orgId, taskId: { in: [...tasks, ...assigned].map((t) => t.id) }, kind: "COMMENT" },
     _count: { _all: true },
   });
   const commentsByTask = new Map(commentAgg.map((c) => [c.taskId, c._count._all]));
 
-  // Field-service jobs that aren't finished. `technicianId` IS a person's user id
-  // now, so a job maps straight to its owner.
+  // Field-service jobs that aren't finished (a NULL status counts as open — a
+  // plain `not: "COMPLETED"` would drop those rows). `technicianId` IS a
+  // person's user id now, so a job maps straight to its owner.
   const jobs = await prisma.task.findMany({
     where: {
-      orgId: scope.ctx.orgId,
+      orgId,
       kind: "FIELD_SERVICE",
-      jobStatus: { not: "COMPLETED" },
+      OR: [{ jobStatus: null }, { jobStatus: { not: "COMPLETED" } }],
     },
     include: { technician: { select: { name: true, email: true, username: true } } },
     orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
   });
+  // Double-booking across ALL open jobs, so a clash with a job outside the
+  // viewer's people still flags their person's job.
+  const conflicts = jobConflictIds(jobs);
 
-  const ownerIdSet = new Set(ownerIds);
   const jobsByOwner = new Map<string, JobRow[]>();
   const pool: JobRow[] = [];
   for (const j of jobs) {
     const ownerUserId = j.technicianId;
-    const assignedToKnownPerson = ownerUserId != null && ownerIdSet.has(ownerUserId);
+    const row = serializeJob(j, conflicts.has(j.id));
     // ASSIGNED to one of our people → that person's list (dated or not — an
     // unscheduled-but-assigned job is still theirs); everything else → shared pool.
-    if (assignedToKnownPerson) {
+    if (ownerUserId != null && ownerIdSet.has(ownerUserId)) {
       const arr = jobsByOwner.get(ownerUserId) ?? [];
-      arr.push(serializeJob(j));
+      arr.push(row);
       jobsByOwner.set(ownerUserId, arr);
     } else {
-      pool.push(serializeJob(j));
+      pool.push(row);
     }
   }
   // Per person: dated jobs first (soonest first), then their unscheduled ones.
@@ -323,7 +436,20 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
 
   const people = await listOrgPeople(scope);
 
-  return { groups, pool, owners, people };
+  const assignedByMe: AssignedTaskRow[] = assigned.map((t) => ({
+    task: serialize(t, commentsByTask.get(t.id) ?? 0),
+    ownerName: t.owner.name ?? t.owner.username ?? t.owner.email ?? "someone",
+  }));
+
+  return {
+    groups,
+    pool,
+    owners,
+    people,
+    assignedByMe,
+    completedDays,
+    hasOlderCompleted: older !== null,
+  };
 }
 
 /** Everyone active in the org — reassign targets, any department. */

@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Proposal" };
 
 /** Filter params of the Proposals list that `?back=` may carry (see proposals-client.tsx). */
-const LIST_PARAMS = ["q", "status", "month", "customer", "sort"] as const;
+const LIST_PARAMS = ["q", "status", "month", "customer", "sort", "signed"] as const;
 
 /**
  * `?back=` is the Proposals list's query string (e.g. `month=2026-12&sort=customer`). Only the known filter

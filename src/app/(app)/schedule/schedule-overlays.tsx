@@ -9,7 +9,7 @@
 //   • ResizeHandle    — right-edge drag to change a job's duration (both views).
 //   • conflictDetails — pure: the reasons a job is flagged (overlaps + time off).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { CalendarClock, Copy, ExternalLink, Inbox, UserCog, Undo2, X } from "lucide-react";
 import { conflictReasons, resizeDayIndex, resizeDuration } from "@/lib/scheduling/job-conflicts";
 import { dotStyle } from "@/lib/scheduling/colors";
@@ -112,8 +112,39 @@ export interface MenuState {
   x: number;
   y: number;
   job: JobRow;
+  /** Element that opened the menu — focus goes back to it when the menu closes
+   *  from the keyboard or after picking an item. */
+  returnFocus?: HTMLElement | null;
 }
 
+/** Enabled menu items inside `root` (in DOM order). */
+function menuItems(root: HTMLElement | null): HTMLButtonElement[] {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLButtonElement>(":scope > [role=menuitem], :scope > div > [role=menuitem]")).filter(
+    (b) => !b.disabled,
+  );
+}
+
+/** Arrow / Home / End focus movement within a list of menu items. */
+function moveFocus(items: HTMLElement[], key: string): boolean {
+  if (!items.length) return false;
+  const i = items.indexOf(document.activeElement as HTMLElement);
+  let next: number;
+  if (key === "ArrowDown") next = i < 0 ? 0 : (i + 1) % items.length;
+  else if (key === "ArrowUp") next = i < 0 ? items.length - 1 : (i - 1 + items.length) % items.length;
+  else if (key === "Home") next = 0;
+  else if (key === "End") next = items.length - 1;
+  else return false;
+  items[next]?.focus();
+  return true;
+}
+
+/**
+ * Job actions menu — opened by right-click, by the "⋯" button on a bar or a
+ * side-panel card, or by Shift+F10 / the Menu key. Keyboard: ↑/↓/Home/End move,
+ * Enter/Space pick, → opens "Reassign to", ←/Escape close the submenu, Escape
+ * closes the menu; focus returns to the element that opened it.
+ */
 export function ContextMenu({
   menu,
   technicians,
@@ -134,12 +165,31 @@ export function ContextMenu({
   onClose: () => void;
 }) {
   const [subOpen, setSubOpen] = useState(false);
+  // Whether the submenu was opened from the keyboard (→ / Enter) — then its
+  // first item gets focus as soon as it renders.
+  const subFromKeyboard = useRef(false);
   const ref = useRef<HTMLDivElement>(null);
+  const subRef = useRef<HTMLDivElement>(null);
+  const reassignRef = useRef<HTMLButtonElement>(null);
+
+  // Close and put focus back where the menu was opened from (if still there).
+  const closeAndRestore = () => {
+    const target = menu.returnFocus;
+    onClose();
+    if (target && target.isConnected) target.focus();
+  };
+  const closeRef = useRef(closeAndRestore);
+  closeRef.current = closeAndRestore;
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Fallback when focus is not inside the menu (the menu's own handler
+    // covers Escape while focus is inside it).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !ref.current?.contains(document.activeElement)) closeRef.current();
+    };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -148,23 +198,73 @@ export function ContextMenu({
     };
   }, [onClose]);
 
+  // Focus the first item when the menu opens (keyboard users start inside it).
+  useEffect(() => {
+    menuItems(ref.current)[0]?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (subOpen && subFromKeyboard.current) {
+      subFromKeyboard.current = false;
+      menuItems(subRef.current)[0]?.focus();
+    }
+  }, [subOpen]);
+
   const { job } = menu;
   // Keep the menu on-screen (rough clamp against the viewport).
-  const left = Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 220);
-  const top = Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 260);
+  const left = Math.max(4, Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 220));
+  const top = Math.max(4, Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 260));
   const item =
-    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-40";
+    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-none disabled:opacity-40";
+
+  const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const inSub = !!subRef.current && subRef.current.contains(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (inSub) {
+        setSubOpen(false);
+        reassignRef.current?.focus();
+      } else closeRef.current();
+      return;
+    }
+    if (e.key === "Tab") {
+      // A menu is not a tab stop: Tab closes it (focus back to the opener).
+      e.preventDefault();
+      closeRef.current();
+      return;
+    }
+    if (inSub && e.key === "ArrowLeft") {
+      e.preventDefault();
+      setSubOpen(false);
+      reassignRef.current?.focus();
+      return;
+    }
+    if (!inSub && e.key === "ArrowRight" && document.activeElement === reassignRef.current) {
+      e.preventDefault();
+      subFromKeyboard.current = true;
+      if (subOpen) menuItems(subRef.current)[0]?.focus();
+      else setSubOpen(true);
+      return;
+    }
+    if (moveFocus(menuItems(inSub ? subRef.current : ref.current), e.key)) {
+      e.preventDefault();
+      if (!inSub && subOpen) setSubOpen(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50" aria-hidden={false}>
       <div
         ref={ref}
         role="menu"
+        aria-label={`Actions for ${jobLabel(job)}`}
+        onKeyDown={onMenuKey}
         className="absolute w-52 rounded-md border bg-card p-1 text-card-foreground shadow-lg"
         style={{ left, top }}
       >
-        <button type="button" role="menuitem" className={item} onClick={() => { onOpen(job); onClose(); }}>
-          <ExternalLink className="h-4 w-4" /> Open
+        <button type="button" role="menuitem" className={item} onClick={() => { closeAndRestore(); onOpen(job); }}>
+          <ExternalLink className="h-4 w-4" aria-hidden /> Open
         </button>
 
         <div
@@ -172,31 +272,55 @@ export function ContextMenu({
           onMouseEnter={() => setSubOpen(true)}
           onMouseLeave={() => setSubOpen(false)}
         >
-          <button type="button" role="menuitem" className={item} onClick={() => setSubOpen((v) => !v)}>
-            <UserCog className="h-4 w-4" /> Reassign to
-            <span className="ml-auto text-muted-foreground">▸</span>
+          <button
+            ref={reassignRef}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={subOpen}
+            className={item}
+            onClick={(e) => {
+              if (e.detail === 0) {
+                // Keyboard Enter/Space: open (if needed) and move into the submenu.
+                subFromKeyboard.current = true;
+                if (subOpen) menuItems(subRef.current)[0]?.focus();
+                else setSubOpen(true);
+              } else {
+                setSubOpen((v) => !v);
+              }
+            }}
+          >
+            <UserCog className="h-4 w-4" aria-hidden /> Reassign to
+            <span className="ml-auto text-muted-foreground" aria-hidden>▸</span>
           </button>
           {subOpen ? (
-            <div className="absolute left-full top-0 ml-1 max-h-64 w-48 overflow-y-auto rounded-md border bg-card p-1 shadow-lg">
+            <div
+              ref={subRef}
+              role="menu"
+              aria-label="Reassign to"
+              className="absolute left-full top-0 ml-1 max-h-64 w-48 overflow-y-auto rounded-md border bg-card p-1 shadow-lg"
+            >
               {technicians.filter((t) => t.active).map((t) => (
                 <button
                   key={t.id}
                   type="button"
+                  role="menuitem"
                   className={item}
                   disabled={t.id === job.technicianId}
-                  onClick={() => { onReassign(job, t.id); onClose(); }}
+                  onClick={() => { onReassign(job, t.id); closeAndRestore(); }}
                 >
-                  <span className="h-2.5 w-2.5 rounded-full" style={dotStyle(t.color)} />
+                  <span className="h-2.5 w-2.5 rounded-full" style={dotStyle(t.color)} aria-hidden />
                   {t.name}
                 </button>
               ))}
               <button
                 type="button"
+                role="menuitem"
                 className={item}
                 disabled={job.technicianId === null}
-                onClick={() => { onReassign(job, null); onClose(); }}
+                onClick={() => { onReassign(job, null); closeAndRestore(); }}
               >
-                <span className="h-2.5 w-2.5 rounded-full" style={dotStyle("slate")} />
+                <span className="h-2.5 w-2.5 rounded-full" style={dotStyle("slate")} aria-hidden />
                 Unassigned
               </button>
             </div>
@@ -208,22 +332,22 @@ export function ContextMenu({
           role="menuitem"
           className={item}
           disabled={job.jobStatus === "COMPLETED"}
-          onClick={() => { onComplete(job); onClose(); }}
+          onClick={() => { onComplete(job); closeAndRestore(); }}
         >
-          <CalendarClock className="h-4 w-4" /> Mark complete
+          <CalendarClock className="h-4 w-4" aria-hidden /> Mark complete
         </button>
-        <button type="button" role="menuitem" className={item} onClick={() => { onDuplicate(job); onClose(); }}>
-          <Copy className="h-4 w-4" /> Duplicate
+        <button type="button" role="menuitem" className={item} onClick={() => { onDuplicate(job); closeAndRestore(); }}>
+          <Copy className="h-4 w-4" aria-hidden /> Duplicate
         </button>
-        <div className="my-1 border-t" />
+        <div className="my-1 border-t" role="separator" />
         <button
           type="button"
           role="menuitem"
           className={item}
           disabled={!job.startDate}
-          onClick={() => { onUnschedule(job); onClose(); }}
+          onClick={() => { onUnschedule(job); closeAndRestore(); }}
         >
-          <Inbox className="h-4 w-4" /> Move to backlog
+          <Inbox className="h-4 w-4" aria-hidden /> Move to backlog
         </button>
       </div>
     </div>
@@ -236,15 +360,24 @@ export interface ConflictState {
   x: number;
   y: number;
   reasons: string[];
+  /** The ⚠ button that opened it — focus returns there on Escape. */
+  returnFocus?: HTMLElement | null;
 }
 
 export function ConflictPopover({ pop, onClose }: { pop: ConflictState; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  const popRef = useRef(pop);
+  popRef.current = pop;
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const target = popRef.current.returnFocus;
+      onClose();
+      if (target && target.isConnected) target.focus();
+    };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -252,14 +385,20 @@ export function ConflictPopover({ pop, onClose }: { pop: ConflictState; onClose:
       document.removeEventListener("keydown", onKey);
     };
   }, [onClose]);
-  const left = Math.min(pop.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 300);
-  const top = Math.min(pop.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 160);
+  // Move focus into the popover so screen readers announce the reasons.
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+  const left = Math.max(4, Math.min(pop.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 300));
+  const top = Math.max(4, Math.min(pop.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 160));
   return (
     <div className="fixed inset-0 z-50">
       <div
         ref={ref}
         role="dialog"
-        className="absolute w-72 rounded-md border border-red-300 bg-card p-3 text-card-foreground shadow-lg"
+        aria-label="Scheduling conflict"
+        tabIndex={-1}
+        className="absolute w-72 rounded-md border border-red-300 bg-card p-3 text-card-foreground shadow-lg outline-none"
         style={{ left, top }}
       >
         <p className="mb-1.5 text-sm font-semibold text-red-600">Scheduling conflict</p>

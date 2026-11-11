@@ -71,6 +71,20 @@ export function history(db: Db, scope: TenantScope, customerId: string, changes:
   return recordFieldChanges(db, scope, HISTORY_ENTITY, customerId, changes);
 }
 
+/**
+ * Lock the customer's row until the surrounding transaction ends (SELECT … FOR UPDATE), so two
+ * people creating / reopening / un-signing proposals for the same customer at once run one after
+ * the other: the second one's reads (made AFTER this call — Postgres READ COMMITTED reads fresh
+ * per statement) see the first one's proposals and its "already in a proposal" check holds.
+ * Call it FIRST in the transaction (before touching any proposal row) so every caller takes the
+ * locks in the same order. Only meaningful inside prisma.$transaction.
+ */
+export async function lockCustomer(tx: Db, scope: TenantScope, customerId: string): Promise<void> {
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "SaCustomer" WHERE "id" = ${customerId} AND "orgId" = ${scope.ctx.orgId} FOR UPDATE`;
+  if (!rows.length) throw new ForbiddenError("Customer not found.");
+}
+
 export async function loadCustomer(scope: TenantScope, id: string) {
   const c = await prisma.saCustomer.findFirst({ where: { id, orgId: scope.ctx.orgId } });
   if (!c) throw new ForbiddenError("Customer not found.");

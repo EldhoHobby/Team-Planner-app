@@ -7,7 +7,15 @@ import { FormMessage } from "@/components/ui/form-message";
 import { createProposalAction } from "./actions";
 
 /** Creates a draft proposal from the customer's current agreements and opens it. */
-export function StartProposalButton({ customerId, label = "Start proposal", size = "sm" }: { customerId: string; label?: string; size?: "sm" | "default" }) {
+export function StartProposalButton({
+  customerId, label = "Start proposal", size = "sm", lapsedOnly = false,
+}: {
+  customerId: string;
+  label?: string;
+  size?: "sm" | "default";
+  /** Renew only the customer's lapsed agreements (dashboard "Lapsed agreements"). */
+  lapsedOnly?: boolean;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +28,7 @@ export function StartProposalButton({ customerId, label = "Start proposal", size
         onClick={() =>
           start(async () => {
             setError(null);
-            const r = await createProposalAction({ customerId });
+            const r = await createProposalAction({ customerId, lapsedOnly });
             if (r.error) setError(r.error);
             else if (r.id) router.push(`/agreements/proposals/${r.id}`);
           })

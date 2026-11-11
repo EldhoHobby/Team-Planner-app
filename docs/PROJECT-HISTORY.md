@@ -4,7 +4,8 @@ Running record of what has shipped, what's live where, what's paused, and the
 working habits for this project. Complements `CLAUDE.md` (technical brief) and
 `README.md` (features/setup). Update it with every release.
 
-_Last updated: 2026-11-10 (production moved to the new PC; dev at v0.0.40)._
+_Last updated: 2026-11-10 (dev at v0.0.43 on `improve/ux-review`; Phase 3 in
+progress, uncommitted; deployment config: `LAN_IP`, compose `ai` profile)._
 
 ---
 
@@ -12,20 +13,24 @@ _Last updated: 2026-11-10 (production moved to the new PC; dev at v0.0.40)._
 
 | | Version | Notes |
 |---|---|---|
-| **GitHub `main`** | v0.0.10 | tagged up to `v0.0.10`; v0.0.11–v0.0.40 live on `feature/service-agreements` (not merged, not tagged yet) |
-| **Production — new PC `10.210.6.233`** | **v0.0.10** | since **2026-11-06**. Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Locally edited Caddyfile (new IP). Email ingest off. Data moved from SCADA with an in-container `pg_dump` + `docker compose cp` + `pg_restore --clean --if-exists --no-owner`. Auto sign-in (Sysinternals Autologon) planned. See `DEPLOY.md` section 1 |
+| **GitHub `main`** | v0.0.10 | tagged up to `v0.0.10`; v0.0.11–v0.0.40 live on `feature/service-agreements`, v0.0.41–v0.0.43 on `improve/ux-review` (not merged, not tagged yet) |
+| **Production — new PC `10.210.6.233`** | **v0.0.10** | since **2026-11-06**. Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Locally edited Caddyfile (new IP) until the next update switches it to `LAN_IP` in `.env` (`DEPLOY.md` 1.3). Email ingest off. Data moved from SCADA with an in-container `pg_dump` + `docker compose cp` + `pg_restore --clean --if-exists --no-owner`. Auto sign-in (Sysinternals Autologon) planned. See `DEPLOY.md` section 1 |
 | **Old SCADA PC `10.210.4.65`** | v0.0.8 last deployed (stopped) | **retired** 2026-11-06; stack stopped but the PC is kept as a fallback for now. Don't start it while the new PC is live (data would diverge) |
-| **Dev PC `10.210.4.130`** | v0.0.40 | `feature/service-agreements` (`planner.localhost`, `docker-compose.yml`). Improvements branch **`improve/ux-review`** in progress on top of it. The dev DB holds the only copy of the service-agreements data |
+| **Dev PC `10.210.4.130`** | v0.0.43 | branch **`improve/ux-review`** (on top of `feature/service-agreements`), `planner.localhost`, `docker-compose.yml`. Phase 3 of the UX review is in the working tree, not committed. The dev DB holds the only copy of the service-agreements data |
 
 ---
 
 ## Release history
 
-v0.0.11 onward are on `feature/service-agreements` (dev only). Versions with
-no commit of their own (v0.0.18–19, 24–25, 28, 36) were skipped.
+v0.0.11–v0.0.40 are on `feature/service-agreements`, v0.0.41 onward on
+`improve/ux-review` (dev only). Versions with no commit of their own
+(v0.0.18–19, 24–25, 28, 36) were skipped.
 
 | Version | Date | What changed |
 |---|---|---|
+| **v0.0.43** | 2026-11-10 | UX review Phase 2 — one consistent UI layer: `Modal` on native `<dialog>` (focus trap, scroll lock, discard-changes guard), `useConfirm` replaces every `window.confirm` / `alert` / `prompt`, `SaveStatus` for autosave (inputs no longer disabled while saving), `PageHeader`, `FormMessage`, keyboard `DatePicker`; loading / error / not-found pages ("Your session has ended — sign in again"); `actionError` / `logError` (no raw DB messages). Adopted across Schedule, Dashboard (ticket save queue, conflicts keep your text), Timesheet, Agreements (serial save queue), Settings, sign-in. |
+| **v0.0.42** | 2026-11-10 | UX review Phase 1 quick wins: sign-in lands on the Dashboard (`HOME_PATH`), per-page titles, grouped sidebar; login limiter keyed on account + IP; daily purge of expired sessions/links; one session lookup per render. Anyone can create a task for anyone (editing: owner, their managers, admins, assigner). Job editor save errors, safer delete; unassigned jobs shown to non-admins. Any proposal edit bumps its version; signing re-reads lines inside its transaction. Timesheet, audit page and activity fixes. |
+| **v0.0.41** | 2026-11-10 | UX review Phase 0 safety: Owner can't be demoted / archived / renamed by other admins, admins can't archive or demote themselves; **Restore agreements only**; restore uploads via `POST /api/admin/restore` (50 MB); full backup / full restore / reset **Owner-only**; backup format v2; backup sidecar monthly copies + `last-backup` status files; `scripts/backup-offsite.ps1`; DEPLOY.md rewritten for the new production PC. |
 | **v0.0.40** | 2026-11-06 | Proposals: year + month-grid picker with per-month counts; Active customers' proposals first, Pending / Expired – still waiting in their own section. Print / PDF in the same tab (off-screen iframe). Agreements dashboard opens in a fixed layout. |
 | **v0.0.39** | 2026-11-06 | Username-only sign-in (email still accepted silently). Increase % shown only for agreements that escalate by %. Proposals list keeps its filters in the URL. Letter landscape print everywhere. |
 | **v0.0.38** | 2026-11-06 | Removed the year-by-year increase rows again — back to the single 5-year increase (Excel + web). |
@@ -91,7 +96,9 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
   `feature/service-agreements` (+ `improve/ux-review`) to `main`, tag it, then
   follow `DEPLOY.md` 1.1. **Rehearse the migrations on a copy of production
   first** (`DEPLOY.md` "First update after v0.0.10": seven new migrations on
-  top of v0.0.10's three, newly pinned base images to pull).
+  top of v0.0.10's three, newly pinned base images to pull, the one-time
+  Caddyfile → `LAN_IP` switch in 1.3, and removing the now-optional `ollama`
+  container).
 - **Agreement data exists only on dev** — move it with **Restore agreements
   only** (Settings → Data): (1) upgrade production, (2) take a production full
   backup, (3) on dev download a full backup, (4) on production run "Restore
@@ -105,9 +112,13 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
 - **Off-PC backups on production** — schedule `backup-offsite.ps1` from a copy
   kept OUTSIDE the clone in `C:\TeamPlanner-local\` (`DEPLOY.md` 2.3) once a
   destination share / USB drive is chosen.
-- **Production Caddyfile is a local edit** in the git clone — every `git pull`
-  needs the stash routine (`DEPLOY.md` 1.3). Longer-term fix: read the
-  Caddyfile path from `.env`.
+- **Production Caddyfile is still a local edit** in the git clone (v0.0.10).
+  Fixed in the code: the Caddyfile now reads `LAN_IP` from `.env`. At the next
+  update, add `LAN_IP=10.210.6.233` to production's `.env` and discard the edit
+  (`DEPLOY.md` 1.3) — after that no stash routine is needed.
+- **`.github/workflows/deploy-images.yml`** still builds and pushes images to
+  GHCR for the deleted `docker-compose.prod.yml`. Production builds from its
+  clone, so the workflow is unused — decide whether to remove it.
 - **Auto sign-in on the new PC** (Autologon + lock, BIOS power-on, active
   hours — `DEPLOY.md` 1.4), then test with a reboot.
 - **Old SCADA PC** — retire for good (wipe or repurpose) once the new PC has
@@ -125,7 +136,8 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
 ## Ideas not yet started
 
 UX suggestions offered 2026-10-31: a "Needs attention" strip (overdue + conflicts
-+ unassigned) at the top of the dashboard was the top pick. Other ideas:
++ unassigned) at the top of the dashboard was the top pick — now being built in
+Phase 3 (uncommitted). Other ideas:
 recurring jobs, daily agenda email, AI scheduling suggestions, reports page,
 customers directory, project-linking in the New Job dialog.
 
@@ -147,11 +159,13 @@ customers directory, project-linking in the New Job dialog.
 - Times shown to users must name the zone (use `src/lib/tz.ts`), or server and
   browser renders disagree.
 - **Deploy to production** (new PC `10.210.6.233`) = merge + tag on `main` → on
-  the PC: stop proxy → in-container `pg_dump` backup → `git pull` (stash the
-  Caddyfile around it) → `docker pull` the pinned base images → rebuild both
+  the PC: stop proxy → in-container `pg_dump` backup → `git pull` (the
+  Caddyfile is no longer edited locally — `LAN_IP` in `.env`; one-time switch
+  in `DEPLOY.md` 1.3) → `docker pull` the pinned base images → rebuild both
   images (`--target runner` / `--target migrator`) → `docker compose -f
-  docker-compose.offline.yml up -d` → check the footer version + `/api/health`.
-  Full steps, rollback and backups in `DEPLOY.md`.
+  docker-compose.offline.yml up -d` (+ `--profile ai` only if AI is on) →
+  check the footer version + `/api/health`. Full steps, rollback and backups
+  in `DEPLOY.md`.
 - **Never write a `pg_dump` with PowerShell `>`** (or read one through
   `Get-Content`) — PowerShell 5.1 corrupts binary output. Dump inside a
   container to the mounted `backups` folder, or use `docker compose cp`.

@@ -22,19 +22,29 @@ export function NewJobDialog({
   onClose,
   technicians,
   allJobs,
+  initialDate,
+  initialTechnicianId,
 }: {
   open: boolean;
   onClose: () => void;
   technicians: TechnicianOption[];
   /** Existing jobs — used to warn about a duplicate SO + title before creating. */
   allJobs: JobRow[];
+  /** Pre-filled start date (YYYY-MM-DD), e.g. from double-clicking a day on the board. */
+  initialDate?: string;
+  /** Pre-selected person (null/undefined = Unassigned). Only active people can be pre-selected. */
+  initialTechnicianId?: string | null;
 }) {
+  const presetTech =
+    initialTechnicianId && technicians.some((t) => t.active && t.id === initialTechnicianId)
+      ? initialTechnicianId
+      : "";
   const [state, formAction, pending] = useActionState(createJobAction, {} as JobFormState);
   const router = useRouter();
 
   // Track the date so the Tentative checkbox can require one (a tentative job
   // must have a pencilled-in date to be tentative about).
-  const [startDate, setStartDate] = useState("");
+  const [startDate, setStartDate] = useState(initialDate ?? "");
   const [tentative, setTentative] = useState(false);
   const [dupError, setDupError] = useState<string | null>(null);
   // Anything typed yet → closing by Escape / backdrop / X asks first.
@@ -43,12 +53,12 @@ export function NewJobDialog({
   // Reset the controlled fields each time the dialog opens.
   useEffect(() => {
     if (open) {
-      setStartDate("");
+      setStartDate(initialDate ?? "");
       setTentative(false);
       setDupError(null);
       setDirty(false);
     }
-  }, [open]);
+  }, [open, initialDate]);
 
   useEffect(() => {
     if (state.success) {
@@ -148,7 +158,7 @@ export function NewJobDialog({
         <div className="grid grid-cols-3 gap-3">
           <div className="space-y-2">
             <Label htmlFor="nj-person">Person</Label>
-            <select id="nj-person" name="technicianId" className={selectClass} defaultValue="">
+            <select id="nj-person" name="technicianId" className={selectClass} defaultValue={presetTech}>
               <option value="">Unassigned</option>
               {technicians.filter((t) => t.active).map((t) => (
                 <option key={t.id} value={t.id}>{t.name}</option>

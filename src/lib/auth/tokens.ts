@@ -1,6 +1,6 @@
 import { randomBytes, createHash, timingSafeEqual } from "crypto";
 
-// Shared secure-token helpers used by sessions, invitations, and password resets.
+// Shared secure-token helpers used by sessions and password resets.
 // Pattern: hand out a high-entropy random token to the user (cookie / link),
 // store only its hash. Look ups compare hashes, so the raw token never rests in
 // the database.

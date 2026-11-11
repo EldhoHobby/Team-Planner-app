@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -27,10 +27,6 @@ export function Collapsible({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
-  // Drop the open / closed choice older versions remembered per browser — the set layout wins now.
-  useEffect(() => {
-    try { localStorage.removeItem(`agreements.collapsed.${id}`); } catch {}
-  }, [id]);
   const toggle = () => setOpen((o) => !o);
 
   const bodyId = `collapsible-${id}`;

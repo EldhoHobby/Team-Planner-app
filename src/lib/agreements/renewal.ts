@@ -60,6 +60,33 @@ export interface CustomerRenewal {
   /** The open (DRAFT/SENT) proposal for next year with the most agreements, if any. */
   openProposal: ProposalLite | null;
   state: RenewalState;
+  /**
+   * Agreements that lapsed after a PARTIAL renewal (definition above `endedBehind`): they are no longer in
+   * force, so they are not in `currentLines` / `annualValue` and don't change `state` — they
+   * are listed here so the screens can say so. Sorted in agreement order.
+   */
+  lapsedLines: LineLite[];
+}
+
+const LIVE: readonly SaProposalStatus[] = ["DRAFT", "SENT", "SIGNED"];
+
+/**
+ * A LAPSED agreement — one that quietly fell out of "in force" after a partial renewal (e.g.
+ * SCADA signed for 2027 while RTU Hardware 2026 ended in June and was never renewed):
+ *  1. the customer's NEWEST line for that agreement (any status) is ACTIVE — marking it
+ *     CANCELLED is how a lapse is dismissed as intentional ("not renewing");
+ *  2. that line is from the year right before the customer's newest signed year
+ *     (`currentYear − 1`) — older drops are history, not something to chase, and an agreement
+ *     in the newest year that ended is the customer's EXPIRED state instead;
+ *  3. its end date is set and before today;
+ *  4. no live (draft / sent / signed) proposal for a LATER year includes that agreement
+ *     (a renewal is already under way, or was signed).
+ */
+function endedBehind(l: LineLite, currentYear: number | null, today: string): boolean {
+  return l.status === "ACTIVE" && currentYear !== null && l.year === currentYear - 1 && l.endDate !== null && l.endDate < today;
+}
+function renewedLater(l: LineLite, proposals: ProposalLite[]): boolean {
+  return proposals.some((p) => LIVE.includes(p.status) && p.year > l.year && p.agreements.includes(l.agreement));
 }
 
 function daysBetween(fromYmd: string, toYmd: string): number {
@@ -86,8 +113,18 @@ export function customerRenewal(
   const nextEndDate = currentLines.map((l) => l.endDate).filter((d): d is string => !!d).sort()[0] ?? null;
   const daysToEnd = nextEndDate ? daysBetween(today, nextEndDate) : null;
 
-  // Open proposals renew some current line (their year is after the oldest current line's).
-  const oldest = currentLines.reduce<number | null>((m, l) => (m === null || l.year < m ? l.year : m), null);
+  // Lapsed: the newest line per agreement over ALL statuses, so a CANCELLED newest line hides it.
+  const newestAny = new Map<SaAgreement, LineLite>();
+  for (const l of lines) {
+    const cur = newestAny.get(l.agreement);
+    if (!cur || l.year > cur.year) newestAny.set(l.agreement, l);
+  }
+  const ended = [...newestAny.values()].filter((l) => endedBehind(l, currentYear, today));
+  const lapsedLines = sortByAgreement(ended.filter((l) => !renewedLater(l, proposals)));
+
+  // Open proposals renew some current line (their year is after the oldest current line's) —
+  // or a lapsed one (a late renewal of an agreement that ended after a partial renewal).
+  const oldest = [...currentLines, ...ended].reduce<number | null>((m, l) => (m === null || l.year < m ? l.year : m), null);
   const open = proposals
     .filter((p) => oldest === null || p.year > oldest)
     .filter((p) => p.status === "DRAFT" || p.status === "SENT")
@@ -100,7 +137,7 @@ export function customerRenewal(
   else if (daysToEnd !== null && daysToEnd <= dueWindowDays) state = "DUE";
   else state = "CURRENT";
 
-  return { currentYear, currentLines, annualValue, nextEndDate, daysToEnd, openProposal: open, state };
+  return { currentYear, currentLines, annualValue, nextEndDate, daysToEnd, openProposal: open, state, lapsedLines };
 }
 
 export interface HistoryRow {

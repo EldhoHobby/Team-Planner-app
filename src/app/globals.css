@@ -79,6 +79,26 @@
   }
 }
 
+/* ── App shell height + phone padding (src/app/(app)/layout.tsx) ──
+   Screen only, so the shell's print:h-auto still lets printouts flow across
+   pages. 100dvh (where supported) follows the phone browser's toolbars, so the
+   bottom of the content isn't hidden behind them; 100vh is the fallback. */
+@media screen {
+  .app-shell {
+    height: 100vh;
+    height: 100dvh;
+  }
+}
+/* Phones: most screens wrap their content in a `p-6` box (24 px each side —
+   too much at 375 px). Trim it to 16 px for the page's top-level wrapper only;
+   md and up are unchanged. Screens that set their own responsive padding
+   (e.g. `p-4 md:p-6`) are not affected. */
+@media (max-width: 767.98px) {
+  #main-content > .p-6 {
+    padding: 1rem;
+  }
+}
+
 /* ── Printing: "print the view as shown" (schedule board/calendar) ──
    Chrome elements carry Tailwind's `print:hidden`; these globals set the page
    up: landscape, tight margins, and exact colors so technician bars keep
