@@ -36,6 +36,5 @@ export async function register() {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __auditPruneTimer: ReturnType<typeof setInterval> | undefined;
 }

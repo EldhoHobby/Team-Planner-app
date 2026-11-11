@@ -3,6 +3,10 @@ const nextConfig = {
   // Produces a minimal standalone server bundle for the Docker image.
   output: "standalone",
   reactStrictMode: true,
+  // Linting is its own Dockerfile step (`npm run lint`, flat eslint.config.mjs)
+  // right before `next build`; skip Next's built-in pass so the code is not
+  // linted twice by a second, differently-scoped runner.
+  eslint: { ignoreDuringBuilds: true },
   // App runs behind the Caddy reverse proxy on the internal network.
   experimental: {
     serverActions: {

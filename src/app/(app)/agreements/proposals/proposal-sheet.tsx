@@ -28,7 +28,6 @@ const MUTED = "#808080";
 const WIDTHS = [17, 12.43, 12.43, 12.43, 17, 12.43, 12.43, 12.43, 16, 12.43, 12.43, 12.43, 12.43, 12.43, 12.43];
 const SUM = WIDTHS.reduce((a, b) => a + b, 0);
 const COLS = WIDTHS.length; // A..O — 13 agreements in B..N, TOTAL in O
-const AG_FIRST = 1; // 0-based column of the first agreement (B)
 
 export function proposalStatusLine(p: ProposalDetail["proposal"]): string {
   switch (p.status) {

@@ -117,7 +117,7 @@ const boolField = (fallback: boolean) =>
   z.string().optional().transform((s) => parseBool(s ?? "", fallback));
 /** Date cell → Date | null (invalid/blank → null). */
 const dateField = z.string().optional().transform((s) => parseDate(s ?? ""));
-const nonEmpty = (msg: string) => (s: string) => s.length > 0;
+const nonEmpty = (_msg: string) => (s: string) => s.length > 0;
 
 // ─────────────────────────── per-sheet schemas ───────────────────────────
 

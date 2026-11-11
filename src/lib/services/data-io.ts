@@ -720,7 +720,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
       hardware, priority, technician, workGroup, startDate: start, durationDays, tentative, version,
     } = parsed.data;
 
-    let technicianId: string | null = technician ? techs.byName.get(technician.toLowerCase()) ?? null : null;
+    const technicianId: string | null = technician ? techs.byName.get(technician.toLowerCase()) ?? null : null;
     if (technician && !technicianId) {
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: unknown technician`); continue;
     }

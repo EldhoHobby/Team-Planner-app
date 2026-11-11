@@ -418,6 +418,24 @@ describe("Jobs import", () => {
     expect(write[0]!.args.data).toEqual(expect.objectContaining({ title: "Install RTU #2" }));
   });
 
+  it("preview (the Schedule's Preview step) counts updates and conflicts but writes nothing", async () => {
+    const s = await runJobsImport(
+      asAdmin,
+      await xlsx({
+        Jobs: [
+          { id: "job1", version: "1", title: "Install RTU #2", soNumber: "SO-1" }, // update
+          { id: "job1", version: "7", title: "Install RTU #3", soNumber: "SO-1" }, // stale version → conflict
+          { id: "", title: "Brand new", soNumber: "SO-88" }, // create
+        ],
+      }),
+      false,
+    );
+    expect(sheet(s, "Jobs")).toMatchObject({ created: 1, updated: 1 });
+    expect(sheet(s, "Jobs").errors.join(" ")).toMatch(/conflict/);
+    expect(createJobSpy).not.toHaveBeenCalled();
+    expect(writes()).toEqual([]);
+  });
+
   it("another org's job id is 'id not found' and nothing is written", async () => {
     const s = await runJobsImport(asAdmin, await xlsx({ Jobs: [{ id: "job-spy", title: "Hijack", soNumber: "SO-X" }] }), true);
     expect(sheet(s, "Jobs").errors).toEqual(["Jobs row 2: id not found"]);

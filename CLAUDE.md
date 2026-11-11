@@ -332,6 +332,15 @@ host normally has no npm — Docker is the supported path).
 - **PowerShell:** the user is on Windows PowerShell 5.1 — chain commands with `;`,
   not `&&`.
 - **`public/` must exist** (has a `.gitkeep`) — the Dockerfile copies it.
+- **Lint:** ESLint 9 flat config `eslint.config.mjs` (`eslint-config-next`
+  core-web-vitals + typescript, pinned to the Next version). The builder stage
+  runs `npm run lint` right after the tests: an ERROR fails the build, warnings
+  don't (`next.config.mjs` sets `eslint.ignoreDuringBuilds`, so `next build`
+  does not lint again). Quick run without a full build (Git Bash; the image
+  only holds node_modules, so copy the tree in):
+  `docker build --target deps -t tp-lint . ; MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo:ro" tp-lint sh -c 'cd /repo && tar cf - --exclude=./node_modules --exclude=./.next --exclude=./.git --exclude="./USB Files" --exclude=./backups . | (cd /app && tar xf -) && cd /app && npx eslint .'`
+  Don't fix `react-hooks/exhaustive-deps` by editing dependency arrays — those
+  effects are deliberate; keep the `eslint-disable-next-line … -- why` comment.
 - **Every release: bump `package.json` "version"** — it's manual and shown in
   the sidebar footer (with the git hash + build date, stamped in US Eastern
   time via TZ in the Dockerfile). Bump it whenever building a deploy bundle.

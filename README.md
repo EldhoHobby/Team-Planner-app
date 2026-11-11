@@ -175,6 +175,7 @@ point.
 | `npm run db:studio` | Prisma Studio (DB browser) |
 | `npm run test` | Unit tests (also run inside the Docker build) |
 | `npm run typecheck` | TypeScript check |
+| `npm run lint` | ESLint (`eslint.config.mjs`); also runs inside the Docker build — an error fails it, warnings don't |
 
 ## Backups
 

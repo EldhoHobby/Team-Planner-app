@@ -61,6 +61,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
               Try again
             </button>
             {/* Full page load: the client router may be what failed. */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- deliberate hard reload, not <Link> */}
             <a className="tp-ge-btn outline" href="/">
               Reload the app
             </a>

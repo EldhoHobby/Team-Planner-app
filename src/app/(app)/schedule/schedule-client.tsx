@@ -321,6 +321,11 @@ export function ScheduleClient({
   // "Completed" starts collapsed — it's a historical pile, not active work.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["Completed"]));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // On a phone the Jobs panel starts hidden (it would squeeze the board). The
+  // server can't know the width, so decide after mount (no hydration mismatch).
+  useEffect(() => {
+    if (window.matchMedia("(max-width: 767px)").matches) setSidebarOpen(false);
+  }, []);
 
   const weekStart = useMemo(() => startOfWeekSunday(anchor), [anchor]);
   const weekMonday = useMemo(() => addDays(weekStart, 1), [weekStart]);
@@ -957,14 +962,15 @@ export function ScheduleClient({
 
   return (
     <div
-      className="flex h-full flex-col print:h-auto"
+      // Phone: the page scrolls (header + filters wrap tall); md+: fills the window.
+      className="flex flex-col md:h-full print:h-auto"
       onDragStart={() => { draggingRef.current = true; }}
       onDragEnd={() => { endDrag(); grabRef.current = null; }}
       onDrop={() => { draggingRef.current = false; }}
     >
       {/* Header */}
       <PageHeader
-        className="mb-0 items-center border-b px-5 py-3 print:hidden"
+        className="mb-0 items-center border-b px-3 py-3 md:px-5 print:hidden"
         icon={<CalendarDays className="h-5 w-5 text-muted-foreground" />}
         title="Schedule"
         actions={
@@ -1010,14 +1016,16 @@ export function ScheduleClient({
             onChange={(e) => { if (e.target.value) setAnchor(parseYmd(e.target.value)); }}
             className={selectClass}
           />
-          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-            <Upload className="mr-1.5 h-4 w-4" /> Import
+          {/* Secondary buttons: icon-only on a phone (label kept for screen readers). */}
+          <Button variant="outline" size="sm" title="Import jobs from Excel" onClick={() => setImportOpen(true)}>
+            <Upload className="h-4 w-4 sm:mr-1.5" aria-hidden /> <span className="sr-only sm:not-sr-only">Import</span>
           </Button>
-          <Button variant="outline" size="sm" disabled={exporting} onClick={exportXlsx}>
-            <Download className="mr-1.5 h-4 w-4" /> {exporting ? "Exporting…" : "Export"}
+          <Button variant="outline" size="sm" title="Export jobs to Excel" disabled={exporting} onClick={exportXlsx}>
+            <Download className="h-4 w-4 sm:mr-1.5" aria-hidden />{" "}
+            <span className="sr-only sm:not-sr-only">{exporting ? "Exporting…" : "Export"}</span>
           </Button>
           <Button variant="outline" size="sm" title="Print the current view (landscape)" onClick={() => window.print()}>
-            <Printer className="mr-1.5 h-4 w-4" /> Print
+            <Printer className="h-4 w-4 sm:mr-1.5" aria-hidden /> <span className="sr-only sm:not-sr-only">Print</span>
           </Button>
           <Button
             variant="outline"
@@ -1025,7 +1033,7 @@ export function ScheduleClient({
             title="Jobs deleted in the last 30 days — restore one"
             onClick={() => setBinOpen(true)}
           >
-            <Trash2 className="mr-1.5 h-4 w-4" /> Recently deleted
+            <Trash2 className="h-4 w-4 sm:mr-1.5" aria-hidden /> <span className="sr-only sm:not-sr-only">Recently deleted</span>
           </Button>
           <Button size="sm" onClick={() => openNewJob(null)}>
             <Plus className="mr-1.5 h-4 w-4" /> New job
@@ -1036,7 +1044,7 @@ export function ScheduleClient({
 
       {/* Insights + filters. The job chips are the side panel's groups
           (mutually exclusive, they add up to "jobs"). */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-5 py-2 text-xs print:hidden">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-3 py-2 md:px-5 text-xs print:hidden">
         <div className="flex flex-wrap items-center gap-2">
           <Stat label="jobs" value={visible.length} title="Jobs matching the filters" />
           <Stat label="scheduled" value={groups.scheduled.length} title="Dated, confirmed, not completed" />
@@ -1056,8 +1064,8 @@ export function ScheduleClient({
             title="Jobs shown with a ⚠: the person is double-booked or on time off"
           />
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="relative">
+        <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <div className="relative w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
@@ -1065,11 +1073,13 @@ export function ScheduleClient({
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search SO / customer / title"
               aria-label="Search jobs"
-              className={`${selectClass} w-52 pl-7`}
+              className={`${selectClass} w-full pl-7 sm:w-52`}
             />
           </div>
           {fTechSel !== null ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-background px-2 py-0.5">
+            // Phone: after the filters, so the people picker starts its own row
+            // at the left edge and its drop-down stays on screen.
+            <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-background px-2 py-0.5 max-sm:order-last">
               Showing {visibleTechs.length} of {activeTechCount} people
               <span aria-hidden>·</span>
               <button
@@ -1108,7 +1118,7 @@ export function ScheduleClient({
           days (time off + holidays leave the denominator, shown as "· N off").
           One rule (board.ts capacityLevel): amber when exactly full, red when
           over. A VISUAL indicator only — it never blocks assignment. */}
-      <div className="flex flex-wrap items-center gap-2 border-b px-5 py-2 print:hidden">
+      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 md:px-5 print:hidden">
         <span className="text-xs font-medium text-muted-foreground">
           {view === "calendar" ? "This month:" : "This week:"}
         </span>
@@ -1128,7 +1138,7 @@ export function ScheduleClient({
       </div>
 
       {error ? (
-        <div className="flex items-start gap-2 border-b bg-destructive/10 px-5 py-2 print:hidden">
+        <div className="flex items-start gap-2 border-b bg-destructive/10 px-3 py-2 md:px-5 print:hidden">
           <FormMessage tone="error" className="flex-1">{error}</FormMessage>
           <button
             type="button"
@@ -1143,7 +1153,7 @@ export function ScheduleClient({
       {notice ? (
         <div
           role="status"
-          className="flex items-center gap-2 border-b bg-amber-50 px-5 py-2 text-sm text-amber-800 print:hidden"
+          className="flex items-center gap-2 border-b bg-amber-50 px-3 py-2 md:px-5 text-sm text-amber-800 print:hidden"
         >
           <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
           <span className="flex-1">{notice.text}</span>
@@ -1159,11 +1169,12 @@ export function ScheduleClient({
       ) : null}
 
       {/* Entire interactive area is hidden in print — PrintSheet below is the printout. */}
-      <div className="flex min-h-0 flex-1 print:hidden">
+      {/* Phone: the Jobs panel (when shown) stacks ABOVE the board, full width. */}
+      <div className="flex min-h-0 flex-col md:flex-1 md:flex-row print:hidden">
         {/* Jobs queue — grouped, sortable, type-filterable */}
         {sidebarOpen ? (
           <aside
-            className="flex w-72 shrink-0 flex-col border-r bg-card/40 print:hidden"
+            className="flex max-h-[60vh] w-full shrink-0 flex-col border-b bg-card/40 md:max-h-none md:w-72 md:border-b-0 md:border-r print:hidden"
             onDragOver={(e) => e.preventDefault()}
             onDrop={onDropBacklog}
             aria-label="Jobs queue"
@@ -1233,17 +1244,23 @@ export function ScheduleClient({
         ) : (
           <button
             type="button"
-            aria-label="Show panel"
+            aria-label="Show the Jobs panel"
             title="Show panel"
             onClick={() => setSidebarOpen(true)}
-            className="flex w-8 shrink-0 items-center justify-center border-r text-muted-foreground hover:bg-muted print:hidden"
+            className="flex w-full shrink-0 items-center justify-center gap-1.5 border-b py-1.5 text-xs text-muted-foreground hover:bg-muted md:w-8 md:border-b-0 md:border-r md:py-0 print:hidden"
           >
             <PanelLeftOpen className="h-4 w-4" />
+            <span className="md:hidden">Show the Jobs panel</span>
           </button>
         )}
 
-        {/* Main view */}
-        <div className={`min-w-0 flex-1 print:overflow-visible ${view === "calendar" ? "overflow-hidden" : "overflow-auto"}`}>
+        {/* Main view. Phone: a fixed-height window that scrolls both ways inside
+            itself (the page never scrolls sideways); md+: fills the rest. */}
+        <div
+          className={`h-[75vh] min-w-0 flex-none md:h-auto md:flex-1 print:overflow-visible ${
+            view === "calendar" ? "overflow-x-auto overflow-y-hidden md:overflow-hidden" : "overflow-auto"
+          }`}
+        >
           {view === "calendar" ? (
             <MonthCalendar
               month={anchor}
@@ -1270,9 +1287,11 @@ export function ScheduleClient({
               highlight={highlight}
             />
           ) : (
-            <>
-              <div className="sticky top-0 z-10 grid grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b bg-background">
-                <div className="border-r px-3 py-2 text-xs font-medium text-muted-foreground">Person</div>
+            // Phone: narrower columns + the whole grid scrolls sideways inside the
+            // view; the person column stays put (sticky left).
+            <div className="min-w-[45rem] md:min-w-[59rem]">
+              <div className="sticky top-0 z-10 grid grid-cols-[6.5rem_repeat(7,minmax(5.5rem,1fr))] md:grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b bg-background">
+                <div className="sticky left-0 z-[1] border-r bg-background px-2 py-2 text-xs font-medium text-muted-foreground md:px-3">Person</div>
                 {weekDays.map((d, i) => {
                   const isToday = ymd(d) === todayYmd;
                   const weekend = i === 0 || i === 6;
@@ -1312,8 +1331,8 @@ export function ScheduleClient({
                 const laneHeight = laneCount * 34 + 8;
                 const weekStartMs = weekStart.getTime();
                 return (
-                  <div key={row.id ?? "unassigned"} className={`grid grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b ${row.inactive ? "opacity-50" : ""}`}>
-                    <div className="flex min-w-0 items-center gap-2 border-r px-3 py-2" title={row.archived ? "This person is archived. Reassign these jobs to someone else (open a job or use ⋯ → Reassign to)." : row.inactive ? "Not schedulable. Reassign these jobs or make the person schedulable in Settings → People." : undefined}>
+                  <div key={row.id ?? "unassigned"} className={`grid grid-cols-[6.5rem_repeat(7,minmax(5.5rem,1fr))] md:grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b ${row.inactive ? "opacity-50" : ""}`}>
+                    <div className="sticky left-0 z-[5] flex min-w-0 items-center gap-2 border-r bg-background px-2 py-2 md:px-3" title={row.archived ? "This person is archived. Reassign these jobs to someone else (open a job or use ⋯ → Reassign to)." : row.inactive ? "Not schedulable. Reassign these jobs or make the person schedulable in Settings → People." : undefined}>
                       <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={dotStyle(row.color)} />
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium">{row.name}</span>
@@ -1323,7 +1342,8 @@ export function ScheduleClient({
                       </span>
                     </div>
                     <div
-                      className="relative col-span-7"
+                      // isolate: bars + their resize handles stay under the sticky person column.
+                      className="relative isolate col-span-7"
                       style={{ height: laneHeight }}
                       data-weekcontainer
                       data-weekstart={weekStartMs}
@@ -1414,7 +1434,7 @@ export function ScheduleClient({
                   </div>
                 );
               })}
-            </>
+            </div>
           )}
         </div>
       </div>
@@ -1654,7 +1674,7 @@ function TechFilter({
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       {open ? (
-        <div className="absolute right-0 z-30 mt-1 w-56 rounded-md border bg-background p-2 shadow-lg">
+        <div className="absolute left-0 z-30 mt-1 w-56 rounded-md border bg-background p-2 shadow-lg sm:left-auto sm:right-0">
           <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs font-medium hover:bg-muted">
             <input
               type="checkbox"

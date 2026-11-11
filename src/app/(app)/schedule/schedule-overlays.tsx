@@ -14,6 +14,7 @@ import { CalendarClock, Copy, ExternalLink, Inbox, UserCog, Undo2, X } from "luc
 import { conflictReasons, resizeDayIndex, resizeDuration } from "@/lib/scheduling/job-conflicts";
 import { dotStyle } from "@/lib/scheduling/colors";
 import { fmtDatesInText, jobLabel } from "./format";
+import { subPlacementFor } from "./menu-placement";
 import type { JobRow, TechnicianOption, TechTimeOff } from "./types";
 
 /** The fields a board change (move/reassign/resize/unschedule) can touch — the
@@ -211,9 +212,14 @@ export function ContextMenu({
   }, [subOpen]);
 
   const { job } = menu;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 9999;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 9999;
   // Keep the menu on-screen (rough clamp against the viewport).
-  const left = Math.max(4, Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 220));
-  const top = Math.max(4, Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 260));
+  const left = Math.max(4, Math.min(menu.x, vw - 220));
+  // "Reassign to" flies out to the right (208 px menu + 4 px gap + 192 px
+  // submenu), else to the left, else (a phone) opens inline under its item.
+  const subPlacement = subPlacementFor(left, vw);
+  const top = Math.max(4, Math.min(menu.y, vh - (subPlacement === "inline" ? 460 : 260)));
   const item =
     "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-none disabled:opacity-40";
 
@@ -260,8 +266,10 @@ export function ContextMenu({
         role="menu"
         aria-label={`Actions for ${jobLabel(job)}`}
         onKeyDown={onMenuKey}
-        className="absolute w-52 rounded-md border bg-card p-1 text-card-foreground shadow-lg"
-        style={{ left, top }}
+        className={`absolute w-52 rounded-md border bg-card p-1 text-card-foreground shadow-lg ${
+          subPlacement === "inline" ? "overflow-y-auto" : ""
+        }`}
+        style={{ left, top, ...(subPlacement === "inline" ? { maxHeight: vh - top - 4 } : null) }}
       >
         <button type="button" role="menuitem" className={item} onClick={() => { closeAndRestore(); onOpen(job); }}>
           <ExternalLink className="h-4 w-4" aria-hidden /> Open
@@ -269,8 +277,14 @@ export function ContextMenu({
 
         <div
           className="relative"
-          onMouseEnter={() => setSubOpen(true)}
-          onMouseLeave={() => setSubOpen(false)}
+          // Hover opens the fly-out for a mouse only: on a touch screen the
+          // emulated hover would open it and the tap's click close it again.
+          onPointerEnter={(e) => {
+            if (e.pointerType !== "touch" && subPlacement !== "inline") setSubOpen(true);
+          }}
+          onPointerLeave={(e) => {
+            if (e.pointerType !== "touch" && subPlacement !== "inline") setSubOpen(false);
+          }}
         >
           <button
             ref={reassignRef}
@@ -298,7 +312,13 @@ export function ContextMenu({
               ref={subRef}
               role="menu"
               aria-label="Reassign to"
-              className="absolute left-full top-0 ml-1 max-h-64 w-48 overflow-y-auto rounded-md border bg-card p-1 shadow-lg"
+              className={
+                subPlacement === "inline"
+                  ? "ml-3 max-h-48 overflow-y-auto border-l pl-1"
+                  : `absolute top-0 max-h-64 w-48 overflow-y-auto rounded-md border bg-card p-1 shadow-lg ${
+                      subPlacement === "right" ? "left-full ml-1" : "right-full mr-1"
+                    }`
+              }
             >
               {technicians.filter((t) => t.active).map((t) => (
                 <button
@@ -451,9 +471,9 @@ export function UndoToast({
     onClose();
   };
   return (
-    <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg border bg-card px-4 py-2 text-sm text-card-foreground shadow-lg print:hidden">
+    <div role="status" className="fixed bottom-4 left-1/2 z-50 max-w-[calc(100vw-1rem)] -translate-x-1/2 rounded-lg border bg-card px-4 py-2 text-sm text-card-foreground shadow-lg print:hidden">
       <div className="flex items-center gap-3">
-        <span className="max-w-xs truncate">{undo.label}</span>
+        <span className="min-w-0 max-w-xs truncate">{undo.label}</span>
         {canReason && !open ? (
           <button
             type="button"
@@ -483,7 +503,7 @@ export function UndoToast({
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
             placeholder="Reason for this change…"
             aria-label="Reason for this change"
-            className="h-8 w-64 rounded-md border border-input bg-transparent px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-8 w-full min-w-0 rounded-md border sm:w-64 border-input bg-transparent px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
           <button
             type="button"

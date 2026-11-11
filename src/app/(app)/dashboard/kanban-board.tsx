@@ -121,7 +121,9 @@ export function KanbanBoard({
     });
 
   const renderColumns = (laneOwnerId: string) => (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+    // Phone: one row of columns that scrolls sideways (snapping per column);
+    // a card moves with its State select (drag-and-drop needs a mouse).
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5 max-sm:flex max-sm:snap-x max-sm:snap-mandatory max-sm:overflow-x-auto max-sm:pb-2">
       {STATES.map((state) => {
         const key = `${laneOwnerId}|${state}`;
         const colCards = cards
@@ -133,7 +135,7 @@ export function KanbanBoard({
             onDragOver={(e) => { e.preventDefault(); setDragOver(key); }}
             onDragLeave={() => setDragOver((s) => (s === key ? null : s))}
             onDrop={(e) => drop(e, state, laneOwnerId)}
-            className={`flex min-h-[9rem] flex-col rounded-md border bg-muted/10 transition-colors ${
+            className={`flex min-h-[9rem] flex-col rounded-md border bg-muted/10 transition-colors max-sm:w-[15rem] max-sm:shrink-0 max-sm:snap-start ${
               dragOver === key ? "border-primary bg-primary/5" : ""
             }`}
           >

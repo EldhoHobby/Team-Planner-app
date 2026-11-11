@@ -27,8 +27,8 @@ import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
 import type { DeletedItemRow } from "@/lib/db/soft-delete";
 import { listAudit, writeAudit } from "@/lib/services/audit";
 import type { TaskFormState } from "./types";
-import type { JobFormState, ImportState, AuditEntry } from "../schedule/types";
-import { importSizeError } from "../settings/data/types";
+import type { JobFormState, AuditEntry } from "../schedule/types";
+import { importSizeError, type DataIoState as ScheduleImportState } from "../settings/data/types";
 
 const STATUSES = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"] as const;
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
@@ -470,17 +470,18 @@ export async function listDeletedJobsAction(): Promise<{ items?: DeletedItemRow[
   }
 }
 
-// Excel import for the schedule window. Upserts jobs by id using the shared Jobs
-// sheet definition in data-io.ts (round-trips with the schedule Export and the
-// admin Data round-trip). Not gated on org-admin — any scheduler may import.
-export async function importScheduleXlsxAction(
-  _prev: ImportState,
-  formData: FormData,
-): Promise<ImportState> {
-  const { scope } = await requireScope();
+// Excel import for the schedule window — two steps, like Settings → Data:
+// PREVIEW (runJobsImport with apply=false: reads only, writes nothing, audits
+// nothing) then APPLY (apply=true + one audit entry). Upserts jobs by id using
+// the shared Jobs sheet definition in data-io.ts (round-trips with the schedule
+// Export and the admin Data round-trip). Not gated on org-admin — any
+// scheduler may import.
+
+/** The uploaded workbook, or the message to show (missing / too big / not Excel). */
+async function scheduleWorkbook(formData: FormData, missing: string): Promise<{ buf: ArrayBuffer } | { error: string }> {
   const file = formData.get("file");
   if (!file || typeof file !== "object" || !("arrayBuffer" in file) || (file as File).size === 0) {
-    return { error: "Choose an .xlsx file first." };
+    return { error: missing };
   }
   // Check size + type BEFORE parsing: ExcelJS loads the whole workbook in memory.
   const tooBig = importSizeError((file as File).size);
@@ -488,9 +489,35 @@ export async function importScheduleXlsxAction(
   if (!/\.xls[xm]$/i.test((file as File).name ?? "")) {
     return { error: "That isn't an Excel workbook — choose the exported .xlsx file." };
   }
+  return { buf: await (file as File).arrayBuffer() };
+}
+
+/** Step 1: what the import WOULD do. Writes nothing and is not audited. */
+export async function previewScheduleImportAction(
+  _prev: ScheduleImportState,
+  formData: FormData,
+): Promise<ScheduleImportState> {
   try {
-    const buf = await (file as File).arrayBuffer();
-    const summary = await runJobsImport(scope, buf, true);
+    const { scope } = await requireScope();
+    const file = await scheduleWorkbook(formData, "Choose an .xlsx file first.");
+    if ("error" in file) return { error: file.error };
+    const summary = await runJobsImport(scope, file.buf, false);
+    return { phase: "preview", summary };
+  } catch (e) {
+    return actionError("schedule.previewImport", e, "Could not read that file — is it the exported .xlsx workbook?");
+  }
+}
+
+/** Step 2: apply the workbook (re-checked row by row on the server) + audit it. */
+export async function applyScheduleImportAction(
+  _prev: ScheduleImportState,
+  formData: FormData,
+): Promise<ScheduleImportState> {
+  try {
+    const { scope } = await requireScope();
+    const file = await scheduleWorkbook(formData, "Choose the file again to apply it.");
+    if ("error" in file) return { error: file.error };
+    const summary = await runJobsImport(scope, file.buf, true);
     await writeAudit(scope, {
       entity: "data",
       entityId: "schedule-import",
@@ -498,18 +525,9 @@ export async function importScheduleXlsxAction(
       summary: `Applied the schedule (Jobs) Excel import: ${summary.totalCreated} created, ${summary.totalUpdated} updated.`,
     });
     revalidatePath("/schedule");
-    const r = summary.results[0];
-    const note = r && r.errors.length
-      ? ` (${r.errors.slice(0, 3).join("; ")}${r.errors.length > 3 ? "…" : ""})`
-      : "";
-    const warn = r?.warnings?.length
-      ? ` ⚠ ${r.warnings.length} possible duplicate(s): ${r.warnings.slice(0, 2).join("; ")}${r.warnings.length > 2 ? "…" : ""}`
-      : "";
-    return {
-      message: `Imported ${summary.totalCreated} created, ${summary.totalUpdated} updated, ${r?.skipped ?? 0} skipped.${note}${warn}`,
-    };
+    return { phase: "applied", summary };
   } catch (e) {
-    return actionError("importScheduleXlsxAction", e, "Could not read that file — is it the exported .xlsx workbook?");
+    return actionError("schedule.applyImport", e, "The import failed — please try again.");
   }
 }
 

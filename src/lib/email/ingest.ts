@@ -138,7 +138,6 @@ function isUniqueViolation(e: unknown): boolean {
 
 
 declare global {
-  // eslint-disable-next-line no-var
   var __emailIngestRunning: boolean | undefined;
 }
 
@@ -372,7 +371,6 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
 // ── Background poller (started once per server process from instrumentation) ──
 
 declare global {
-  // eslint-disable-next-line no-var
   var __emailIngestTimer: ReturnType<typeof setInterval> | undefined;
 }
 

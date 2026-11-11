@@ -474,7 +474,7 @@ export function TaskTicket({
       confirmClose="This task has an unsaved edit or an unsent comment."
       headerActions={
         <>
-          <SaveStatus state={saveStatus.state} className="mr-1 max-w-[16rem]" />
+          <SaveStatus state={saveStatus.state} className="mr-1 max-w-[8rem] sm:max-w-[16rem]" />
           <Button
             type="button"
             variant="ghost"
@@ -639,7 +639,7 @@ export function TaskTicket({
                       {initials(n.authorName)}
                     </span>
                     <div className="min-w-0 flex-1 rounded-md border bg-muted/20 px-3 py-2">
-                      <div className="flex items-center gap-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-x-2 text-xs">
                         <span className="font-semibold">{n.authorName}</span>
                         <span className="text-muted-foreground" title={absTime(n.createdAt)}>{relTime(n.createdAt)}</span>
                         {n.editedAt ? (

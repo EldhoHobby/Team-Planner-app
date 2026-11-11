@@ -533,7 +533,7 @@ export async function rescheduleJob(
   const nextTech =
     input.technicianId !== undefined ? input.technicianId : job.technicianId;
 
-  const { start, end, duration, status: derived } = deriveSchedule({
+  const { start, end, status: derived } = deriveSchedule({
     startDate: nextStart,
     durationDays: nextDuration,
     technicianId: nextTech,

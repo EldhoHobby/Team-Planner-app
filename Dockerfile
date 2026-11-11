@@ -26,6 +26,10 @@ RUN npx prisma generate
 # Unit tests gate the build: a failing test fails `docker compose build`.
 # (The dev host has no npm — this is where tests run.)
 RUN npm run test
+# Lint gates the build too: an ESLint ERROR fails it, warnings are only printed
+# (no --max-warnings). next.config.mjs sets eslint.ignoreDuringBuilds so
+# `next build` below does not lint a second time.
+RUN npm run lint
 # Stamp the version, build date (MM/DD/YYYY, US Eastern — matches the user's
 # calendar; UTC rolls past midnight too early), and Git hash into the bundle.
 # Next.js inlines NEXT_PUBLIC_* at build, so the values are frozen.

@@ -194,6 +194,34 @@ function sortTasks(tasks: TechTaskRow[], sort: SortSpec): TechTaskRow[] {
   });
 }
 
+/** Phone-only stand-in for the (hidden) sortable column headers. */
+function PhoneSort({ sort, onSort }: { sort: SortSpec; onSort: (s: SortSpec) => void }) {
+  const value = sort.key ? `${sort.key}:${sort.dir}` : "";
+  return (
+    <div className="flex items-center gap-2 border-b bg-muted/20 px-3 py-1.5 sm:hidden">
+      <select
+        aria-label="Sort tasks"
+        className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+        value={value}
+        onChange={(e) => {
+          const [key, dir] = e.target.value.split(":");
+          onSort(key ? { key: key as SortKey, dir: dir === "-1" ? -1 : 1 } : { key: null, dir: 1 });
+        }}
+      >
+        <option value="">Sort: priority, then target date</option>
+        <option value="priority:1">Sort: priority (1 first)</option>
+        <option value="priority:-1">Sort: priority (1 last)</option>
+        <option value="title:1">Sort: task A–Z</option>
+        <option value="title:-1">Sort: task Z–A</option>
+        <option value="target:1">Sort: target date (soonest first)</option>
+        <option value="target:-1">Sort: target date (latest first)</option>
+        <option value="state:1">Sort: state</option>
+        <option value="state:-1">Sort: state (reversed)</option>
+      </select>
+    </div>
+  );
+}
+
 function SortHeader({
   label,
   k,
@@ -781,7 +809,7 @@ function AssignedByMeSection({
       <button
         type="button"
         onClick={toggle}
-        className="flex w-full items-center gap-1.5 border-b bg-muted/40 px-4 py-2 text-left"
+        className="flex w-full items-center gap-1.5 border-b bg-muted/40 px-4 py-2 text-left max-sm:flex-wrap"
         aria-expanded={!collapsed}
       >
         {collapsed ? (
@@ -812,7 +840,8 @@ function AssignedByMeSection({
             ) : null
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
+              {/* Read-only: on a phone it scrolls sideways inside this box. */}
+              <table className="w-full border-collapse text-sm max-sm:min-w-[34rem]">
                 <thead>
                   <tr className="border-b bg-muted/20 text-xs text-muted-foreground">
                     <th scope="col" className="w-40 px-3 py-1.5 text-left">Person</th>
@@ -841,7 +870,7 @@ function AssignedByMeSection({
               <ul className="divide-y">
                 {visibleDone.map((r) => (
                   <li key={r.task.id} className="flex items-center gap-2 py-1.5 text-sm">
-                    <span className="w-36 shrink-0 truncate text-xs text-muted-foreground">{r.ownerName}</span>
+                    <span className="w-24 shrink-0 truncate text-xs text-muted-foreground sm:w-36">{r.ownerName}</span>
                     <button
                       type="button"
                       onClick={() => onOpenTask(r.task.id)}
@@ -963,19 +992,20 @@ function OwnerSection({
   return (
     <section className="overflow-hidden rounded-md border">
       <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-4 py-2">
-        <button onClick={toggle} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={!collapsed}>
+        <button onClick={toggle} className="flex min-w-0 flex-1 items-center gap-1.5 text-left max-sm:flex-wrap" aria-expanded={!collapsed}>
           {collapsed ? (
             <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
           ) : (
             <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
           )}
-          <h2 className="truncate text-sm font-semibold">
+          <h2 className="min-w-0 truncate text-sm font-semibold max-sm:flex-1">
             {g.owner.isSelf ? "My tasks" : g.owner.name ?? g.owner.email}
             <span className="ml-2 text-xs font-normal text-muted-foreground">
               {g.open.length} open{g.jobs.length ? ` · ${g.jobs.length} job${g.jobs.length === 1 ? "" : "s"}` : ""}
             </span>
           </h2>
-          <span className="ml-1 flex shrink-0 flex-wrap items-center gap-1">
+          {/* Phone: the badges get a line of their own under the name. */}
+          <span className="ml-1 flex shrink-0 flex-wrap items-center gap-1 empty:hidden max-sm:ml-0 max-sm:basis-full max-sm:pl-5">
             {overdue > 0 ? (
               <span className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/50 dark:text-red-300">
                 <AlertTriangle className="h-2.5 w-2.5" /> {overdue} overdue
@@ -1031,8 +1061,12 @@ function OwnerSection({
             </p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
+              <PhoneSort sort={sort} onSort={setSort} />
+              {/* Phone: the table becomes stacked rows (EditableRow) — title on top,
+                  target date + state wrap under it; the column headers are hidden
+                  (PhoneSort above stands in for their sort buttons). */}
+              <table className="w-full border-collapse text-sm max-sm:block">
+                <thead className="max-sm:hidden">
                   <tr className="border-b bg-muted/20 text-xs text-muted-foreground">
                     <SortHeader label="Pri" fullLabel="Priority (1 = highest)" k="priority" sort={sort} onSort={setSort} className="w-16 text-center" />
                     <SortHeader label="Task" k="title" sort={sort} onSort={setSort} />
@@ -1043,7 +1077,7 @@ function OwnerSection({
                     </th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="max-sm:block">
                   {sortedOpen.map((t) => (
                     <EditableRow key={t.id} task={t} refresh={refresh} onOpen={() => onOpenTask(t.id)} onDeleted={onDeleted} />
                   ))}
@@ -1170,10 +1204,10 @@ function EditableRow({
 
   return (
     <tr
-      className={`group border-b align-top last:border-0 hover:bg-muted/20 ${STATE_ROW_TINT[task.state]} ${busy > 0 ? "opacity-60" : ""}`}
+      className={`group border-b align-top last:border-0 hover:bg-muted/20 max-sm:flex max-sm:flex-wrap max-sm:items-start ${STATE_ROW_TINT[task.state]} ${busy > 0 ? "opacity-60" : ""}`}
       aria-busy={busy > 0 || undefined}
     >
-      <td className={`px-1 py-1.5 ${barClass}`}>
+      <td className={`px-1 py-1.5 max-sm:order-1 max-sm:w-16 max-sm:shrink-0 ${barClass}`}>
         <input
           type="number"
           min={1}
@@ -1190,7 +1224,7 @@ function EditableRow({
           title="Priority (1 = highest)"
         />
       </td>
-      <td className="px-1 py-1.5">
+      <td className="px-1 py-1.5 max-sm:order-2 max-sm:min-w-0 max-sm:grow max-sm:basis-[calc(100%-7rem)]">
         <button
           type="button"
           onClick={onOpen}
@@ -1224,7 +1258,7 @@ function EditableRow({
           {error}
         </FormMessage>
       </td>
-      <td className="px-1 py-1.5">
+      <td className="px-1 py-1.5 max-sm:order-4 max-sm:ml-16 max-sm:min-w-0 max-sm:flex-1 max-sm:pt-0">
         <DatePicker
           id={`${uid}-target`}
           aria-label={`Target date of "${task.title}"`}
@@ -1243,7 +1277,7 @@ function EditableRow({
           </span>
         ) : null}
       </td>
-      <td className="px-2 py-1.5">
+      <td className="px-2 py-1.5 max-sm:order-5 max-sm:w-32 max-sm:shrink-0 max-sm:pt-0">
         {/* Inline state dropdown — no popup. Coloured like the old pill. */}
         <select
           value={task.state}
@@ -1258,7 +1292,7 @@ function EditableRow({
           ))}
         </select>
       </td>
-      <td className="py-1.5 pl-3 pr-1 text-center">
+      <td className="py-1.5 pl-3 pr-1 text-center max-sm:order-3 max-sm:shrink-0 max-sm:pl-1">
         {/* Delete is deliberately LAST in the row, set apart from the State
             dropdown by extra left padding, and always asks first (the task's
             comments + history go with it). Hover-revealed — but also visible
@@ -1597,7 +1631,7 @@ function CreateModal({
             <Label htmlFor={fid("title")}>Task</Label>
             <Input id={fid("title")} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing?" autoFocus />
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="space-y-2">
               <Label htmlFor={fid("priority")}>Priority (1 = highest)</Label>
               <Input

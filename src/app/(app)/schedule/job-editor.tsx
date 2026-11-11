@@ -554,7 +554,7 @@ Changed: ${changed.join("; ")}`;
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="ed-so">SO Number</Label>
             <Input
@@ -611,7 +611,7 @@ Changed: ${changed.join("; ")}`;
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="ed-type">Job type</Label>
             <select
@@ -654,7 +654,7 @@ Changed: ${changed.join("; ")}`;
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="ed-tech">Person</Label>
             <select
@@ -868,7 +868,7 @@ Changed: ${changed.join("; ")}`;
                 {entries.map((e) => (
                   <li key={e.key} className="text-xs">
                     {e.kind === "change" ? (
-                      <div className="flex gap-2 text-muted-foreground">
+                      <div className="flex flex-wrap gap-x-2 text-muted-foreground">
                         <span className="shrink-0">{fmtEastern(e.when, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                         <span className="italic">
                           {e.body}
@@ -891,7 +891,7 @@ Changed: ${changed.join("; ")}`;
                       </div>
                     ) : (
                       <div className="rounded-md border p-2">
-                        <div className="mb-0.5 flex items-center gap-2 text-muted-foreground">
+                        <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-muted-foreground">
                           <span className="font-medium text-foreground">{e.who}</span>
                           <span>{fmtEastern(e.when, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {e.editedAt ? <span className="italic">(edited)</span> : null}

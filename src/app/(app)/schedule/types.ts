@@ -67,11 +67,6 @@ export type JobFormState = {
   stale?: boolean;
 };
 
-export type ImportState = {
-  error?: string;
-  message?: string;
-};
-
 export type AuditEntry = {
   action: string;
   summary: string;

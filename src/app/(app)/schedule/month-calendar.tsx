@@ -254,7 +254,8 @@ export function MonthCalendar({
     : [];
 
   return (
-    <div ref={rootRef} className="flex h-full flex-col p-3">
+    // Phone: seven usable columns need ~36rem — the view scrolls sideways (parent).
+    <div ref={rootRef} className="flex h-full min-w-[36rem] flex-col p-2 md:min-w-0 md:p-3">
       <div className="grid shrink-0 grid-cols-7 border-b text-center text-xs font-medium text-muted-foreground">
         {DAY_LABELS.map((d, i) => (
           <div key={d} className={`py-2 ${i === 0 || i === 6 ? "bg-muted/40" : ""}`}>{d}</div>
@@ -389,7 +390,7 @@ export function MonthCalendar({
                     <JobBar
                       key={item.key}
                       job={job}
-                      className="pointer-events-auto text-[13px] font-medium"
+                      className="pointer-events-auto text-xs font-medium md:text-[13px]"
                       style={{
                         ...(job.tentative ? hatchStyle(job.technicianColor) : barStyle(job.technicianColor)),
                         left: `calc(${(startCol / 7) * 100}% + 2px)`,

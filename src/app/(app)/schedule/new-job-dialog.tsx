@@ -115,7 +115,7 @@ export function NewJobDialog({
           <Input id="nj-title" name="title" required maxLength={MAX.title} placeholder="Commission ePAQ at Site B" />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="nj-so">SO Number</Label>
             <Input id="nj-so" name="soNumber" maxLength={MAX.soNumber} placeholder="SO-10421" />
@@ -138,7 +138,7 @@ export function NewJobDialog({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="nj-type">Job type</Label>
             <select id="nj-type" name="jobType" className={selectClass} defaultValue="">
@@ -155,7 +155,7 @@ export function NewJobDialog({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="space-y-2">
             <Label htmlFor="nj-person">Person</Label>
             <select id="nj-person" name="technicianId" className={selectClass} defaultValue={presetTech}>
