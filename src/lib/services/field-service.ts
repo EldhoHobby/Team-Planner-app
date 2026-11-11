@@ -6,6 +6,8 @@ import { endFromDuration, toUtcMidnight } from "@/lib/scheduling/calc";
 import { todayUtcMs } from "@/lib/tz";
 import { listAudit, writeAudit } from "@/lib/services/audit";
 import { assertPersonInScope } from "@/lib/services/people";
+import { assertFreshWrite, versionGuard, StaleSaveError } from "@/lib/db/optimistic";
+import { NOT_DELETED, recentlyDeleted, type DeletedItemRow } from "@/lib/db/soft-delete";
 
 export type { JobType, JobStatus };
 
@@ -147,6 +149,7 @@ export function listFieldJobs(scope: TenantScope, opts: { includeOldCompleted?: 
   return prisma.task.findMany({
     where: scope.whereTeam({
       kind: "FIELD_SERVICE" as TaskKind,
+      ...NOT_DELETED,
       ...(opts.includeOldCompleted ? {} : { OR: recent }),
     }),
     include: JOB_INCLUDE,
@@ -159,6 +162,7 @@ export async function hasOlderCompletedJobs(scope: TenantScope): Promise<boolean
   const n = await prisma.task.count({
     where: scope.whereTeam({
       kind: "FIELD_SERVICE" as TaskKind,
+      ...NOT_DELETED,
       jobStatus: "COMPLETED" as JobStatus,
       endDate: { lt: new Date(todayUtcMs() - COMPLETED_JOBS_WINDOW_DAYS * 86_400_000) },
     }),
@@ -226,8 +230,9 @@ async function assertUniqueSoTitle(
   exceptId?: string,
 ) {
   const key = soTitleKey(soNumber, title);
+  // Deleted jobs don't count (restoreJob re-checks before bringing one back).
   const peers = await prisma.task.findMany({
-    where: { kind: "FIELD_SERVICE", ...scope.team() },
+    where: { kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team() },
     select: { id: true, soNumber: true, title: true },
   });
   if (peers.some((p) => p.id !== exceptId && soTitleKey(p.soNumber, p.title) === key)) {
@@ -300,14 +305,14 @@ export async function createJob(scope: TenantScope, input: CreateJobInput) {
  */
 export async function duplicateJob(scope: TenantScope, jobId: string) {
   const src = await prisma.task.findFirst({
-    where: { id: jobId, orgId: scope.ctx.orgId, kind: "FIELD_SERVICE" },
+    where: { id: jobId, orgId: scope.ctx.orgId, kind: "FIELD_SERVICE", ...NOT_DELETED },
   });
   if (!src) throw new ForbiddenError("Job not found");
 
   // Pick a unique "(copy)" title so the uniqueness rule accepts it — "(copy)",
   // then "(copy 2)", "(copy 3)", … if earlier copies already exist.
   const peers = await prisma.task.findMany({
-    where: { kind: "FIELD_SERVICE", ...scope.team() },
+    where: { kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team() },
     select: { soNumber: true, title: true },
   });
   const taken = new Set(peers.map((p) => soTitleKey(p.soNumber, p.title)));
@@ -334,7 +339,10 @@ export async function duplicateJob(scope: TenantScope, jobId: string) {
   // count on the copy so dragging it onto the board restores the same span
   // (rescheduleJob falls back to the stored durationDays).
   if (src.durationDays) {
-    await prisma.task.update({ where: { id: copy.id }, data: { durationDays: src.durationDays } });
+    await prisma.task.update({
+      where: { id: copy.id },
+      data: { durationDays: src.durationDays, version: { increment: 1 } },
+    });
   }
   await writeAudit(scope, {
     entity: "job",
@@ -359,13 +367,50 @@ export interface UpdateJobInput {
   durationDays?: number | null;
   jobStatus?: JobStatus;
   tentative?: boolean;
+  /**
+   * Optimistic lock: the `version` the caller loaded. When given and the job
+   * has moved on, the save is rejected with StaleSaveError (nothing written).
+   * Omitted = last-write-wins (the write still bumps the version).
+   */
+  expectedVersion?: number;
+}
+
+/** A live (not deleted) job in the caller's scope, or ForbiddenError("Job not found"). */
+async function findLiveJob(scope: TenantScope, id: string) {
+  const job = await prisma.task.findFirst({
+    where: { id, kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team() },
+  });
+  if (!job) throw new ForbiddenError("Job not found");
+  return job;
+}
+
+/** Cheap early reject before any validation; the guarded write is the real check. */
+function assertVersion(job: { version: number }, expectedVersion: number | undefined) {
+  if (expectedVersion !== undefined && expectedVersion !== job.version) throw new StaleSaveError("job");
+}
+
+/**
+ * The one write path for job edits: guarded on the caller's version (when
+ * given), never touches a deleted job, ALWAYS bumps the version so any other
+ * screen still holding the old one is refused on its next guarded save.
+ */
+async function writeJob(
+  scope: TenantScope,
+  id: string,
+  expectedVersion: number | undefined,
+  data: Prisma.TaskUncheckedUpdateManyInput,
+) {
+  const res = await prisma.task.updateMany({
+    where: { id, orgId: scope.ctx.orgId, kind: "FIELD_SERVICE", ...NOT_DELETED, ...versionGuard(expectedVersion) },
+    data: { ...data, version: { increment: 1 } },
+  });
+  assertFreshWrite(res.count, "job");
+  return prisma.task.findUniqueOrThrow({ where: { id }, include: JOB_INCLUDE });
 }
 
 export async function updateJob(scope: TenantScope, id: string, input: UpdateJobInput) {
-  const job = await prisma.task.findFirst({
-    where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-  });
-  if (!job) throw new ForbiddenError("Job not found");
+  const job = await findLiveJob(scope, id);
+  assertVersion(job, input.expectedVersion);
 
   if (input.technicianId) await assertPersonInScope(scope, input.technicianId);
   if (input.workGroupId) await assertWorkGroupInScope(scope, input.workGroupId);
@@ -389,27 +434,23 @@ export async function updateJob(scope: TenantScope, id: string, input: UpdateJob
     jobStatus: input.jobStatus ?? job.jobStatus ?? undefined,
   });
 
-  const updated = await prisma.task.update({
-    where: { id },
-    data: {
-      title: input.title !== undefined ? input.title.trim() : undefined,
-      description: input.description !== undefined ? (input.description?.trim() || null) : undefined,
-      soNumber: input.soNumber !== undefined ? (input.soNumber?.trim() || null) : undefined,
-      customerName:
-        input.customerName !== undefined ? (input.customerName?.trim() || null) : undefined,
-      jobType: input.jobType !== undefined ? input.jobType : undefined,
-      hardwareTarget:
-        input.hardwareTarget !== undefined ? (input.hardwareTarget?.trim() || null) : undefined,
-      priority: input.priority !== undefined ? input.priority : undefined,
-      technicianId: nextTech !== undefined ? (nextTech || null) : undefined,
-      workGroupId: input.workGroupId !== undefined ? (input.workGroupId || null) : undefined,
-      startDate: start,
-      endDate: end,
-      durationDays: duration,
-      jobStatus: status,
-      tentative: input.tentative !== undefined ? input.tentative : undefined,
-    },
-    include: JOB_INCLUDE,
+  const updated = await writeJob(scope, id, input.expectedVersion, {
+    title: input.title !== undefined ? input.title.trim() : undefined,
+    description: input.description !== undefined ? (input.description?.trim() || null) : undefined,
+    soNumber: input.soNumber !== undefined ? (input.soNumber?.trim() || null) : undefined,
+    customerName:
+      input.customerName !== undefined ? (input.customerName?.trim() || null) : undefined,
+    jobType: input.jobType !== undefined ? input.jobType : undefined,
+    hardwareTarget:
+      input.hardwareTarget !== undefined ? (input.hardwareTarget?.trim() || null) : undefined,
+    priority: input.priority !== undefined ? input.priority : undefined,
+    technicianId: nextTech !== undefined ? (nextTech || null) : undefined,
+    workGroupId: input.workGroupId !== undefined ? (input.workGroupId || null) : undefined,
+    startDate: start,
+    endDate: end,
+    durationDays: duration,
+    jobStatus: status,
+    tentative: input.tentative !== undefined ? input.tentative : undefined,
   });
 
   // Spell out exactly what changed (before→after), prefixed with which job.
@@ -453,17 +494,11 @@ export async function setJobTentative(
   scope: TenantScope,
   id: string,
   tentative: boolean,
+  opts: { expectedVersion?: number } = {},
 ) {
-  const job = await prisma.task.findFirst({
-    where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-    select: { id: true },
-  });
-  if (!job) throw new ForbiddenError("Job not found");
-  const updated = await prisma.task.update({
-    where: { id },
-    data: { tentative },
-    include: JOB_INCLUDE,
-  });
+  const job = await findLiveJob(scope, id);
+  assertVersion(job, opts.expectedVersion);
+  const updated = await writeJob(scope, id, opts.expectedVersion, { tentative });
   await writeAudit(scope, { entity: "job", entityId: id, action: "updated", summary: `${jobRef(updated)}: ${tentative ? "Marked tentative" : "Marked confirmed"}` });
   return updated;
 }
@@ -475,6 +510,8 @@ export interface RescheduleInput {
   /** Explicit status to store as-is (the board's Undo restores the snapshot's
    *  status). Omitted = keep In Progress / Completed, otherwise derive. */
   jobStatus?: JobStatus;
+  /** Optimistic lock — see UpdateJobInput.expectedVersion. */
+  expectedVersion?: number;
 }
 
 /** Move/resize/reassign a job. Used by drag-drop and the dropdown editors. */
@@ -483,10 +520,8 @@ export async function rescheduleJob(
   id: string,
   input: RescheduleInput,
 ) {
-  const job = await prisma.task.findFirst({
-    where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-  });
-  if (!job) throw new ForbiddenError("Job not found");
+  const job = await findLiveJob(scope, id);
+  assertVersion(job, input.expectedVersion);
   if (input.technicianId) await assertPersonInScope(scope, input.technicianId);
 
   const nextStart =
@@ -515,18 +550,14 @@ export async function rescheduleJob(
   // doesn't silently reset a multi-day job back to 1 day. Keep 0 ("days TBD").
   const storedDuration =
     nextDuration === 0 ? 0 : nextDuration && nextDuration > 0 ? nextDuration : 1;
-  const updated = await prisma.task.update({
-    where: { id },
-    data: {
-      startDate: start,
-      endDate: end,
-      durationDays: storedDuration,
-      technicianId: nextTech || null,
-      // deriveSchedule already falls back to UNCONFIRMED for an undated job
-      // unless it was In Progress / Completed (those keep their status).
-      jobStatus: status,
-    },
-    include: JOB_INCLUDE,
+  const updated = await writeJob(scope, id, input.expectedVersion, {
+    startDate: start,
+    endDate: end,
+    durationDays: storedDuration,
+    technicianId: nextTech || null,
+    // deriveSchedule already falls back to UNCONFIRMED for an undated job
+    // unless it was In Progress / Completed (those keep their status).
+    jobStatus: status,
   });
 
   // Describe exactly what changed so the history reads clearly: a move, a
@@ -562,29 +593,83 @@ export async function setJobStatus(
   scope: TenantScope,
   id: string,
   jobStatus: JobStatus,
+  opts: { expectedVersion?: number } = {},
 ) {
-  const job = await prisma.task.findFirst({
-    where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-    select: { id: true },
-  });
-  if (!job) throw new ForbiddenError("Job not found");
-  const updated = await prisma.task.update({
-    where: { id },
-    data: { jobStatus },
-    include: JOB_INCLUDE,
-  });
+  const job = await findLiveJob(scope, id);
+  assertVersion(job, opts.expectedVersion);
+  const updated = await writeJob(scope, id, opts.expectedVersion, { jobStatus });
   await writeAudit(scope, { entity: "job", entityId: id, action: "status", summary: `${jobRef(updated)}: Status → ${lbl(STATUS_LABEL, jobStatus)}` });
   return updated;
 }
 
+/**
+ * SOFT delete: the job (and its comments, attachments, assignments) stays in
+ * the database, hidden everywhere, and can be restored from "Recently deleted"
+ * for DELETED_KEEP_DAYS. Same permission as editing a job (team scope).
+ */
 export async function deleteJob(scope: TenantScope, id: string) {
-  const job = await prisma.task.findFirst({
-    where: { id, kind: "FIELD_SERVICE", ...scope.team() },
-    select: { id: true, title: true, soNumber: true, customerName: true },
+  const job = await findLiveJob(scope, id);
+  const res = await prisma.task.updateMany({
+    where: { id, orgId: scope.ctx.orgId, kind: "FIELD_SERVICE", ...NOT_DELETED },
+    data: { deletedAt: new Date(), deletedById: scope.ctx.userId, version: { increment: 1 } },
   });
-  if (!job) throw new ForbiddenError("Job not found");
-  await prisma.task.delete({ where: { id } });
+  if (res.count === 0) throw new ForbiddenError("Job not found");
   await writeAudit(scope, { entity: "job", entityId: id, action: "deleted", summary: `Deleted ${jobRef(job)}` });
+}
+
+/** Display names for a set of user ids (name → username → email). */
+async function userNames(ids: (string | null)[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((x): x is string => !!x))];
+  if (!unique.length) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, name: true, username: true, email: true },
+  });
+  return new Map(users.map((u) => [u.id, u.name ?? u.username ?? u.email ?? "someone"]));
+}
+
+/** Jobs deleted in the last DELETED_KEEP_DAYS that this caller could restore (newest first). */
+export async function listDeletedJobs(scope: TenantScope): Promise<DeletedItemRow[]> {
+  const rows = await prisma.task.findMany({
+    where: { kind: "FIELD_SERVICE", ...recentlyDeleted(), ...scope.team() },
+    include: { technician: { select: { name: true, username: true, email: true } } },
+    orderBy: { deletedAt: "desc" },
+    take: 200,
+  });
+  const names = await userNames(rows.map((r) => r.deletedById));
+  return rows.map((r) => ({
+    id: r.id,
+    label: jobRef(r),
+    detail: r.technician ? (r.technician.name ?? r.technician.username ?? r.technician.email) : "Unassigned",
+    deletedAt: r.deletedAt!.toISOString(),
+    deletedByName: r.deletedById ? (names.get(r.deletedById) ?? null) : null,
+  }));
+}
+
+/**
+ * Bring a soft-deleted job back (Undo / "Recently deleted"). Same permission as
+ * deleting it. Refused when a live job has taken its SO + title meanwhile.
+ */
+export async function restoreJob(scope: TenantScope, id: string) {
+  const job = await prisma.task.findFirst({
+    where: { id, kind: "FIELD_SERVICE", ...recentlyDeleted(), ...scope.team() },
+  });
+  if (!job) throw new ForbiddenError("That job is no longer in Recently deleted.");
+  try {
+    await assertUniqueSoTitle(scope, job.soNumber, job.title, id);
+  } catch (e) {
+    if (!(e instanceof ForbiddenError)) throw e;
+    throw new ForbiddenError(
+      `Can't restore "${job.title}": another job now has SO "${job.soNumber ?? "—"}" with the same title. Rename that job first.`,
+    );
+  }
+  const res = await prisma.task.updateMany({
+    where: { id, orgId: scope.ctx.orgId, kind: "FIELD_SERVICE", deletedAt: { not: null } },
+    data: { deletedAt: null, deletedById: null, version: { increment: 1 } },
+  });
+  if (res.count === 0) throw new ForbiddenError("That job is no longer in Recently deleted.");
+  await writeAudit(scope, { entity: "job", entityId: id, action: "restored", summary: `Restored ${jobRef(job)}` });
+  return prisma.task.findUniqueOrThrow({ where: { id }, include: JOB_INCLUDE });
 }
 
 // ─────────────────────────── Job comment thread ───────────────────────────
@@ -624,7 +709,7 @@ async function assertJobInScope(
   jobId: string,
 ): Promise<{ title: string; soNumber: string | null; customerName: string | null }> {
   const job = await prisma.task.findFirst({
-    where: { id: jobId, kind: "FIELD_SERVICE", ...scope.team() },
+    where: { id: jobId, kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team() },
     select: { title: true, soNumber: true, customerName: true },
   });
   if (!job) throw new ForbiddenError("Job not found");
@@ -695,7 +780,7 @@ export async function addJobComment(scope: TenantScope, jobId: string, body: str
 export async function editJobComment(scope: TenantScope, noteId: string, body: string): Promise<JobNoteRow> {
   const text = body.trim();
   if (!text) throw new ForbiddenError("A comment can't be empty — delete it instead.");
-  const note = await prisma.jobNote.findFirst({ where: { id: noteId, orgId: scope.ctx.orgId } });
+  const note = await prisma.jobNote.findFirst({ where: { id: noteId, orgId: scope.ctx.orgId, job: NOT_DELETED } });
   if (!note) throw new ForbiddenError("Comment not found");
   if (note.authorId !== scope.ctx.userId) throw new ForbiddenError("You can only edit your own comments.");
   const updated = await prisma.jobNote.update({
@@ -707,7 +792,7 @@ export async function editJobComment(scope: TenantScope, noteId: string, body: s
 
 /** Delete own comment; org admins may delete anyone's. */
 export async function deleteJobComment(scope: TenantScope, noteId: string): Promise<void> {
-  const note = await prisma.jobNote.findFirst({ where: { id: noteId, orgId: scope.ctx.orgId } });
+  const note = await prisma.jobNote.findFirst({ where: { id: noteId, orgId: scope.ctx.orgId, job: NOT_DELETED } });
   if (!note) throw new ForbiddenError("Comment not found");
   if (note.authorId !== scope.ctx.userId && !scope.ctx.isOrgAdmin) {
     throw new ForbiddenError("You can only delete your own comments.");

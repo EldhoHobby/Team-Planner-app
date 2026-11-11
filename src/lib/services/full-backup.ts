@@ -158,6 +158,8 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.project.findMany({ where: { orgId } }),
     prisma.board.findMany({ where: { project: { orgId } } }),
     prisma.boardColumn.findMany({ where: { board: { project: { orgId } } } }),
+    // Soft-deleted jobs / tasks ("Recently deleted") are included ON PURPOSE —
+    // with their deletedAt, so they stay deleted (and restorable) after a restore.
     prisma.task.findMany({ where: { orgId } }),
     prisma.taskAssignment.findMany({ where: { task: { orgId } } }),
     prisma.attachment.findMany({ where: { orgId } }),
@@ -167,7 +169,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.holiday.findMany({ where: { orgId } }),
     prisma.timesheet.findMany({ where: { orgId } }),
     prisma.timesheetEntry.findMany({ where: { timesheet: { orgId } } }),
-    prisma.techTask.findMany({ where: { orgId } }),
+    prisma.techTask.findMany({ where: { orgId } }), // incl. soft-deleted (see tasks above)
     prisma.techTaskNote.findMany({ where: { orgId } }),
     prisma.jobNote.findMany({ where: { orgId } }),
     prisma.changeHistory.findMany({ where: { orgId } }),
@@ -251,6 +253,18 @@ function friendlyRestoreError(e: unknown, what: string): Error {
   );
 }
 
+/** Refuse a file whose child rows point at a parent that is not in the file. */
+function assertParentsInFile(backup: FullBackup, checks: [child: string, fk: string, parent: string][]): void {
+  for (const [child, fk, parent] of checks) {
+    const parentIds = new Set(rows(backup, parent).map((r) => r.id as string));
+    if (rows(backup, child).some((r) => !parentIds.has(r[fk] as string))) {
+      throw new BackupFileError(
+        `The backup file is inconsistent ("${child}" refers to "${parent}" rows that are not in the file), so it was refused — nothing was changed.`,
+      );
+    }
+  }
+}
+
 const TX_OPTIONS: { timeout: number; maxWait: number; isolationLevel: Prisma.TransactionIsolationLevel } = {
   // Big restores move thousands of rows — give the transaction room.
   timeout: 120_000,
@@ -289,8 +303,42 @@ export async function restoreFullBackup(
   const fileHasAgreements = Array.isArray(backup.data?.saCustomers);
   const fileHasHistory = Array.isArray(backup.data?.changeHistory);
 
+  // Rows without an orgId of their own are only as safe as the parent they
+  // point at: every parent must be a row of THIS file (which is re-stamped to
+  // this org), so an edited file can't attach rows to another org's data.
+  assertParentsInFile(backup, [
+    ["teamMemberships", "teamId", "teams"],
+    ["workGroupMemberships", "workGroupId", "workGroups"],
+    ["boards", "projectId", "projects"],
+    ["boardColumns", "boardId", "boards"],
+    ["taskAssignments", "taskId", "tasks"],
+    ["timesheetEntries", "timesheetId", "timesheets"],
+  ]);
+  const usernames = users.map((u) => u.username as string);
+  const emails = users.map((u) => u.email).filter(Boolean) as string[];
+
   try {
     await prisma.$transaction(async (tx) => {
+      // People are matched by id / username / email across the whole database
+      // (that is what lets logins survive a machine move). Never let that reach
+      // into ANOTHER organisation: refuse a file naming one of its people.
+      const foreign = await tx.user.findFirst({
+        where: {
+          memberships: { some: { NOT: { orgId } } },
+          OR: [
+            { id: { in: fileUserIds } },
+            { username: { in: usernames } },
+            ...(emails.length ? [{ email: { in: emails } }] : []),
+          ],
+        },
+        select: { id: true },
+      });
+      if (foreign) {
+        throw new BackupFileError(
+          "This backup names a person who belongs to a different organisation on this server, so it was refused — nothing was changed.",
+        );
+      }
+
       // A v1 file has no attachment rows. Keep the org's current ones (read
       // BEFORE the wipe — they cascade with their tasks) and put them back at
       // the end for the tasks + uploaders that still exist.
@@ -331,11 +379,12 @@ export async function restoreFullBackup(
 
       // ── 3. People. Remove username/email collisions from OTHER ids first
       //       (e.g. this machine's setup-wizard account), then upsert by id. ──
-      const usernames = users.map((u) => u.username as string);
-      const emails = users.map((u) => u.email).filter(Boolean) as string[];
+      //       Only accounts with no membership in another org can be removed
+      //       (this org's memberships were wiped in step 1).
       await tx.user.deleteMany({
         where: {
           id: { notIn: fileUserIds },
+          memberships: { none: { NOT: { orgId } } },
           OR: [{ username: { in: usernames } }, ...(emails.length ? [{ email: { in: emails } }] : [])],
         },
       });

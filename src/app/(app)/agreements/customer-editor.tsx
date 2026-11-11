@@ -88,8 +88,8 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
       dirty={dirty}
       confirmClose={customer ? "Your changes to this customer have not been saved." : "This customer has not been added yet."}
     >
-      <div className="grid grid-cols-2 gap-3">
-        {text("name", "Customer name", "col-span-2")}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {text("name", "Customer name", "sm:col-span-2")}
         <div className="space-y-1">
           {text("soNumber", "SO # (first system's sales order)")}
           <label className="flex items-center gap-2 text-xs">
@@ -114,10 +114,10 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
         {text("softwareVersion", "Software version")}
         {text("wvPeVersion", "WV / PE version")}
         {text("qwebLicenses", "QWEB licenses")}
-        {text("server", "Server", "col-span-2")}
+        {text("server", "Server", "sm:col-span-2")}
         {text("serverInstall", "Server install date")}
         {text("lastServerSo", "Last server SO #")}
-        <label className={cn(field, "col-span-2")}>
+        <label className={cn(field, "sm:col-span-2")}>
           <span className={lbl}>Notes</span>
           <textarea value={f.notes} onChange={set("notes")} rows={3} className="w-full rounded-md border bg-background p-2 text-sm" />
         </label>

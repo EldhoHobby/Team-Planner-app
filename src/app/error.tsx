@@ -1,6 +1,6 @@
 "use client";
 
-// Error screen OUTSIDE the app shell: the sign-in / setup / invite / reset
+// Error screen OUTSIDE the app shell: the sign-in / setup / set-password
 // pages, and failures of the shell's own layout (e.g. the database is down,
 // so the session can't be read). Rendered inside the root layout, so the app's
 // styles are available. Raw error text only in development.

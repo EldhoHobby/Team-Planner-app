@@ -14,7 +14,7 @@ export default async function AccountPage() {
   await recordPageView(scope, "Account");
 
   return (
-    <div className="mx-auto max-w-2xl p-6">
+    <div className="mx-auto max-w-2xl p-4 md:p-6">
       <PageHeader title="Account" description="Your name, sign-in details and password." className="mb-6" />
       <AccountClient user={{ username: user.username, email: user.email, name: user.name }} />
     </div>

@@ -56,7 +56,7 @@ beforeEach(() => {
   db.state.task = {
     id: "t1", orgId: "org1", ownerId: "u1", title: "Fix pump", notes: null,
     priority: 3, targetDate: null, state: "TODO", location: null,
-    completedAt: null, externalId: null, version: 1,
+    completedAt: null, externalId: null, version: 1, deletedAt: null,
   };
 });
 

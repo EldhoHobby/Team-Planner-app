@@ -4,8 +4,9 @@ Running record of what has shipped, what's live where, what's paused, and the
 working habits for this project. Complements `CLAUDE.md` (technical brief) and
 `README.md` (features/setup). Update it with every release.
 
-_Last updated: 2026-11-10 (dev at v0.0.43 on `improve/ux-review`; Phase 3 in
-progress, uncommitted; deployment config: `LAN_IP`, compose `ai` profile)._
+_Last updated: 2026-11-10 (dev at v0.0.44 on `improve/ux-review`; Phase 3
+committed, not merged or deployed; deployment config: `LAN_IP`, compose `ai`
+profile)._
 
 ---
 
@@ -13,7 +14,7 @@ progress, uncommitted; deployment config: `LAN_IP`, compose `ai` profile)._
 
 | | Version | Notes |
 |---|---|---|
-| **GitHub `main`** | v0.0.10 | tagged up to `v0.0.10`; v0.0.11–v0.0.40 live on `feature/service-agreements`, v0.0.41–v0.0.43 on `improve/ux-review` (not merged, not tagged yet) |
+| **GitHub `main`** | v0.0.10 | tagged up to `v0.0.10`; v0.0.11–v0.0.40 live on `feature/service-agreements`, v0.0.41–v0.0.44 on `improve/ux-review` (not merged, not tagged yet) |
 | **Production — new PC `10.210.6.233`** | **v0.0.10** | since **2026-11-06**. Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Locally edited Caddyfile (new IP) until the next update switches it to `LAN_IP` in `.env` (`DEPLOY.md` 1.3). Email ingest off. Data moved from SCADA with an in-container `pg_dump` + `docker compose cp` + `pg_restore --clean --if-exists --no-owner`. Auto sign-in (Sysinternals Autologon) planned. See `DEPLOY.md` section 1 |
 | **Old SCADA PC `10.210.4.65`** | v0.0.8 last deployed (stopped) | **retired** 2026-11-06; stack stopped but the PC is kept as a fallback for now. Don't start it while the new PC is live (data would diverge) |
 | **Dev PC `10.210.4.130`** | v0.0.44 | branch **`improve/ux-review`** (on top of `feature/service-agreements`), `planner.localhost`, `docker-compose.yml`. Phases 0–3 of the UX review are committed (v0.0.41–v0.0.44); not merged or deployed yet. The dev DB holds the only copy of the service-agreements data |
@@ -28,6 +29,8 @@ v0.0.11–v0.0.40 are on `feature/service-agreements`, v0.0.41 onward on
 
 | Version | Date | What changed |
 |---|---|---|
+| **v0.0.44** | 2026-11-10 | UX review Phase 3 (committed on `improve/ux-review`, not merged or deployed). **Dashboard:** "Needs attention" strip (overdue / due soon / unassigned jobs / double-booked jobs, each a filter) and "Assigned by me". **Schedule:** single click / Enter opens a job, "⋯" actions menu on bars and cards (`job-bar.tsx`), drops anywhere in a person's lane / week row (`scheduling/board.ts`), "(archived)" lanes for jobs held by archived people, double-click an empty day for a new job. **Agreements:** undo signing, back-dated send / sign, lapsed agreements (own dashboard section), customer row lock against duplicate proposals; workbook code split into `workbook/`. **Shell:** phone layout (top bar + drawer), in-app Help page. **Deploy config upkeep:** Caddyfile reads `LAN_IP` from `.env` and sends security headers, app healthcheck, log rotation, `ollama` behind the compose profile `ai`, pinned base images, `docker-compose.prod.yml` removed; dead code removed (invite flow, old settings stubs, CSV import, prototype importer). |
+| **v0.0.45** | 2026-11-10 | UX review Phase 4/5, part 1 (committed on `improve/ux-review`, not merged or deployed). **Undo delete:** deleting a job or a dashboard task is now a soft delete (`deletedAt` / `deletedById`) with a "Deleted — Undo" notice and a "Recently deleted" window on the Schedule and Dashboard; purged after 30 days by the daily maintenance. **Stale-save protection for jobs:** `Task.version`, every job save is version-checked through one serial queue (`schedule/job-save-queue.ts`); the Jobs sheet exports `version` and skips rows that changed in the app. **Restore hardening:** a full restore refuses a file naming another organisation's people or rows. **Imports:** Departments preview now agrees with Apply. **Tests:** +240 (restore, restore route, Excel importers, tenancy isolation, scope). **Phone layout** for Agreements, Tasks, Projects, Settings, Timesheet. **Clean-up:** dead agreements prototype parser and the unused GHCR workflow removed; report-only Content-Security-Policy header. Migration `20261110120000_soft_delete_and_task_version`. |
 | **v0.0.43** | 2026-11-10 | UX review Phase 2 — one consistent UI layer: `Modal` on native `<dialog>` (focus trap, scroll lock, discard-changes guard), `useConfirm` replaces every `window.confirm` / `alert` / `prompt`, `SaveStatus` for autosave (inputs no longer disabled while saving), `PageHeader`, `FormMessage`, keyboard `DatePicker`; loading / error / not-found pages ("Your session has ended — sign in again"); `actionError` / `logError` (no raw DB messages). Adopted across Schedule, Dashboard (ticket save queue, conflicts keep your text), Timesheet, Agreements (serial save queue), Settings, sign-in. |
 | **v0.0.42** | 2026-11-10 | UX review Phase 1 quick wins: sign-in lands on the Dashboard (`HOME_PATH`), per-page titles, grouped sidebar; login limiter keyed on account + IP; daily purge of expired sessions/links; one session lookup per render. Anyone can create a task for anyone (editing: owner, their managers, admins, assigner). Job editor save errors, safer delete; unassigned jobs shown to non-admins. Any proposal edit bumps its version; signing re-reads lines inside its transaction. Timesheet, audit page and activity fixes. |
 | **v0.0.41** | 2026-11-10 | UX review Phase 0 safety: Owner can't be demoted / archived / renamed by other admins, admins can't archive or demote themselves; **Restore agreements only**; restore uploads via `POST /api/admin/restore` (50 MB); full backup / full restore / reset **Owner-only**; backup format v2; backup sidecar monthly copies + `last-backup` status files; `scripts/backup-offsite.ps1`; DEPLOY.md rewritten for the new production PC. |
@@ -116,9 +119,6 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
   Fixed in the code: the Caddyfile now reads `LAN_IP` from `.env`. At the next
   update, add `LAN_IP=10.210.6.233` to production's `.env` and discard the edit
   (`DEPLOY.md` 1.3) — after that no stash routine is needed.
-- **`.github/workflows/deploy-images.yml`** still builds and pushes images to
-  GHCR for the deleted `docker-compose.prod.yml`. Production builds from its
-  clone, so the workflow is unused — decide whether to remove it.
 - **Auto sign-in on the new PC** (Autologon + lock, BIOS power-on, active
   hours — `DEPLOY.md` 1.4), then test with a reboot.
 - **Old SCADA PC** — retire for good (wipe or repurpose) once the new PC has
@@ -136,8 +136,8 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
 ## Ideas not yet started
 
 UX suggestions offered 2026-10-31: a "Needs attention" strip (overdue + conflicts
-+ unassigned) at the top of the dashboard was the top pick — now being built in
-Phase 3 (uncommitted). Other ideas:
++ unassigned) at the top of the dashboard was the top pick — built in Phase 3
+(v0.0.44). Other ideas:
 recurring jobs, daily agenda email, AI scheduling suggestions, reports page,
 customers directory, project-linking in the New Job dialog.
 

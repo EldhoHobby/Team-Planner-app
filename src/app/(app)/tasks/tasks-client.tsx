@@ -274,7 +274,7 @@ function TaskFormDialog({
         )}
 
         {/* Status + Priority */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="task-status">Status</Label>
             <select
@@ -306,7 +306,7 @@ function TaskFormDialog({
         </div>
 
         {/* Due date + Estimate */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="task-due">
               Due date{" "}
@@ -354,7 +354,7 @@ function TaskFormDialog({
         </div>
 
         {/* Field trip + location */}
-        <div className="grid grid-cols-2 items-end gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end">
           <label className="flex h-9 items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -797,7 +797,7 @@ export function TasksClient({
       <div className="flex h-full flex-col">
         {/* Header */}
         <PageHeader
-          className="mb-0 items-center border-b px-6 py-4"
+          className="mb-0 items-center border-b px-4 py-4 md:px-6"
           title="Tasks"
           actions={
             !noProjects ? (

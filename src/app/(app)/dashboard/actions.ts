@@ -10,8 +10,11 @@ import {
   addTaskComment,
   editTaskComment,
   deleteTaskComment,
+  restoreTechTask,
+  listDeletedTechTasks,
 } from "@/lib/services/tech-tasks";
 import type { TechTaskState, NoteRow } from "@/lib/services/tech-tasks";
+import type { DeletedItemRow } from "@/lib/db/soft-delete";
 import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
 import { actionError } from "@/lib/log";
 
@@ -117,13 +120,38 @@ export async function deleteCommentAction(input: { noteId: string }): Promise<St
   }
 }
 
+/** Soft delete — the task goes to "Recently deleted" (restorable for 30 days). */
 export async function deleteTechTaskAction(input: { id: string }): Promise<State> {
-  const { scope } = await requireScope();
   try {
+    const { scope } = await requireScope();
     await deleteTechTask(scope, input.id);
     revalidatePath("/dashboard");
+    revalidatePath("/schedule"); // targeted-task markers
     return { success: true };
   } catch (e) {
     return actionError("deleteTechTask", e, "Could not delete the task. Please try again.");
+  }
+}
+
+/** Undo a delete / restore from "Recently deleted". */
+export async function restoreTechTaskAction(input: { id: string }): Promise<State> {
+  try {
+    const { scope } = await requireScope();
+    await restoreTechTask(scope, input.id);
+    revalidatePath("/dashboard");
+    revalidatePath("/schedule");
+    return { success: true };
+  } catch (e) {
+    return actionError("restoreTechTask", e, "Could not restore the task. Please try again.");
+  }
+}
+
+/** Dashboard tasks deleted in the last 30 days that the viewer may restore. */
+export async function listDeletedTechTasksAction(): Promise<{ items?: DeletedItemRow[]; error?: string }> {
+  try {
+    const { scope } = await requireScope();
+    return { items: await listDeletedTechTasks(scope) };
+  } catch (e) {
+    return actionError("listDeletedTechTasks", e, "Could not load recently deleted tasks.");
   }
 }

@@ -119,7 +119,7 @@ export function PipelineBoard({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or SO #" className="w-64" aria-label="Filter by customer or SO #" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or SO #" className="w-full sm:w-64" aria-label="Filter by customer or SO #" />
         {canEdit && (
           <p className="text-xs text-muted-foreground">
             Use the button on a card for its next step, or drag it to another column (drag to Declined / withdrawn to close it).

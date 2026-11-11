@@ -3,6 +3,7 @@ import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "./audit";
 import { CONTAINER_PROJECT_NAME, findContainerProjectId } from "./field-service";
+import { NOT_DELETED } from "@/lib/db/soft-delete";
 
 /**
  * Projects in scope. By default only active ones (the Tasks page relies on
@@ -21,13 +22,14 @@ export async function listProjects(scope: TenantScope, opts: { includeArchived?:
       where: scope.whereTeam(opts.includeArchived ? {} : { archived: false }),
       include: {
         team: { select: { name: true } },
-        _count: { select: { tasks: true } },
+        // Soft-deleted tasks / jobs (Recently deleted) don't count.
+        _count: { select: { tasks: { where: NOT_DELETED } } },
       },
       orderBy: { createdAt: "desc" },
     }),
     prisma.task.groupBy({
       by: ["projectId"],
-      where: scope.whereTeam({ kind: "FIELD_SERVICE" as const }),
+      where: scope.whereTeam({ kind: "FIELD_SERVICE" as const, ...NOT_DELETED }),
       _count: { _all: true },
     }),
     findContainerProjectId(scope),
@@ -45,6 +47,8 @@ export async function listProjects(scope: TenantScope, opts: { includeArchived?:
  * name. Shared with the admin Excel import (data-io.ts importProjects).
  */
 export async function isSystemProject(scope: TenantScope, id: string): Promise<boolean> {
+  // Deliberately counts soft-deleted jobs too: a project still holding jobs
+  // that can be restored keeps its system protection until they are purged.
   const [containerId, jobs] = await Promise.all([
     findContainerProjectId(scope),
     prisma.task.count({ where: { projectId: id, orgId: scope.ctx.orgId, kind: "FIELD_SERVICE" } }),

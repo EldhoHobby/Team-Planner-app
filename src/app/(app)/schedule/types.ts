@@ -40,6 +40,8 @@ export type JobRow = {
   endDate: string | null;
   durationDays: number | null;
   tentative: boolean;
+  /** Optimistic-lock version — job saves send it back (see job-save-queue.ts). */
+  version: number;
 };
 
 export type TechTimeOff = {
@@ -59,6 +61,10 @@ export type JobFormState = {
   success?: boolean;
   /** Set by duplicateJobAction — the id of the newly created copy. */
   jobId?: string;
+  /** The job's new version after a successful save (adopt it for the next save). */
+  version?: number;
+  /** Someone else saved first (StaleSaveError) — nothing was written. */
+  stale?: boolean;
 };
 
 export type ImportState = {

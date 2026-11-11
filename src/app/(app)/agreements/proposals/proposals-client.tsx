@@ -21,7 +21,7 @@ import { MonthPicker } from "../month-picker";
 import { printInFrame } from "../print-frame";
 import type { BulkRow } from "../types";
 
-const SELECT = "h-9 rounded-md border bg-background px-2 text-sm";
+const SELECT = "h-9 max-w-full rounded-md border bg-background px-2 text-sm";
 /** Waiting on the customer (Pending / Expired – still waiting): listed in their own section by default. */
 const isWaiting = (s: SaCustomerStatus) => s === "PENDING" || s === "EXPIRED_WAITING";
 const labels = (l: SaAgreement[]) => l.map((a) => AGREEMENT_LABELS[a]).join(", ");
@@ -307,13 +307,13 @@ export function ProposalsClient({
       })()}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or SO #" className="w-56" aria-label="Search proposals" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or SO #" className="w-full sm:w-56" aria-label="Search proposals" />
         <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Proposal status">
           <option value="OPEN">Open (draft + sent)</option>
           <option value="">All</option>
           {PROPOSAL_STATUSES.map((s) => <option key={s} value={s}>{PROPOSAL_STATUS_LABELS[s]}</option>)}
         </select>
-        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
           <span>Renews agreements ending</span>
           <MonthPicker value={month} onChange={setMonth} counts={monthCounts} countLabel="proposals" ariaLabel="Renews agreements ending" />
         </div>

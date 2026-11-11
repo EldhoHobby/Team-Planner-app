@@ -28,6 +28,7 @@ import {
   Plane,
   Printer,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -50,7 +51,18 @@ import {
   type PersonCapacity,
 } from "@/lib/scheduling/board";
 import { barStyle, dotStyle, softStyle, hatchStyle } from "@/lib/scheduling/colors";
-import { rescheduleJobAction, setJobStatusAction, duplicateJobAction, addJobCommentAction } from "../tasks/actions";
+import {
+  rescheduleJobAction,
+  setJobStatusAction,
+  duplicateJobAction,
+  addJobCommentAction,
+  restoreJobAction,
+  listDeletedJobsAction,
+} from "../tasks/actions";
+import { useJobSaveQueue } from "./job-save-queue";
+import { UndoNotice, type UndoNoticeState } from "@/components/ui/undo-notice";
+import { RecentlyDeletedDialog } from "@/components/ui/recently-deleted-dialog";
+import { restoreTechTaskAction } from "../dashboard/actions";
 import { fmtDay, fmtDayRange, jobLabel } from "./format";
 import {
   ContextMenu,
@@ -177,6 +189,16 @@ export function ScheduleClient({
   // Local mirror of server data so drags apply instantly (optimistic).
   const [jobs, setJobs] = useState<JobRow[]>(propJobs);
   useEffect(() => setJobs(propJobs), [propJobs]);
+  // Serial, version-checked job saves (board + editor share it): consecutive
+  // moves of one job wait for each other and carry the latest version.
+  const runJobSave = useJobSaveQueue(propJobs);
+  // Put a job's board fields back after a refused save (stale / error).
+  const revertLocal = (jobId: string, snap: JobSnapshot) =>
+    setJobs((js) => js.map((j) => (j.id === jobId ? { ...j, ...snap } : j)));
+  // "Deleted … — Undo" (jobs from the editor, tasks from the ticket) and the
+  // "Recently deleted" dialog.
+  const [deletedNotice, setDeletedNotice] = useState<UndoNoticeState | null>(null);
+  const [binOpen, setBinOpen] = useState(false);
 
   // Persisted view — restored after mount (avoids SSR hydration mismatch).
   const [view, setView] = useState<"timeline" | "calendar">("timeline");
@@ -229,6 +251,7 @@ export function ScheduleClient({
   const undoSeq = useRef(0);
   const showUndo = (label: string, run: () => void, jobId?: string) => {
     if (undoTimer.current) clearTimeout(undoTimer.current);
+    setDeletedNotice(null); // one bottom toast at a time
     setUndo({ id: ++undoSeq.current, label, run, jobId });
     undoTimer.current = setTimeout(() => setUndo(null), 8000);
   };
@@ -307,7 +330,7 @@ export function ScheduleClient({
   // in the background, so it never interrupts active work or forces focus.
   const draggingRef = useRef(false);
   const busyRef = useRef(false);
-  busyRef.current = newOpen || importOpen || selected !== null;
+  busyRef.current = newOpen || importOpen || selected !== null || binOpen;
   useEffect(() => {
     const id = setInterval(() => {
       if (!draggingRef.current && !busyRef.current && document.visibilityState === "visible") {
@@ -627,17 +650,20 @@ export function ScheduleClient({
           : `Moved “${jobLabel(job)}”`;
 
     startTransition(async () => {
-      const res = await rescheduleJobAction({
-        jobId,
-        ...(opts.technicianId !== undefined ? { technicianId: opts.technicianId } : {}),
-        ...(opts.startDate !== undefined
-          ? { startDate: opts.startDate ? ymd(toUtcMidnight(opts.startDate)) : null }
-          : {}),
-      });
+      const res = await runJobSave(jobId, (expectedVersion) =>
+        rescheduleJobAction({
+          jobId,
+          ...(opts.technicianId !== undefined ? { technicianId: opts.technicianId } : {}),
+          ...(opts.startDate !== undefined
+            ? { startDate: opts.startDate ? ymd(toUtcMidnight(opts.startDate)) : null }
+            : {}),
+          expectedVersion,
+        }),
+      );
       // Only offer Undo once the server accepted the change — otherwise Undo
       // would write the old values back for a change that never happened.
-      if (settled(res))
-        showUndo(label, () => revertTo(jobId, before), jobId);
+      if (settled(res)) showUndo(label, () => revertTo(jobId, before), jobId);
+      else revertLocal(jobId, before); // refused (stale / error): put it back
       router.refresh(); // reconcile with server truth
     });
   };
@@ -648,16 +674,21 @@ export function ScheduleClient({
   // persisted; rescheduleJob re-derives the end date from start + duration and
   // stores the snapshot's status as-is (so Undo brings back e.g. Completed).
   const revertTo = (jobId: string, snap: JobSnapshot) => {
-    setJobs((js) => js.map((j) => (j.id === jobId ? { ...j, ...snap } : j)));
+    const current = jobs.find((j) => j.id === jobId);
+    const after = current ? snapshotOf(current) : null;
+    revertLocal(jobId, snap);
     startTransition(async () => {
-      const res = await rescheduleJobAction({
-        jobId,
-        startDate: snap.startDate,
-        technicianId: snap.technicianId,
-        durationDays: snap.durationDays ?? undefined,
-        jobStatus: snap.jobStatus,
-      });
-      settled(res);
+      const res = await runJobSave(jobId, (expectedVersion) =>
+        rescheduleJobAction({
+          jobId,
+          startDate: snap.startDate,
+          technicianId: snap.technicianId,
+          durationDays: snap.durationDays ?? undefined,
+          jobStatus: snap.jobStatus,
+          expectedVersion,
+        }),
+      );
+      if (!settled(res) && after) revertLocal(jobId, after);
       router.refresh();
     });
   };
@@ -675,13 +706,16 @@ export function ScheduleClient({
   const commitResize = (jobId: string, durationDays: number, before: JobSnapshot) => {
     const job = jobs.find((j) => j.id === jobId);
     startTransition(async () => {
-      const res = await rescheduleJobAction({ jobId, durationDays });
+      const res = await runJobSave(jobId, (expectedVersion) =>
+        rescheduleJobAction({ jobId, durationDays, expectedVersion }),
+      );
       if (settled(res))
         showUndo(
           `Resized “${job ? jobLabel(job) : "job"}” to ${durationDays} day${durationDays === 1 ? "" : "s"}`,
           () => revertTo(jobId, before),
           jobId,
         );
+      else revertLocal(jobId, before);
       router.refresh();
     });
   };
@@ -713,17 +747,33 @@ export function ScheduleClient({
     const before = snapshotOf(job);
     setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: "COMPLETED" } : j)));
     startTransition(async () => {
-      const res = await setJobStatusAction({ jobId: job.id, jobStatus: "COMPLETED" });
+      const res = await runJobSave(job.id, (expectedVersion) =>
+        setJobStatusAction({ jobId: job.id, jobStatus: "COMPLETED", expectedVersion }),
+      );
       if (settled(res))
         showUndo(`Completed “${jobLabel(job)}”`, () => {
           setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: before.jobStatus } : j)));
           startTransition(async () => {
-            const undoRes = await setJobStatusAction({ jobId: job.id, jobStatus: before.jobStatus });
-            settled(undoRes);
+            const undoRes = await runJobSave(job.id, (expectedVersion) =>
+              setJobStatusAction({ jobId: job.id, jobStatus: before.jobStatus, expectedVersion }),
+            );
+            if (!settled(undoRes)) {
+              setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: "COMPLETED" } : j)));
+            }
             router.refresh();
           });
         }, job.id);
+      else revertLocal(job.id, before);
       router.refresh();
+    });
+  };
+  // A job deleted from the editor: offer Undo right away (it is in Recently deleted).
+  const onJobDeleted = (job: JobRow) => {
+    setUndo(null); // one bottom toast at a time
+    setDeletedNotice({
+      id: Date.now(),
+      text: `Deleted “${jobLabel(job)}”`,
+      undo: () => restoreJobAction({ jobId: job.id }),
     });
   };
   const duplicateFromMenu = (job: JobRow) => {
@@ -968,6 +1018,14 @@ export function ScheduleClient({
           </Button>
           <Button variant="outline" size="sm" title="Print the current view (landscape)" onClick={() => window.print()}>
             <Printer className="mr-1.5 h-4 w-4" /> Print
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            title="Jobs deleted in the last 30 days — restore one"
+            onClick={() => setBinOpen(true)}
+          >
+            <Trash2 className="mr-1.5 h-4 w-4" /> Recently deleted
           </Button>
           <Button size="sm" onClick={() => openNewJob(null)}>
             <Plus className="mr-1.5 h-4 w-4" /> New job
@@ -1436,6 +1494,14 @@ export function ScheduleClient({
           currentUserId={currentUserId}
           isAdmin={isAdmin}
           onClose={() => setTaskTicketId(null)}
+          onDeleted={(t) => {
+            setUndo(null);
+            setDeletedNotice({
+              id: Date.now(),
+              text: `Deleted task “${t.title}”`,
+              undo: () => restoreTechTaskAction({ id: t.id }),
+            });
+          }}
         />
       )}
 
@@ -1458,8 +1524,27 @@ export function ScheduleClient({
           currentUserId={currentUserId}
           isAdmin={isAdmin}
           historyDays={historyDays}
+          runJobSave={runJobSave}
+          onDeleted={onJobDeleted}
         />
       )}
+      {binOpen ? (
+        <RecentlyDeletedDialog
+          noun="job"
+          load={listDeletedJobsAction}
+          restore={(id) => restoreJobAction({ jobId: id })}
+          onRestored={() => router.refresh()}
+          onClose={() => setBinOpen(false)}
+        />
+      ) : null}
+      {deletedNotice ? (
+        <UndoNotice
+          key={deletedNotice.id}
+          notice={deletedNotice}
+          onClose={() => setDeletedNotice(null)}
+          onUndone={() => router.refresh()}
+        />
+      ) : null}
 
       {menu && (
         <ContextMenu

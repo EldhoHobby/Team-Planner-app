@@ -111,7 +111,7 @@ export function PeopleClient({
   const viewerIsOwner = people.some((p) => selfIds.includes(p.id) && p.orgRole === "OWNER");
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-6">
+    <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
       <PageHeader
         title="People"
         description="One list for everyone. Each person signs in with their own username and can be put on the schedule. Group people into departments; department managers see their department's people on the dashboard."
@@ -241,13 +241,13 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
         ) : (
           <ul className="divide-y">
             {ordered.map(({ dept: d, depth }) => (
-              <li key={d.id} className="flex items-center justify-between gap-3 py-2" style={{ paddingLeft: depth * 20 }}>
+              <li key={d.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2" style={{ paddingLeft: depth * 20 }}>
                 {depth > 0 ? <span className="text-xs text-muted-foreground">↳</span> : null}
                 <input
                   defaultValue={d.name}
                   aria-label={`Department name: ${d.name}`}
                   onBlur={(e) => rename(d.id, e.currentTarget, d.name)}
-                  className="flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-sm font-medium hover:border-input focus:border-input focus-visible:outline-none"
+                  className="min-w-[8rem] flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-sm font-medium hover:border-input focus:border-input focus-visible:outline-none"
                 />
                 <select
                   className={`${SELECT} h-7 w-36 text-xs`}
@@ -440,7 +440,7 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <CardTitle className="text-lg">Add a person</CardTitle>
             <CardDescription>Creates their sign-in and a set-password link to hand off.</CardDescription>
@@ -452,7 +452,7 @@ function AddPersonCard({ departments, workGroups }: { departments: Dept[]; workG
       </CardHeader>
       {open ? (
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label htmlFor="add-name">Name</Label>
               <Input id="add-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
@@ -1146,7 +1146,7 @@ function ArchivedCard({ people }: { people: Person[] }) {
         {people.length === 0 ? <p className="text-sm text-muted-foreground">No archived people.</p> : null}
         <ul className="divide-y">
           {people.map((p) => (
-            <li key={p.id} className="flex items-center justify-between py-2 text-sm">
+            <li key={p.id} className="flex items-center justify-between gap-3 py-2 text-sm">
               <span className="text-muted-foreground">
                 {displayName(p)} · {handleOf(p)}
                 {!p.schedulable ? (
@@ -1252,7 +1252,7 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
         ) : (
           <ul className="divide-y">
             {timeOff.map((t) => (
-              <li key={t.id} className="flex items-center justify-between py-2 text-sm">
+              <li key={t.id} className="flex items-center justify-between gap-3 py-2 text-sm">
                 <span>
                   <span className="font-medium">{nameOf(t)}</span>
                   <span className="ml-2 text-muted-foreground">{fmtRange(t.startDate, t.endDate)}{t.reason ? ` · ${t.reason}` : ""}</span>
@@ -1303,7 +1303,7 @@ function CopyLink({ link }: { link: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="flex gap-2">
-      <Input readOnly value={link} aria-label="Set-password link" className="font-mono text-xs" />
+      <Input readOnly value={link} aria-label="Set-password link" className="min-w-0 font-mono text-xs" />
       <Button
         type="button"
         variant="outline"

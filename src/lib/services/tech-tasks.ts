@@ -5,6 +5,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "@/lib/services/audit";
 import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
 import { assertFreshWrite, versionGuard, StaleSaveError } from "@/lib/db/optimistic";
+import { NOT_DELETED, recentlyDeleted, type DeletedItemRow } from "@/lib/db/soft-delete";
 import { logError } from "@/lib/log";
 import { computeConflicts, toUtcMidnight, type JobLite } from "@/lib/scheduling/calc";
 import type { Prisma, TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
@@ -328,7 +329,7 @@ export async function listDashboard(
     { priority: "asc" }, { targetDate: "asc" }, { createdAt: "asc" },
   ];
   const tasks = await prisma.techTask.findMany({
-    where: { orgId, ownerId: { in: ownerIds }, ...openOrCompletedSince(completedSince) },
+    where: { orgId, ownerId: { in: ownerIds }, ...NOT_DELETED, ...openOrCompletedSince(completedSince) },
     orderBy: taskOrder,
   });
 
@@ -339,6 +340,7 @@ export async function listDashboard(
       orgId,
       assignedById: scope.ctx.userId,
       ownerId: { notIn: ownerIds },
+      ...NOT_DELETED,
       ...openOrCompletedSince(completedSince),
     },
     include: { owner: { select: { name: true, username: true, email: true } } },
@@ -349,6 +351,7 @@ export async function listDashboard(
   const older = await prisma.techTask.findFirst({
     where: {
       orgId,
+      ...NOT_DELETED,
       AND: [
         { OR: [{ ownerId: { in: ownerIds } }, { assignedById: scope.ctx.userId }] },
         completedBefore(completedSince),
@@ -372,6 +375,7 @@ export async function listDashboard(
     where: {
       orgId,
       kind: "FIELD_SERVICE",
+      ...NOT_DELETED,
       OR: [{ jobStatus: null }, { jobStatus: { not: "COMPLETED" } }],
     },
     include: { technician: { select: { name: true, email: true, username: true } } },
@@ -478,6 +482,7 @@ export async function listTargetedTasks(scope: TenantScope): Promise<TargetedTas
   const rows = await prisma.techTask.findMany({
     where: {
       orgId: scope.ctx.orgId,
+      ...NOT_DELETED,
       state: { not: "DONE" },
       targetDate: { not: null },
       owner: { archived: false, isActive: true },
@@ -582,7 +587,7 @@ function serializeNote(n: {
 
 /** The full thread for a task, oldest first. Permission = task visibility. */
 export async function getTaskThread(scope: TenantScope, taskId: string): Promise<NoteRow[]> {
-  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
+  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!task) throw new ForbiddenError("Task not found");
   await assertCanEditTask(scope, task);
   const notes = await prisma.techTaskNote.findMany({
@@ -595,7 +600,7 @@ export async function getTaskThread(scope: TenantScope, taskId: string): Promise
 export async function addTaskComment(scope: TenantScope, taskId: string, body: string): Promise<NoteRow> {
   const text = body.trim();
   if (!text) throw new ForbiddenError("Write a comment first.");
-  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
+  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!task) throw new ForbiddenError("Task not found");
   await assertCanEditTask(scope, task);
   const author = await noteAuthor(scope);
@@ -617,7 +622,7 @@ export async function editTaskComment(scope: TenantScope, noteId: string, body: 
   const text = body.trim();
   if (!text) throw new ForbiddenError("A comment can't be empty — delete it instead.");
   const note = await prisma.techTaskNote.findFirst({
-    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT" },
+    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT", task: NOT_DELETED },
   });
   if (!note) throw new ForbiddenError("Comment not found");
   if (note.authorId !== scope.ctx.userId) {
@@ -633,7 +638,7 @@ export async function editTaskComment(scope: TenantScope, noteId: string, body: 
 /** Delete own comment; org admins may delete anyone's. */
 export async function deleteTaskComment(scope: TenantScope, noteId: string): Promise<void> {
   const note = await prisma.techTaskNote.findFirst({
-    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT" },
+    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT", task: NOT_DELETED },
   });
   if (!note) throw new ForbiddenError("Comment not found");
   if (note.authorId !== scope.ctx.userId && !scope.ctx.isOrgAdmin) {
@@ -683,7 +688,7 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
 }
 
 export async function updateTechTask(scope: TenantScope, id: string, input: UpdateTechTaskInput) {
-  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
+  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!existing) throw new ForbiddenError("Task not found");
   await assertCanEditTask(scope, existing);
   if (input.title !== undefined && !input.title.trim()) {
@@ -721,7 +726,7 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
   // version moved on, nothing is written and StaleSaveError reaches the caller.
   const task = await prisma.$transaction(async (tx) => {
     const res = await tx.techTask.updateMany({
-      where: { id, orgId: scope.ctx.orgId, ...versionGuard(input.expectedVersion) },
+      where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED, ...versionGuard(input.expectedVersion) },
       data: {
         version: { increment: 1 },
         ...(input.title !== undefined ? { title: input.title.trim() } : {}),
@@ -800,17 +805,92 @@ export async function setTechTaskState(scope: TenantScope, id: string, state: Te
   return updateTechTask(scope, id, { state });
 }
 
+/**
+ * SOFT delete: the task (and its comment thread) stays in the database, hidden
+ * everywhere, and can be restored from "Recently deleted" for
+ * DELETED_KEEP_DAYS. Same permission as editing it (assertCanEditTask).
+ */
 export async function deleteTechTask(scope: TenantScope, id: string): Promise<void> {
-  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
+  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!existing) throw new ForbiddenError("Task not found");
   await assertCanEditTask(scope, existing);
-  await prisma.techTask.delete({ where: { id } });
+  const res = await prisma.techTask.updateMany({
+    where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED },
+    data: { deletedAt: new Date(), deletedById: scope.ctx.userId, version: { increment: 1 } },
+  });
+  if (res.count === 0) throw new ForbiddenError("Task not found");
   await writeAudit(scope, {
     entity: "techtask",
     entityId: id,
     action: "deleted",
     summary: `Deleted dashboard task "${existing.title}"`,
   });
+  await recordChange(scope, id, "deleted this task");
+}
+
+/**
+ * Dashboard tasks deleted in the last DELETED_KEEP_DAYS that this caller may
+ * restore: org admins see all; everyone else sees tasks they own, tasks of the
+ * people they manage, tasks they assigned and tasks they deleted themselves.
+ */
+export async function listDeletedTechTasks(scope: TenantScope): Promise<DeletedItemRow[]> {
+  const me = scope.ctx.userId;
+  const visibility: Prisma.TechTaskWhereInput = scope.ctx.isOrgAdmin
+    ? {}
+    : {
+        OR: [
+          { ownerId: { in: [me, ...(await managedMemberIds(scope))] } },
+          { assignedById: me },
+          { deletedById: me },
+        ],
+      };
+  const rows = await prisma.techTask.findMany({
+    where: { orgId: scope.ctx.orgId, ...recentlyDeleted(), ...visibility },
+    include: { owner: { select: { name: true, username: true, email: true } } },
+    orderBy: { deletedAt: "desc" },
+    take: 200,
+  });
+  const deleterIds = [...new Set(rows.map((r) => r.deletedById).filter((x): x is string => !!x))];
+  const deleters = deleterIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: deleterIds } },
+        select: { id: true, name: true, username: true, email: true },
+      })
+    : [];
+  const nameOf = new Map(deleters.map((u) => [u.id, u.name ?? u.username ?? u.email ?? "someone"]));
+  return rows.map((r) => ({
+    id: r.id,
+    label: r.title,
+    detail: r.owner.name ?? r.owner.username ?? r.owner.email ?? null,
+    deletedAt: r.deletedAt!.toISOString(),
+    deletedByName: r.deletedById ? (nameOf.get(r.deletedById) ?? null) : null,
+  }));
+}
+
+/**
+ * Bring a soft-deleted dashboard task back (Undo / "Recently deleted"). Same
+ * permission as deleting it (assertCanEditTask) — the person who deleted it may
+ * always undo their own delete. Adds a permanent "restored this task" note.
+ */
+export async function restoreTechTask(scope: TenantScope, id: string) {
+  const existing = await prisma.techTask.findFirst({
+    where: { id, orgId: scope.ctx.orgId, ...recentlyDeleted() },
+  });
+  if (!existing) throw new ForbiddenError("That task is no longer in Recently deleted.");
+  if (existing.deletedById !== scope.ctx.userId) await assertCanEditTask(scope, existing);
+  const res = await prisma.techTask.updateMany({
+    where: { id, orgId: scope.ctx.orgId, deletedAt: { not: null } },
+    data: { deletedAt: null, deletedById: null, version: { increment: 1 } },
+  });
+  if (res.count === 0) throw new ForbiddenError("That task is no longer in Recently deleted.");
+  await writeAudit(scope, {
+    entity: "techtask",
+    entityId: id,
+    action: "restored",
+    summary: `Restored dashboard task "${existing.title}"`,
+  });
+  await recordChange(scope, id, "restored this task");
+  return prisma.techTask.findUniqueOrThrow({ where: { id } });
 }
 
 // Reporting lines now live in People settings (department managers + ManagerLink

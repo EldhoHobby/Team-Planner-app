@@ -83,7 +83,7 @@ export function EmailClient({
     });
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-6">
+    <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
       <PageHeader
         className="mb-0"
         icon={<Mail className="h-5 w-5 text-muted-foreground" />}

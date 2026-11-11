@@ -23,7 +23,7 @@ export default async function AgreementSettingsPage() {
       title="Settings"
       description="Pricing rules for new proposals, the monthly workbook, and who can edit."
     />
-    <div className="grid gap-6 lg:grid-cols-5">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
       <div className="lg:col-span-3">
         <SettingsForm settings={settings} canEdit={canEdit} />
       </div>

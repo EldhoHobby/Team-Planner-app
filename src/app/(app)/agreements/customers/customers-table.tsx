@@ -37,7 +37,7 @@ export interface CustomerListRow {
 
 type SortKey = "name" | "annualValue" | "nextEndDate" | "renewal";
 export type CustomerSort = { key: SortKey; dir: 1 | -1 };
-const SELECT = "h-9 rounded-md border bg-background px-2 text-sm";
+const SELECT = "h-9 max-w-full rounded-md border bg-background px-2 text-sm";
 /** Renewal filter value: customers with a lapsed agreement (not a renewal state of its own). */
 const LAPSED = "LAPSED";
 
@@ -129,7 +129,7 @@ export function CustomersTable({
         actions={canEdit ? <Button onClick={() => setAdding(true)}>Add customer</Button> : undefined}
       />
       <div className="flex flex-wrap items-center gap-2">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, SO # or state" className="w-60" aria-label="Search customers" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, SO # or state" className="w-full sm:w-60" aria-label="Search customers" />
         <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Customer status">
           <option value="OPEN">Open (active, pending, expired – waiting)</option>
           <option value="">All statuses (incl. not renewed / inactive)</option>

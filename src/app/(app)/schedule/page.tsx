@@ -104,6 +104,7 @@ export default async function SchedulePage({
     endDate: j.endDate ? j.endDate.toISOString().slice(0, 10) : null,
     durationDays: j.durationDays,
     tentative: j.tentative,
+    version: j.version,
   }));
 
   const technicians: TechnicianOption[] = [

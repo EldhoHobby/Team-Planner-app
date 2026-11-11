@@ -263,6 +263,10 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
 
           // Per-owner dedupe: only create for people who don't have this email
           // yet, so a partial multi-tag failure fills in the rest on retry.
+          // Deliberately NO deletedAt filter: a task someone deleted (soft
+          // delete, "Recently deleted") must not be re-created by the same
+          // Message-ID — the DB unique (orgId, ownerId, externalSource,
+          // externalId) also still covers the soft-deleted row.
           const existing = await prisma.techTask.findMany({
             where: { orgId: org.id, externalSource: "email", externalId: messageId },
             select: { ownerId: true },

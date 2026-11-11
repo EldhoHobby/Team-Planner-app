@@ -161,12 +161,12 @@ export function SettingsForm({ settings, canEdit }: { settings: SettingsRow; can
       <Section title="Standard prices" hint="New proposals use these list prices for every customer who has the agreement. Clear a price to keep each customer's last price instead.">
         <div className="space-y-2">
           {FIXED_PRICE_AGREEMENTS.map((a) => (
-            <label key={a} className="grid grid-cols-[10rem_9rem_1fr] items-center gap-2">
+            <label key={a} className="grid grid-cols-[1fr_auto] items-center gap-2 sm:grid-cols-[10rem_9rem_1fr]">
               <span>{AGREEMENT_LABELS[a]}</span>
               <span className="flex items-center gap-1">
                 $<Input value={fixed[a] ?? ""} disabled={!canEdit} inputMode="decimal" placeholder="last price" onChange={(e) => setFixed((p) => ({ ...p, [a]: e.target.value }))} className="w-28" />
               </span>
-              <span className="text-xs text-muted-foreground">Policy: {POLICY_PRICE_HINTS[a]}</span>
+              <span className="col-span-2 text-xs text-muted-foreground sm:col-span-1">Policy: {POLICY_PRICE_HINTS[a]}</span>
             </label>
           ))}
         </div>
@@ -196,7 +196,7 @@ export function SettingsForm({ settings, canEdit }: { settings: SettingsRow; can
         </FormMessage>
       )}
       {canEdit && (
-        <div className="flex gap-2 border-t pt-4">
+        <div className="flex flex-wrap gap-2 border-t pt-4">
           <Button disabled={pending} onClick={save}>{pending ? "Saving…" : "Save settings"}</Button>
           <Button variant="outline" disabled={pending} onClick={resetToPolicy}>Reset to policy values</Button>
         </div>

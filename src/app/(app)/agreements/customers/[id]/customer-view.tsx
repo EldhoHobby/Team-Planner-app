@@ -406,7 +406,7 @@ function ContractEditor({
       dirty={touched}
       confirmClose={line ? "Your changes to this agreement have not been saved." : "This agreement has not been added yet."}
     >
-      <div className="grid grid-cols-2 gap-3" onChange={() => setTouched(true)}>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" onChange={() => setTouched(true)}>
         {!line && (
           <>
             <label className={field}><span className={lbl}>Year</span><Input value={year} onChange={(e) => setYear(e.target.value)} /></label>
@@ -429,8 +429,8 @@ function ContractEditor({
         <label className={field}><span className={lbl}>End date</span><Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>
         <label className={field}><span className={lbl}>Signed date</span><Input type="date" value={signedDate} onChange={(e) => setSignedDate(e.target.value)} /></label>
         <label className={field}><span className={lbl}>Date invoiced</span><Input type="date" value={invoicedDate} onChange={(e) => setInvoicedDate(e.target.value)} /></label>
-        <label className="flex items-center gap-2 self-end pb-2 text-sm"><input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} /> Checked</label>
-        <label className={cn(field, "col-span-2")}><span className={lbl}>Notes</span><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
+        <label className="flex items-center gap-2 pb-2 text-sm sm:self-end"><input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} /> Checked</label>
+        <label className={cn(field, "sm:col-span-2")}><span className={lbl}>Notes</span><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
       </div>
       {error && (
         <FormMessage tone="error" className="mt-3">
@@ -442,7 +442,7 @@ function ContractEditor({
           )}
         </FormMessage>
       )}
-      <div className="mt-4 flex items-center justify-between">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         {line ? <Button variant="ghost" className="text-destructive" disabled={pending} onClick={remove}>Delete</Button> : <span />}
         <div className="flex gap-2">
           <Button variant="outline" disabled={pending} onClick={onClose}>Cancel</Button>
@@ -618,7 +618,7 @@ function CallsTab({ data, canEdit, save }: { data: CustomerDetail; canEdit: bool
   return (
     <section className="max-w-xl space-y-3">
       <p className="text-sm text-muted-foreground">Entered by hand until the RMA log and CRM ticket modules feed these counts.</p>
-      <div className="overflow-hidden rounded-lg border bg-card">
+      <div className="overflow-x-auto rounded-lg border bg-card">
         <table className="w-full text-sm">
           <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
             <tr><th className="px-3 py-2 text-left font-medium">Year</th><th className="px-3 py-2 text-right font-medium">Calls</th><th className="px-3 py-2 text-right font-medium">Repairs</th></tr>

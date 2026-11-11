@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 
 /**
- * The one card layout for the public pages (sign in, first-run setup, accept
- * invitation, set password): centred, same width, the product name above, the
+ * The one card layout for the public pages (sign in, first-run setup, set
+ * password): centred, same width, the product name above, the
  * page heading as the h1. Server- and client-safe.
  */
 export function AuthCard({

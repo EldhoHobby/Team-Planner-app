@@ -348,8 +348,8 @@ export function TimesheetClient({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 text-sm">
-          <div className="text-right">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <div className="sm:text-right">
             <div className="text-muted-foreground">WEEK ENDING</div>
             <div className="font-semibold">{weekLabel}</div>
           </div>
@@ -366,7 +366,7 @@ export function TimesheetClient({
           </Button>
           {weeks.length > 0 ? (
             <select
-              className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              className="h-8 max-w-full rounded-md border border-input bg-transparent px-2 text-xs"
               value={data.weekEnding}
               onChange={(e) => void goToWeek(e.target.value)}
               aria-label="Jump to a saved week"

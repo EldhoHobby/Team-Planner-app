@@ -18,9 +18,13 @@ import {
   editJobComment,
   deleteJobComment,
   listJobHistory,
+  listDeletedJobs,
+  restoreJob,
   type JobNoteRow,
 } from "@/lib/services/field-service";
 import { runJobsImport } from "@/lib/services/data-io";
+import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
+import type { DeletedItemRow } from "@/lib/db/soft-delete";
 import { listAudit, writeAudit } from "@/lib/services/audit";
 import type { TaskFormState } from "./types";
 import type { JobFormState, ImportState, AuditEntry } from "../schedule/types";
@@ -120,6 +124,8 @@ export async function updateTaskAction(
       ...rest,
       isFieldTrip,
       dueDate: dueDateStr ? new Date(dueDateStr) : null,
+      // Optional: a form that sends the version it loaded gets stale-save protection.
+      expectedVersion: parseExpectedVersion(formData.get("version")),
     });
     revalidatePath("/tasks");
     return { success: true };
@@ -145,6 +151,13 @@ export async function deleteTaskAction(
 }
 
 // ─────────────────── Field-service jobs (schedule dashboard) ───────────────────
+
+/** actionError + `stale: true` when someone else saved the job first (nothing was written). */
+function jobActionError(context: string, e: unknown, fallback: string): JobFormState {
+  const r = actionError(context, e, fallback);
+  if (e instanceof StaleSaveError) revalidatePath("/schedule");
+  return e instanceof StaleSaveError ? { ...r, stale: true } : r;
+}
 
 const JOB_TYPES = ["COMMISSIONING", "TRAINING", "ANNUAL_MAINTENANCE", "EMERGENCY_SUPPORT"] as const;
 const JOB_STATUSES = ["UNCONFIRMED", "SCHEDULED", "IN_PROGRESS", "COMPLETED"] as const;
@@ -214,6 +227,7 @@ const UpdateJobSchema = z.object({
   durationDays: z.coerce.number().int("Duration must be a whole number of days.").nonnegative("Duration must be between 0 and 60 days.").max(60, "Duration must be between 0 and 60 days.").optional().nullable(),
   jobStatus: z.enum(JOB_STATUSES).optional(),
   tentative: z.boolean().optional(),
+  expectedVersion: z.number().int().min(1).optional(),
 });
 
 export async function updateJobAction(input: {
@@ -230,6 +244,8 @@ export async function updateJobAction(input: {
   durationDays?: number | null;
   jobStatus?: (typeof JOB_STATUSES)[number];
   tentative?: boolean;
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
   const parsed = UpdateJobSchema.safeParse(input);
@@ -238,14 +254,14 @@ export async function updateJobAction(input: {
   }
   const { jobId, startDate, ...rest } = parsed.data;
   try {
-    await updateJob(scope, jobId, {
+    const job = await updateJob(scope, jobId, {
       ...rest,
       startDate: startDate ? new Date(startDate) : startDate === null ? null : undefined,
     });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    return actionError("updateJobAction", e, "Could not update the job.");
+    return jobActionError("updateJobAction", e, "Could not update the job.");
   }
 }
 
@@ -271,6 +287,7 @@ const RescheduleJobSchema = z.object({
     .optional(),
   technicianId: z.string().min(1).nullable().optional(),
   jobStatus: z.enum(JOB_STATUSES, { errorMap: () => ({ message: "Invalid status." }) }).optional(),
+  expectedVersion: z.number().int().min(1).optional(),
 });
 
 export async function rescheduleJobAction(input: {
@@ -280,6 +297,8 @@ export async function rescheduleJobAction(input: {
   technicianId?: string | null;
   /** Restore an exact status (the board's Undo). */
   jobStatus?: (typeof JOB_STATUSES)[number];
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
   const parsed = RescheduleJobSchema.safeParse(input);
@@ -288,29 +307,33 @@ export async function rescheduleJobAction(input: {
   }
   const data = parsed.data;
   try {
-    await rescheduleJob(scope, data.jobId, {
+    const job = await rescheduleJob(scope, data.jobId, {
       ...(data.startDate !== undefined
         ? { startDate: data.startDate ? new Date(`${data.startDate}T00:00:00.000Z`) : null }
         : {}),
       ...(data.durationDays !== undefined ? { durationDays: data.durationDays } : {}),
       ...(data.technicianId !== undefined ? { technicianId: data.technicianId } : {}),
       ...(data.jobStatus !== undefined ? { jobStatus: data.jobStatus } : {}),
+      expectedVersion: data.expectedVersion,
     });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    return actionError("rescheduleJobAction", e, "Could not reschedule the job.");
+    return jobActionError("rescheduleJobAction", e, "Could not reschedule the job.");
   }
 }
 
 const SetJobStatusSchema = z.object({
   jobId: z.string().min(1),
   jobStatus: z.enum(JOB_STATUSES, { errorMap: () => ({ message: "Invalid status." }) }),
+  expectedVersion: z.number().int().min(1).optional(),
 });
 
 export async function setJobStatusAction(input: {
   jobId: string;
   jobStatus: (typeof JOB_STATUSES)[number];
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
   const parsed = SetJobStatusSchema.safeParse(input);
@@ -318,25 +341,31 @@ export async function setJobStatusAction(input: {
     return { error: parsed.error.issues[0]?.message ?? "Invalid status." };
   }
   try {
-    await setJobStatus(scope, parsed.data.jobId, parsed.data.jobStatus);
+    const job = await setJobStatus(scope, parsed.data.jobId, parsed.data.jobStatus, {
+      expectedVersion: parsed.data.expectedVersion,
+    });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    return actionError("setJobStatusAction", e, "Could not update status.");
+    return jobActionError("setJobStatusAction", e, "Could not update status.");
   }
 }
 
 export async function setJobTentativeAction(input: {
   jobId: string;
   tentative: boolean;
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
   try {
-    await setJobTentative(scope, input.jobId, input.tentative);
+    const job = await setJobTentative(scope, input.jobId, input.tentative === true, {
+      expectedVersion: parseExpectedVersion(input.expectedVersion),
+    });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    return actionError("setJobTentativeAction", e, "Could not update the job.");
+    return jobActionError("setJobTentativeAction", e, "Could not update the job.");
   }
 }
 
@@ -405,14 +434,39 @@ export async function duplicateJobAction(input: { jobId: string }): Promise<JobF
   }
 }
 
+/** Soft delete — the job goes to "Recently deleted" (restorable for 30 days). */
 export async function deleteJobAction(input: { jobId: string }): Promise<JobFormState> {
-  const { scope } = await requireScope();
   try {
+    const { scope } = await requireScope();
     await deleteJob(scope, input.jobId);
     revalidatePath("/schedule");
+    revalidatePath("/dashboard");
     return { success: true };
   } catch (e) {
     return actionError("deleteJobAction", e, "Could not delete the job.");
+  }
+}
+
+/** Undo a delete / restore from "Recently deleted". */
+export async function restoreJobAction(input: { jobId: string }): Promise<JobFormState> {
+  try {
+    const { scope } = await requireScope();
+    const job = await restoreJob(scope, input.jobId);
+    revalidatePath("/schedule");
+    revalidatePath("/dashboard");
+    return { success: true, jobId: job.id, version: job.version };
+  } catch (e) {
+    return actionError("restoreJobAction", e, "Could not restore the job.");
+  }
+}
+
+/** Jobs deleted in the last 30 days (the Schedule's "Recently deleted" dialog). */
+export async function listDeletedJobsAction(): Promise<{ items?: DeletedItemRow[]; error?: string }> {
+  try {
+    const { scope } = await requireScope();
+    return { items: await listDeletedJobs(scope) };
+  } catch (e) {
+    return actionError("listDeletedJobsAction", e, "Could not load recently deleted jobs.");
   }
 }
 

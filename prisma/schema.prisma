@@ -421,6 +421,15 @@ model Task {
   externalUrl    String?
   lastSyncedAt   DateTime?
   syncDirty      Boolean    @default(false)
+  // Soft delete ("Recently deleted", restorable for 30 days): a delete stamps
+  // these instead of removing the row; EVERY read must filter deletedAt: null
+  // (except the recently-deleted list). The daily maintenance hard-deletes rows
+  // deleted more than DELETED_KEEP_DAYS ago. deletedById is a plain user id (no FK).
+  deletedAt      DateTime?
+  deletedById    String?
+  // Optimistic-locking counter (see src/lib/db/optimistic.ts) — every update
+  // bumps it; a job save naming a stale version is rejected (StaleSaveError).
+  version        Int        @default(1)
 
   org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -437,6 +446,7 @@ model Task {
   @@index([orgId, kind, startDate])
   @@index([technicianId, startDate])
   @@index([orgId, externalSource, externalId])
+  @@index([orgId, deletedAt])
 }
 
 model TaskAssignment {
@@ -620,6 +630,10 @@ model TechTask {
   // src/lib/db/optimistic.ts). Every update bumps it; a save that names a
   // stale version is rejected with StaleSaveError instead of overwriting.
   version      Int           @default(1)
+  // Soft delete — same rules as Task.deletedAt (filter deletedAt: null on
+  // every read except "Recently deleted"; purged after DELETED_KEEP_DAYS).
+  deletedAt    DateTime?
+  deletedById  String?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -629,6 +643,7 @@ model TechTask {
 
   @@index([orgId, ownerId, state])
   @@index([orgId, externalSource, externalId])
+  @@index([orgId, deletedAt])
   // Dedupe backstop for email ingest (and future sync connectors): one task per
   // person per external item, enforced even across concurrent ingest passes.
   // Rows with NULL externalId are exempt (Postgres treats NULLs as distinct).

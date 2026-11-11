@@ -53,7 +53,7 @@ function actionCls(action: string): string {
 }
 
 const selectCls =
-  "h-9 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring";
+  "h-9 max-w-full rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring";
 
 export function AuditClient({
   retentionDays,
@@ -124,7 +124,7 @@ export function AuditClient({
   const hasFilters = Object.values(filters).some(Boolean);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-6">
+    <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
       <PageHeader
         className="mb-0"
         icon={<ScrollText className="h-5 w-5 text-muted-foreground" />}
@@ -139,7 +139,7 @@ export function AuditClient({
         description={`Everything done in the app over the last ${retentionDays} days — sign-ins, changes, imports and exports. Updates automatically; older entries are deleted after ${retentionDays} days.`}
         actions={
           confirmClear ? (
-            <div className="flex items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 dark:border-red-800 dark:bg-red-950">
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 dark:border-red-800 dark:bg-red-950">
               <span className="text-sm text-red-800 dark:text-red-200">Delete the entire history?</span>
               <Button variant="destructive" size="sm" onClick={clearLog} disabled={clearing}>
                 {clearing ? "Clearing…" : "Yes, clear it"}
@@ -220,7 +220,7 @@ export function AuditClient({
         <Input
           placeholder="Search descriptions…"
           aria-label="Search descriptions"
-          className="h-9 w-52"
+          className="h-9 w-full sm:w-52"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -269,7 +269,7 @@ export function AuditClient({
                         </span>
                       </td>
                       <td className="whitespace-nowrap px-2 py-1.5 text-xs text-muted-foreground">{r.entity}</td>
-                      <td className="px-2 py-1.5 text-xs" title={r.summary}>{r.summary}</td>
+                      <td className="min-w-[14rem] px-2 py-1.5 text-xs" title={r.summary}>{r.summary}</td>
                     </tr>
                   ))}
                 </tbody>

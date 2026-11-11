@@ -19,6 +19,7 @@ import {
 } from "../tasks/actions";
 import type { JobNoteRow } from "@/lib/services/field-service";
 import type { AuditEntry, JobRow, JobStatus, JobType, TechnicianOption } from "./types";
+import type { JobSave, RunJobSave } from "./job-save-queue";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { SaveStatus, useSaveStatus, type SaveState } from "@/components/ui/save-status";
@@ -27,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
+import { DELETED_KEEP_DAYS } from "@/lib/db/soft-delete";
 
 const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -108,7 +110,13 @@ export function JobEditor({
   currentUserId,
   isAdmin,
   historyDays = 30,
+  runJobSave,
+  onDeleted,
 }: {
+  /** The schedule's serial, version-checked save queue (shared with the board). */
+  runJobSave: RunJobSave;
+  /** Called after a confirmed delete (the parent shows "Deleted — Undo"). */
+  onDeleted?: (job: JobRow) => void;
   /** How many days of change history the activity log keeps (AUDIT_RETENTION_DAYS). */
   historyDays?: number;
   job: JobRow | null;
@@ -242,12 +250,14 @@ export function JobEditor({
   // Every field save funnels through here, so it's where we mark the session
   // dirty (drives the "why did you change this?" prompt on close). A rejected
   // save shows its error, puts the field back to the saved value (`revert`) and
-  // does NOT count as a change.
-  const run = (fn: () => Promise<{ error?: string }>, revert?: () => void): Promise<boolean> => {
+  // does NOT count as a change. Saves go through the schedule's serial queue,
+  // which sends the job's latest version (a stale one is refused with a
+  // "someone else changed this job" error and the page data is refreshed).
+  const run = (fn: JobSave, revert?: () => void): Promise<boolean> => {
     const p = (async () => {
       let res: { error?: string };
       try {
-        res = await save.run(fn);
+        res = await save.run(() => runJobSave(job.id, fn));
       } catch {
         // SaveStatus already shows "Couldn't save — check your connection…".
         res = { error: "thrown" };
@@ -266,14 +276,15 @@ export function JobEditor({
     return p;
   };
 
-  // Delete asks first (it also removes the whole comment thread) and only
-  // closes the editor once the server confirmed the delete.
+  // Delete asks first and only closes the editor once the server confirmed the
+  // delete. It is a soft delete: the parent offers Undo, and the job (with its
+  // notes) can be restored from "Recently deleted" for DELETED_KEEP_DAYS.
   const removeJob = async () => {
     const name = [job.soNumber, job.customerName, job.title].filter(Boolean).join(" · ");
     const n = thread.length;
     const ok = await confirm({
       title: `Delete job “${name}”?`,
-      message: `The job and its ${n} note${n === 1 ? "" : "s"} will be permanently deleted. This cannot be undone.`,
+      message: `The job and its ${n} note${n === 1 ? "" : "s"} move to Recently deleted — you can restore them for ${DELETED_KEEP_DAYS} days, then they are removed for good.`,
       confirmLabel: "Delete job",
       tone: "danger",
     });
@@ -285,6 +296,7 @@ export function JobEditor({
         return;
       }
       router.refresh();
+      onDeleted?.(job);
       onClose();
     });
   };
@@ -446,7 +458,7 @@ Changed: ${changed.join("; ")}`;
     if (n === (lastDuration.current ?? savedDuration)) return;
     lastDuration.current = n;
     void run(
-      () => rescheduleJobAction({ jobId: job.id, durationDays: n }),
+      (ver) => rescheduleJobAction({ jobId: job.id, durationDays: n, expectedVersion: ver }),
       () => {
         lastDuration.current = null;
         setForm((f) => ({ ...f, durationDays: String(job.durationDays ?? 1) }));
@@ -535,7 +547,7 @@ Changed: ${changed.join("; ")}`;
               if (!v) setForm((f) => ({ ...f, title: job.title }));
               else if (v !== job.title)
                 void run(
-                  () => updateJobAction({ jobId: job.id, title: v }),
+                  (ver) => updateJobAction({ jobId: job.id, title: v, expectedVersion: ver }),
                   () => setForm((f) => ({ ...f, title: job.title })),
                 );
             }}
@@ -554,7 +566,7 @@ Changed: ${changed.join("; ")}`;
                 const v = e.target.value.trim();
                 if (v !== (job.soNumber ?? ""))
                   void run(
-                    () => updateJobAction({ jobId: job.id, soNumber: v || null }),
+                    (ver) => updateJobAction({ jobId: job.id, soNumber: v || null, expectedVersion: ver }),
                     () => setForm((f) => ({ ...f, soNumber: job.soNumber ?? "" })),
                   );
               }}
@@ -571,7 +583,7 @@ Changed: ${changed.join("; ")}`;
                 const v = e.target.value.trim();
                 if (v !== (job.customerName ?? ""))
                   void run(
-                    () => updateJobAction({ jobId: job.id, customerName: v || null }),
+                    (ver) => updateJobAction({ jobId: job.id, customerName: v || null, expectedVersion: ver }),
                     () => setForm((f) => ({ ...f, customerName: job.customerName ?? "" })),
                   );
               }}
@@ -592,7 +604,7 @@ Changed: ${changed.join("; ")}`;
               const v = e.target.value.trim();
               if (v !== (job.description ?? ""))
                 void run(
-                  () => updateJobAction({ jobId: job.id, description: v || null }),
+                  (ver) => updateJobAction({ jobId: job.id, description: v || null, expectedVersion: ver }),
                   () => setForm((f) => ({ ...f, description: job.description ?? "" })),
                 );
             }}
@@ -610,7 +622,7 @@ Changed: ${changed.join("; ")}`;
                 const v = e.target.value as JobType | "";
                 setForm((f) => ({ ...f, jobType: v }));
                 void run(
-                  () => updateJobAction({ jobId: job.id, jobType: v || null }),
+                  (ver) => updateJobAction({ jobId: job.id, jobType: v || null, expectedVersion: ver }),
                   () => setForm((f) => ({ ...f, jobType: job.jobType ?? "" })),
                 );
               }}
@@ -634,7 +646,7 @@ Changed: ${changed.join("; ")}`;
                 const v = e.target.value.trim();
                 if (v !== (job.hardwareTarget ?? ""))
                   void run(
-                    () => updateJobAction({ jobId: job.id, hardwareTarget: v || null }),
+                    (ver) => updateJobAction({ jobId: job.id, hardwareTarget: v || null, expectedVersion: ver }),
                     () => setForm((f) => ({ ...f, hardwareTarget: job.hardwareTarget ?? "" })),
                   );
               }}
@@ -653,7 +665,7 @@ Changed: ${changed.join("; ")}`;
                 const v = e.target.value;
                 setForm((f) => ({ ...f, technicianId: v }));
                 void run(
-                  () => rescheduleJobAction({ jobId: job.id, technicianId: v || null }),
+                  (ver) => rescheduleJobAction({ jobId: job.id, technicianId: v || null, expectedVersion: ver }),
                   () => setForm((f) => ({ ...f, technicianId: job.technicianId ?? "" })),
                 );
               }}
@@ -679,7 +691,7 @@ Changed: ${changed.join("; ")}`;
                 const v = e.target.value as JobStatus;
                 setForm((f) => ({ ...f, jobStatus: v }));
                 void run(
-                  () => setJobStatusAction({ jobId: job.id, jobStatus: v }),
+                  (ver) => setJobStatusAction({ jobId: job.id, jobStatus: v, expectedVersion: ver }),
                   () => setForm((f) => ({ ...f, jobStatus: job.jobStatus })),
                 );
               }}
@@ -699,8 +711,8 @@ Changed: ${changed.join("; ")}`;
                 setForm((f) => ({ ...f, startDate: v, tentative: v ? f.tentative : false }));
                 const revertDate = () =>
                   setForm((f) => ({ ...f, startDate: job.startDate ?? "", tentative: job.tentative }));
-                void run(() => rescheduleJobAction({ jobId: job.id, startDate: v || null }), revertDate);
-                if (clearTentative) void run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
+                void run((ver) => rescheduleJobAction({ jobId: job.id, startDate: v || null, expectedVersion: ver }), revertDate);
+                if (clearTentative) void run((ver) => setJobTentativeAction({ jobId: job.id, tentative: false, expectedVersion: ver }), revertDate);
               }}
             />
           </div>
@@ -740,7 +752,7 @@ Changed: ${changed.join("; ")}`;
               const v = e.target.checked;
               setForm((f) => ({ ...f, tentative: v }));
               void run(
-                () => setJobTentativeAction({ jobId: job.id, tentative: v }),
+                (ver) => setJobTentativeAction({ jobId: job.id, tentative: v, expectedVersion: ver }),
                 () => setForm((f) => ({ ...f, tentative: job.tentative })),
               );
             }}
@@ -760,8 +772,8 @@ Changed: ${changed.join("; ")}`;
               setForm((f) => ({ ...f, startDate: "", tentative: false }));
               const revertDate = () =>
                 setForm((f) => ({ ...f, startDate: job.startDate ?? "", tentative: job.tentative }));
-              void run(() => rescheduleJobAction({ jobId: job.id, startDate: null }), revertDate);
-              if (clearTentative) void run(() => setJobTentativeAction({ jobId: job.id, tentative: false }), revertDate);
+              void run((ver) => rescheduleJobAction({ jobId: job.id, startDate: null, expectedVersion: ver }), revertDate);
+              if (clearTentative) void run((ver) => setJobTentativeAction({ jobId: job.id, tentative: false, expectedVersion: ver }), revertDate);
             }}
           >
             <Inbox className="mr-1.5 h-4 w-4" /> Move to backlog

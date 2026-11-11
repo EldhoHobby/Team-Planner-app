@@ -241,7 +241,7 @@ export function DataClient({
   const summary = state.summary;
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6 p-6">
+    <div className="mx-auto max-w-2xl space-y-6 p-4 md:p-6">
       <PageHeader
         title="Data"
         description={
@@ -291,7 +291,7 @@ export function DataClient({
             }}
           />
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" disabled={pending || !file} onClick={() => withFile(previewImportAction)}>
               {pending && state.phase !== "applied" ? "Reading…" : "Preview changes"}
             </Button>

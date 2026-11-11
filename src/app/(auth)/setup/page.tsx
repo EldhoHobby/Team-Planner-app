@@ -5,7 +5,7 @@ import { AuthCard } from "../auth-card";
 import { SetupForm } from "./setup-form";
 
 // First-run setup. Once the instance is bootstrapped this route is closed and
-// redirects to sign-in (registration is invite-only thereafter).
+// redirects to sign-in (after that, admins add people on Settings → People).
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Set up" };
 

@@ -199,7 +199,7 @@ export default async function AgreementsDashboard() {
         />
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         <div className="space-y-6 lg:col-span-3">
         <Collapsible
           id="needs-action"

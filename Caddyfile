@@ -38,12 +38,23 @@
 #    page in an off-screen SAME-ORIGIN iframe (print-frame.ts); DENY breaks it.
 #  - Removing a header (-Server) makes Caddy apply the whole block after the
 #    app has answered, so these also replace anything the app sets.
+#  - Content-Security-Policy is REPORT-ONLY for now: the browser obeys nothing,
+#    it only logs "[Report Only] Refused to …" lines in the DevTools console.
+#    Click through every screen (sign in, Schedule, Dashboard, Agreements incl.
+#    Print / PDF, Settings → Data downloads, Timesheet Excel) with the console
+#    open; when it stays quiet, switch to ENFORCING by renaming the header
+#    below to "Content-Security-Policy" and `docker compose restart proxy`.
+#    No nonces: Next.js injects inline <script> tags and React inline styles,
+#    so script-src / style-src need 'unsafe-inline'. Everything else is
+#    same-origin; the app loads nothing from other hosts. Directive notes are
+#    in DEPLOY.md ("Security headers").
 (security_headers) {
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "same-origin"
+		Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
 		-Server
 		-X-Powered-By
 	}

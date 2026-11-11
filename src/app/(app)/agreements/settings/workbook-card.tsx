@@ -121,12 +121,12 @@ export function WorkbookCard() {
 
       <div className="space-y-2 border-t pt-3">
         <p className="text-xs font-medium">Bring changes back</p>
-        <input ref={fileRef} type="file" accept=".xlsm,.xlsx" className="block text-xs" onChange={(e) => {
+        <input ref={fileRef} type="file" accept=".xlsm,.xlsx" className="block w-full max-w-full text-xs" onChange={(e) => {
             setSummary(null);
             const f = e.target.files?.[0];
             setError(f && f.size > WORKBOOK_MAX_BYTES ? `That file is ${(f.size / 1024 / 1024).toFixed(1)} MB — the most the app can take in one upload is 9.5 MB.` : null);
           }} />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" disabled={pending} onClick={() => run(false)}>
             <Upload className="h-4 w-4" /> Preview changes
           </Button>
@@ -148,10 +148,11 @@ export function WorkbookCard() {
               </span>
             )}
           </p>
+          <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-muted-foreground">
               <tr>
-                <th className="text-left font-medium">Sheet</th><th className="text-right font-medium">New</th><th className="text-right font-medium">Changed</th>
+                <th className="pr-2 text-left font-medium">Sheet</th><th className="text-right font-medium">New</th><th className="text-right font-medium">Changed</th>
                 <th className="text-right font-medium">Deleted</th><th className="text-right font-medium">Not edited</th><th className="text-right font-medium">Same</th>
                 <th className="text-right font-medium">Conflicts</th><th className="text-right font-medium">Errors</th><th className="text-right font-medium">Skipped</th>
               </tr>
@@ -172,6 +173,7 @@ export function WorkbookCard() {
               ))}
             </tbody>
           </table>
+          </div>
           {ignored > 0 && (
             <p className="text-xs text-muted-foreground">
               {plural(ignored, "row")} unchanged in this file — ignored (even where the app changed since the export).

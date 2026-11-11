@@ -14,6 +14,8 @@ import { uniqueUsername } from "@/lib/auth/username";
 import { normalizeUsername, isValidUsername } from "@/lib/users";
 import { callerIsOwner, looksLikeEmail } from "@/lib/services/people";
 import { logError } from "@/lib/log";
+import { NOT_DELETED } from "@/lib/db/soft-delete";
+import { versionGuard } from "@/lib/db/optimistic";
 import {
   ymd,
   sheetRows,
@@ -103,7 +105,7 @@ async function jobsExportRows(scope: TenantScope): Promise<Record<string, unknow
   const projects = await prisma.project.findMany({ where: { orgId }, select: { id: true, name: true } });
   const projName = new Map(projects.map((p) => [p.id, p.name]));
   const jobs = await prisma.task.findMany({
-    where: scope.whereTeam({ kind: "FIELD_SERVICE" as const }),
+    where: scope.whereTeam({ kind: "FIELD_SERVICE" as const, ...NOT_DELETED }),
     orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
   });
   return jobs.map((j) => ({
@@ -115,6 +117,9 @@ async function jobsExportRows(scope: TenantScope): Promise<Record<string, unknow
     project: projName.get(j.projectId) ?? "",
     startDate: ymd(j.startDate), durationDays: j.durationDays ?? "",
     tentative: j.tentative ? "true" : "false",
+    // Optimistic lock: re-importing a row whose job changed in the app since
+    // this export is refused as a conflict (blank = no check).
+    version: j.version,
   }));
 }
 
@@ -189,6 +194,8 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
     "For Time Off and Jobs, set the person by username, name or email (must match someone exactly).",
     "Departments can nest: set 'parent' to another department's name (blank = top level).",
     "Jobs may reference a cross-functional pool via 'workGroup' (by name; blank = none).",
+    "Jobs: leave 'version' as exported — a row whose job changed in the app after this export is skipped as a conflict (blank = no check).",
+    "Deleted jobs and dashboard tasks are not exported; rows for items deleted since the export are skipped.",
     "Holidays round-trip by date: one holiday per date; re-importing the same date renames it.",
     "Preview note: Time Off/Jobs rows naming a person created in the same file may warn in Preview but resolve on Apply.",
   ].forEach((t) => info.addRow({ t }));
@@ -221,7 +228,7 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
 
   // My Tasks (dashboard open-items, all people) — full round-trip.
   const techTasks = await prisma.techTask.findMany({
-    where: { orgId },
+    where: { orgId, ...NOT_DELETED },
     orderBy: [{ ownerId: "asc" }, { priority: "asc" }, { createdAt: "asc" }],
   });
   addSheet(wb, SHEET.techTasks,
@@ -493,9 +500,11 @@ async function importTechTasks(scope: TenantScope, rows: Record<string, string>[
       if (id) {
         const ex = await prisma.techTask.findFirst({
           where: { id, orgId: scope.ctx.orgId },
-          select: { id: true, ownerId: true, title: true, priority: true, state: true, targetDate: true, location: true, notes: true, completedAt: true },
+          select: { id: true, ownerId: true, title: true, priority: true, state: true, targetDate: true, location: true, notes: true, completedAt: true, deletedAt: true },
         });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.techTasks} row ${line}: id not found`); continue; }
+        // A deleted task is never silently brought back (or duplicated) by an import.
+        if (ex.deletedAt) { res.skipped++; res.errors.push(`${SHEET.techTasks} row ${line}: skipped — this task was deleted (restore it from Recently deleted on the Dashboard first)`); continue; }
         const same =
           ex.ownerId === ownerId &&
           ex.title === title &&
@@ -510,7 +519,7 @@ async function importTechTasks(scope: TenantScope, rows: Record<string, string>[
           // overwrite imported values) and keep the permanent field history.
           await prisma.$transaction(async (tx) => {
             const updated = await tx.techTask.update({
-              where: { id },
+              where: { id, ...NOT_DELETED },
               data: {
                 ownerId, title, priority, state, targetDate,
                 location, notes,
@@ -611,6 +620,10 @@ async function importTeams(scope: TenantScope, rows: Record<string, string>[], a
         if (apply) {
           const created = await prisma.team.create({ data: { orgId: scope.ctx.orgId, name, parentTeamId } });
           idByName.set(name.trim().toLowerCase(), created.id);
+        } else if (!idByName.has(name.trim().toLowerCase())) {
+          // Preview: remember the name so a sub-department later in the same
+          // file resolves its parent, exactly as it will on Apply.
+          idByName.set(name.trim().toLowerCase(), `preview:${name}`);
         }
         res.created++;
       }
@@ -677,7 +690,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
   const jobKey = (so: string | null | undefined, title: string | null | undefined) =>
     `${(so ?? "").trim().toLowerCase()}|${(title ?? "").trim().toLowerCase()}`;
   const existing = await prisma.task.findMany({
-    where: { kind: "FIELD_SERVICE", ...scope.team() },
+    where: { kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team() },
     select: { id: true, soNumber: true, title: true },
   });
   const existingByKey = new Map<string, string[]>();
@@ -704,7 +717,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
     if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
     const {
       id, soNumber, customer, title, scope: scopeText, jobType, jobStatus,
-      hardware, priority, technician, workGroup, startDate: start, durationDays, tentative,
+      hardware, priority, technician, workGroup, startDate: start, durationDays, tentative, version,
     } = parsed.data;
 
     let technicianId: string | null = technician ? techs.byName.get(technician.toLowerCase()) ?? null : null;
@@ -734,9 +747,12 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
             id: true, title: true, soNumber: true, customerName: true, description: true,
             jobType: true, jobStatus: true, hardwareTarget: true, priority: true,
             technicianId: true, workGroupId: true, startDate: true, durationDays: true, tentative: true,
+            deletedAt: true, version: true,
           },
         });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: id not found`); continue; }
+        // A deleted job is never silently brought back (or duplicated) by an import.
+        if (ex.deletedAt) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: skipped — this job was deleted (restore it from Recently deleted on the Schedule first)`); continue; }
         const dur = durationDays ?? ex.durationDays ?? 1;
         const end = start ? endFromDuration(start, dur) : null;
         const data = {
@@ -770,7 +786,18 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           (ex.jobStatus ?? null) === (data.jobStatus ?? null) &&
           ex.tentative === data.tentative;
         if (same) { res.unchanged++; continue; }
-        if (apply) await prisma.task.update({ where: { id }, data });
+        // Stale-save protection (like the agreements workbook): a row exported
+        // before the job last changed in the app is a conflict — skipped, never
+        // overwrites. A blank version cell (older workbooks) = no check.
+        const conflict = `${SHEET.jobs} row ${line}: conflict — this job was changed in the app after the file was exported (file version ${version}, app version ${ex.version}); not imported. Export again and redo the change.`;
+        if (version !== null && version !== ex.version) { res.skipped++; res.errors.push(conflict); continue; }
+        if (apply) {
+          const w = await prisma.task.updateMany({
+            where: { id, kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team(), ...versionGuard(version ?? undefined) },
+            data: { ...data, version: { increment: 1 } },
+          });
+          if (w.count === 0) { res.skipped++; res.errors.push(conflict); continue; }
+        }
         res.updated++;
       } else {
         if (apply) {
@@ -875,6 +902,8 @@ export async function buildJobsWorkbook(scope: TenantScope): Promise<ExcelJS.Buf
     "Set the Technician by name (must match a technician exactly). Leave blank to unassign.",
     "Dates use YYYY-MM-DD. jobType/jobStatus/priority accept their labels. tentative is true/false.",
     "project is informational (export only) and ignored on import.",
+    "Leave 'version' as exported: a row whose job was changed in the app after this export is skipped as a conflict (blank = no check).",
+    "Deleted jobs are not exported; a row for a job deleted since the export is skipped (restore it from Recently deleted first).",
   ].forEach((t) => info.addRow({ t }));
 
   addSheet(wb, SHEET.jobs, [...JOBS_COLUMNS], await jobsExportRows(scope));

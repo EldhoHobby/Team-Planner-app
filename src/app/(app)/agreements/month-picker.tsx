@@ -93,7 +93,7 @@ export function MonthPicker({
       </div>
 
       {open && (
-        <div id={id} role="dialog" aria-label={ariaLabel} className="absolute left-0 top-full z-50 mt-1 w-72 rounded-lg border bg-card p-3 text-card-foreground shadow-lg">
+        <div id={id} role="dialog" aria-label={ariaLabel} className="absolute left-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border bg-card p-3 text-card-foreground shadow-lg">
           <div className="mb-2 flex items-center justify-between">
             <button type="button" className="rounded p-1 hover:bg-muted" aria-label="Previous year" onClick={() => setYear((y) => y - 1)}>
               <ChevronLeft className="h-4 w-4" />

@@ -401,6 +401,37 @@ Notes:
 - `LAN_IP` missing or wrong → browsers get `ERR_SSL_PROTOCOL_ERROR` on
   `https://10.210.6.233:8443` (the certificate only covers `127.0.0.1`).
 
+#### Security headers
+
+Every site block imports the `security_headers` snippet in the Caddyfile:
+
+- `Strict-Transport-Security: max-age=31536000` (no `includeSubDomains` /
+  `preload`; browsers ignore it for bare IPs and self-signed certificates).
+- `X-Content-Type-Options: nosniff`.
+- `X-Frame-Options: SAMEORIGIN` — not `DENY`: Agreements → Print / PDF loads
+  the print page in an off-screen same-origin iframe (`print-frame.ts`).
+- `Referrer-Policy: same-origin`; the `Server` and `X-Powered-By` headers are
+  removed.
+- `Content-Security-Policy-Report-Only` — **report-only for now**, so it
+  cannot break anything: the browser only logs `[Report Only] Refused to …`
+  lines in the DevTools console (there is no report endpoint). The policy:
+  `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'
+  'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;
+  connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri
+  'self'; form-action 'self'; object-src 'none'`. `'unsafe-inline'` is needed
+  because Next.js injects inline scripts (and the root layout's theme script),
+  and React / the error page use inline styles; no nonces are used. Everything
+  else the app loads (scripts, styles, the logo, fonts, `fetch` calls, the
+  print iframe) is same-origin; Excel / backup downloads are `blob:` links.
+
+  **To make it enforcing:** open the app with DevTools → Console, click through
+  sign in, Schedule, Dashboard, Agreements (including Print / PDF), Settings →
+  Data (export, backup download, restore preview) and Timesheet → Generate
+  Excel. If no `[Report Only]` line appears, rename the header in the Caddyfile
+  to `Content-Security-Policy` and run
+  `docker compose -f docker-compose.offline.yml restart proxy` (dev:
+  `docker compose restart proxy`). To undo, rename it back and restart again.
+
 ### 1.4 Keeping it running
 
 Docker Desktop only runs while a user is **signed in**, so a reboot (power cut,

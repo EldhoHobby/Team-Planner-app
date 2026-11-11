@@ -21,6 +21,7 @@ const db = vi.hoisted(() => {
             if (fn) return fn(args);
             if (op === "findMany") return [];
             if (op === "count") return 0;
+            if (op === "findFirst") return null;
             return { count: 0 };
           };
         },

@@ -12,6 +12,11 @@ export const BACKUP_FORMAT = "team-planner-full-backup";
  *   2 — adds `attachments` (metadata rows) and guarantees the current
  *       service-agreement shape (TechTask.version, SaCustomer …).
  *
+ *   (still 2) — Task.deletedAt / deletedById / version and TechTask.deletedAt /
+ *       deletedById were added as optional / defaulted columns: soft-deleted
+ *       ("Recently deleted") rows are exported and restored as they are, and a
+ *       file without the columns restores with deletedAt = null, version = 1.
+ *       No bump needed (additive only).
  * Every schema change since v1 only ADDED columns with defaults or optional
  * columns (nothing was removed or renamed outside the agreement tables), so a
  * v1 file still restores: createMany fills the missing columns with their

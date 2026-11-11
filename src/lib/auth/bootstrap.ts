@@ -3,7 +3,8 @@ import { prisma } from "@/lib/db/client";
 /**
  * The instance is "bootstrapped" once at least one Organization exists. Before
  * that, /setup is open so the very first admin can create the root org + owner;
- * after that, setup is closed and registration is invite-only.
+ * after that, setup is closed and only an admin can add people (Settings →
+ * People, which hands out a set-password link).
  */
 export async function isBootstrapped(): Promise<boolean> {
   const count = await prisma.organization.count();

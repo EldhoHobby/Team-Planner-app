@@ -22,7 +22,7 @@ const ENTITY_LABELS: Record<string, string> = {
   techtask: "Dashboard task",
   project: "Project",
   member: "Person",
-  invitation: "Invitation",
+  invitation: "Invitation", // older entries from the removed invite flow
   timeoff: "Time off",
   data: "Data",
   email: "Email",
@@ -105,7 +105,7 @@ export function ActivityClient({
   const time = (iso: string) => fmtEastern(iso, { hour: "numeric", minute: "2-digit" });
 
   return (
-    <div className="mx-auto w-full max-w-3xl p-5">
+    <div className="mx-auto w-full max-w-3xl p-4 md:p-5">
       <PageHeader
         icon={<History className="h-5 w-5 text-muted-foreground" />}
         title="Activity"

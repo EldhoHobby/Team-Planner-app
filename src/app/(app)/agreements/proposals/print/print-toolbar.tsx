@@ -14,7 +14,7 @@ export function PrintToolbar({ title, count }: { title: string; count: number })
     };
   }, [title]);
   return (
-    <div className="mx-auto mb-4 flex max-w-5xl items-center justify-between gap-3 rounded-lg border bg-card p-3 text-sm print:hidden">
+    <div className="mx-auto mb-4 flex max-w-5xl flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-3 text-sm print:hidden">
       <span>
         <span className="font-medium">{title}</span> — {count} page{count === 1 ? "" : "s"}, landscape, black and white.
       </span>

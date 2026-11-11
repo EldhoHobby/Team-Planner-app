@@ -85,7 +85,10 @@ export function TaskTicket({
   isAdmin,
   onClose,
   onReassign,
+  onDeleted,
 }: {
+  /** Called after a confirmed delete (the parent shows "Deleted — Undo"). */
+  onDeleted?: (task: TechTaskRow) => void;
   task: TechTaskRow;
   ownerName: string;
   /** Everyone in the org — reassignment targets (any department). */
@@ -343,6 +346,7 @@ export function TaskTicket({
         return;
       }
       router.refresh();
+      onDeleted?.(task);
       onClose();
     } catch {
       saveStatus.fail("Couldn't delete — check your connection and try again.");

@@ -1,8 +1,17 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
-import type { TaskStatus, TaskPriority, TaskKind } from "@prisma/client";
+import { Prisma, type TaskStatus, type TaskPriority, type TaskKind } from "@prisma/client";
 import { writeAudit } from "./audit";
+import { NOT_DELETED } from "@/lib/db/soft-delete";
+import { StaleSaveError, versionGuard } from "@/lib/db/optimistic";
+
+// Generic (project) tasks share the Task table with field-service jobs. Every
+// function here works on kind GENERAL only — jobs are managed by
+// field-service.ts (soft delete, restore, version-guarded saves) — and never
+// sees a soft-deleted row. Deleting a generic task stays PERMANENT (the Tasks
+// page has no "Recently deleted" yet); its saves bump `version` and are
+// guarded when the caller sends the version it loaded.
 
 export type { TaskStatus, TaskPriority };
 
@@ -31,6 +40,8 @@ export type UpdateTaskInput = {
   isFieldTrip?: boolean;
   /** undefined = unchanged; null / "" = clear. */
   location?: string | null;
+  /** Optimistic lock: the version the form loaded (omitted = no check; the save still bumps it). */
+  expectedVersion?: number;
 };
 
 /** De-duplicate assignee ids and make sure every one is a member of the
@@ -59,6 +70,7 @@ export async function listTasks(
   return prisma.task.findMany({
     where: scope.whereTeam({
       kind: "GENERAL" as TaskKind, // field-service jobs live on the schedule board, not here
+      ...NOT_DELETED,
       ...(filters.projectId ? { projectId: filters.projectId } : {}),
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.assigneeId
@@ -120,10 +132,13 @@ export async function updateTask(
   data: UpdateTaskInput,
 ) {
   const existing = await prisma.task.findFirst({
-    where: { id, ...scope.team() },
+    where: { id, kind: "GENERAL", ...NOT_DELETED, ...scope.team() },
     include: { assignments: { select: { userId: true } } },
   });
   if (!existing) throw new ForbiddenError("Task not found");
+  if (data.expectedVersion !== undefined && data.expectedVersion !== existing.version) {
+    throw new StaleSaveError("task");
+  }
 
   // Only rewrite assignments (and log "assigned to …") when the set changed.
   let nextAssignees: string[] | undefined;
@@ -134,9 +149,12 @@ export async function updateTask(
     if (changed) nextAssignees = wanted;
   }
 
+  // Guarded write: the extra (non-unique) where fields make `update` throw
+  // P2025 when the version moved on or the row was deleted meanwhile.
   const task = await prisma.task.update({
-    where: { id },
+    where: { id, ...NOT_DELETED, ...versionGuard(data.expectedVersion) },
     data: {
+      version: { increment: 1 },
       ...(data.title !== undefined ? { title: data.title.trim() } : {}),
       ...(data.description !== undefined
         ? { description: data.description?.trim() || null }
@@ -162,6 +180,9 @@ export async function updateTask(
         : {}),
     },
     include: TASK_INCLUDE,
+  }).catch((e: unknown) => {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") throw new StaleSaveError("task");
+    throw e;
   });
   // Call out what changed where it matters for the audit trail: assignment
   // and status changes get explicit summaries instead of a generic "updated".
@@ -182,9 +203,10 @@ export async function updateTask(
   return task;
 }
 
+/** Permanently delete a GENERIC task (jobs are soft-deleted via deleteJob). */
 export async function deleteTask(scope: TenantScope, id: string) {
   const task = await prisma.task.findFirst({
-    where: { id, ...scope.team() },
+    where: { id, kind: "GENERAL", ...NOT_DELETED, ...scope.team() },
   });
   if (!task) throw new ForbiddenError("Task not found");
   await prisma.task.delete({ where: { id } });

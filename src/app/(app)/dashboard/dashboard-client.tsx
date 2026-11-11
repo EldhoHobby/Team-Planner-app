@@ -39,7 +39,16 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { FormMessage } from "@/components/ui/form-message";
 import { PageHeader } from "@/components/ui/page-header";
 import { daysFromToday, fmtDateOnly, fmtEastern } from "@/lib/tz";
-import { createTechTaskAction, updateTechTaskAction, deleteTechTaskAction } from "./actions";
+import {
+  createTechTaskAction,
+  updateTechTaskAction,
+  deleteTechTaskAction,
+  restoreTechTaskAction,
+  listDeletedTechTasksAction,
+} from "./actions";
+import { DELETED_KEEP_DAYS } from "@/lib/db/soft-delete";
+import { UndoNotice, type UndoNoticeState } from "@/components/ui/undo-notice";
+import { RecentlyDeletedDialog } from "@/components/ui/recently-deleted-dialog";
 import type {
   AssignedTaskRow,
   DashboardData,
@@ -97,13 +106,13 @@ function fmtDate(iso: string | null): string {
   return iso ? fmtDateOnly(iso) : "—";
 }
 
-/** Body of the "Delete task?" confirm — comments and history go with the task. */
+/** Body of the "Delete task?" confirm — comments and history go with the task (soft delete). */
 export function deleteTaskMessage(commentCount: number): string {
   const what =
     commentCount > 0
       ? `its ${commentCount} comment${commentCount === 1 ? "" : "s"} and its change history`
       : "its change history";
-  return `This also deletes ${what}. This cannot be undone.`;
+  return `The task and ${what} move to Recently deleted — you can restore them for ${DELETED_KEEP_DAYS} days, then they are removed for good.`;
 }
 
 /** Shown when a list / board edit lost a race (the row then shows the latest values). */
@@ -267,6 +276,15 @@ export function DashboardClient({
   };
 
   const refresh = () => router.refresh();
+  // "Deleted … — Undo" right after a delete, and the "Recently deleted" dialog.
+  const [deletedNotice, setDeletedNotice] = useState<UndoNoticeState | null>(null);
+  const [binOpen, setBinOpen] = useState(false);
+  const onTaskDeleted = (t: { id: string; title: string }) =>
+    setDeletedNotice({
+      id: Date.now(),
+      text: `Deleted “${t.title}”`,
+      undo: () => restoreTechTaskAction({ id: t.id }),
+    });
   const openNew = (ownerId: string) => {
     setCreateOwner(ownerId);
     setCreateOpen(true);
@@ -365,7 +383,7 @@ export function DashboardClient({
   // a field has focus or a card is being dragged, so it can't disturb editing.
   const draggingRef = useRef(false);
   const busyRef = useRef(false);
-  busyRef.current = createOpen || ticketId !== null;
+  busyRef.current = createOpen || ticketId !== null || binOpen;
   useEffect(() => {
     const onDragStart = () => { draggingRef.current = true; };
     const onDragEnd = () => { draggingRef.current = false; };
@@ -449,6 +467,15 @@ export function DashboardClient({
               Show completed
             </label>
           ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            title={`Tasks deleted in the last ${DELETED_KEEP_DAYS} days — restore one`}
+            onClick={() => setBinOpen(true)}
+          >
+            <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />
+            Recently deleted
+          </Button>
           <Button size="sm" onClick={() => openNew(currentUserId)}>
             <Plus className="mr-1.5 h-4 w-4" />
             New task
@@ -512,6 +539,7 @@ export function DashboardClient({
               onAdd={openNew}
               refresh={refresh}
               onOpenTask={setTicketId}
+              onDeleted={onTaskDeleted}
             />
           ))}
         </>
@@ -571,6 +599,25 @@ export function DashboardClient({
           isAdmin={isAdmin}
           onClose={() => setTicketId(null)}
           onReassign={handleReassign}
+          onDeleted={onTaskDeleted}
+        />
+      ) : null}
+
+      {binOpen ? (
+        <RecentlyDeletedDialog
+          noun="task"
+          load={listDeletedTechTasksAction}
+          restore={(id) => restoreTechTaskAction({ id })}
+          onRestored={refresh}
+          onClose={() => setBinOpen(false)}
+        />
+      ) : null}
+      {deletedNotice ? (
+        <UndoNotice
+          key={deletedNotice.id}
+          notice={deletedNotice}
+          onClose={() => setDeletedNotice(null)}
+          onUndone={refresh}
         />
       ) : null}
     </div>
@@ -872,6 +919,7 @@ function OwnerSection({
   onAdd,
   refresh,
   onOpenTask,
+  onDeleted,
 }: {
   group: OwnerGroup;
   showDone: boolean;
@@ -879,6 +927,7 @@ function OwnerSection({
   onAdd: (ownerId: string) => void;
   refresh: () => void;
   onOpenTask: (taskId: string) => void;
+  onDeleted: (task: TechTaskRow) => void;
 }) {
   const g = group;
 
@@ -996,7 +1045,7 @@ function OwnerSection({
                 </thead>
                 <tbody>
                   {sortedOpen.map((t) => (
-                    <EditableRow key={t.id} task={t} refresh={refresh} onOpen={() => onOpenTask(t.id)} />
+                    <EditableRow key={t.id} task={t} refresh={refresh} onOpen={() => onOpenTask(t.id)} onDeleted={onDeleted} />
                   ))}
                 </tbody>
               </table>
@@ -1014,7 +1063,18 @@ function OwnerSection({
   );
 }
 
-function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: () => void; onOpen: () => void }) {
+function EditableRow({
+  task,
+  refresh,
+  onOpen,
+  onDeleted,
+}: {
+  task: TechTaskRow;
+  refresh: () => void;
+  onOpen: () => void;
+  /** After a confirmed delete — the dashboard shows "Deleted — Undo". */
+  onDeleted: (task: TechTaskRow) => void;
+}) {
   const confirm = useConfirm();
   const saveTask = useTaskSaver(task);
   const [busy, setBusy] = useState(0);
@@ -1095,6 +1155,7 @@ function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: ()
     try {
       const res = await deleteTechTaskAction({ id: task.id });
       setError(res.error ?? null);
+      if (!res.error) onDeleted(task);
       refresh();
     } catch {
       setError("Couldn't delete — check your connection and try again.");

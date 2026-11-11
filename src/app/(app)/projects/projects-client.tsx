@@ -256,7 +256,7 @@ export function ProjectsClient({
 
   return (
     <>
-      <div className="p-6">
+      <div className="p-4 md:p-6">
         <PageHeader
           className="mb-6"
           title="Projects"
@@ -302,7 +302,7 @@ export function ProjectsClient({
             )}
           </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {shown.map((p) => {
               const busy = archiving === p.id;
               const actionBtn =
