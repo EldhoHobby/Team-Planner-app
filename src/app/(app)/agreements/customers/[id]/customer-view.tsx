@@ -5,6 +5,8 @@ import { useEffect, useRef, useState, useTransition, type ReactNode } from "reac
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Pencil, Plus } from "lucide-react";
+import { DatePicker } from "@/components/ui/date-picker";
+import { AGREEMENTS_FLASH_KEY } from "../../flash";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -62,6 +64,21 @@ export function CustomerView({
   // One save indicator for the page's autosave fields (the Calls & repairs counts).
   const save = useSaveStatus();
   const [editing, setEditing] = useState(false);
+  // One-off message handed over by the page we came from (e.g. "Draft deleted.").
+  const [flash, setFlash] = useState<string | null>(null);
+  useEffect(() => {
+    let text: string | null = null;
+    try {
+      text = sessionStorage.getItem(AGREEMENTS_FLASH_KEY);
+      if (text) sessionStorage.removeItem(AGREEMENTS_FLASH_KEY);
+    } catch {
+      // storage blocked — no message
+    }
+    if (!text) return;
+    setFlash(text);
+    const t = setTimeout(() => setFlash(null), 5000);
+    return () => clearTimeout(t);
+  }, []);
   const c = data.customer;
   const r = data.renewal;
   const open = r.openProposal;
@@ -179,6 +196,7 @@ export function CustomerView({
         ))}
       </div>
 
+      <FormMessage tone="success" className="mb-3">{flash}</FormMessage>
       <div role="tabpanel">
         {tab === "agreements" && <AgreementsTab data={data} canEdit={canEdit} />}
         {tab === "history" && <HistoryTab data={data} />}
@@ -427,9 +445,21 @@ function ContractEditor({
             <option value="CANCELLED">Cancelled</option>
           </select>
         </label>
-        <label className={field}><span className={lbl}>End date</span><Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>
-        <label className={field}><span className={lbl}>Signed date</span><Input type="date" value={signedDate} onChange={(e) => setSignedDate(e.target.value)} /></label>
-        <label className={field}><span className={lbl}>Date invoiced</span><Input type="date" value={invoicedDate} onChange={(e) => setInvoicedDate(e.target.value)} /></label>
+        {/* div, not label: a label would re-click the picker's button when its calendar is used */}
+        <div className={field}>
+          <span id="sa-line-endDate" className={lbl}>End date</span>
+          <DatePicker aria-labelledby="sa-line-endDate" value={endDate} placeholder="None" onChange={(v) => { setEndDate(v); setTouched(true); }} />
+        </div>
+        {/* div, not label: a label would re-click the picker's button when its calendar is used */}
+        <div className={field}>
+          <span id="sa-line-signedDate" className={lbl}>Signed date</span>
+          <DatePicker aria-labelledby="sa-line-signedDate" value={signedDate} placeholder="None" onChange={(v) => { setSignedDate(v); setTouched(true); }} />
+        </div>
+        {/* div, not label: a label would re-click the picker's button when its calendar is used */}
+        <div className={field}>
+          <span id="sa-line-invoicedDate" className={lbl}>Date invoiced</span>
+          <DatePicker aria-labelledby="sa-line-invoicedDate" value={invoicedDate} placeholder="None" onChange={(v) => { setInvoicedDate(v); setTouched(true); }} />
+        </div>
         <label className="flex items-center gap-2 pb-2 text-sm sm:self-end"><input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} /> Checked</label>
         <label className={cn(field, "sm:col-span-2")}><span className={lbl}>Notes</span><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
       </div>

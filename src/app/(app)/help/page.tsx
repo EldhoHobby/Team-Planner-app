@@ -157,7 +157,7 @@ export default function HelpPage() {
               <li><UI>Due soon</UI> (amber) — due within the next 2 days.</li>
               <li>
                 The <UI>Needs attention</UI> row at the top counts what needs action: overdue tasks, tasks due soon,
-                schedule conflicts and unassigned jobs. Click a count to show only those items; click it again or{" "}
+                schedule conflicts and (for managers and admins) unassigned jobs. Click a count to show only those items; click it again or{" "}
                 <UI>Show all</UI> to see everything. When nothing is pending it says <UI>Nothing needs attention.</UI>
               </li>
             </ul>
@@ -201,8 +201,9 @@ export default function HelpPage() {
           <p className={P}>
             The <UI>Schedule</UI> shows jobs as coloured bars, one colour per person. Switch between <UI>Timeline</UI>{" "}
             (a week, one row per person) and <UI>Calendar</UI> (a month). Use <UI>Today</UI>, the arrows, or the date
-            box to move around. The search box and the filters (people, <UI>All types</UI>, <UI>All Sales Orders</UI>,{" "}
-            <UI>All statuses</UI>) narrow what is shown.
+            box to move around. The filters (people, <UI>All types</UI>, <UI>All Sales Orders</UI>,{" "}
+            <UI>All statuses</UI>) narrow what is shown. The search box narrows the Jobs panel and outlines the
+            matching bars on the board.
           </p>
 
           <Sub title="Opening and changing a job">

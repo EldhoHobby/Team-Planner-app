@@ -32,16 +32,21 @@ Each fix was checked live on the copy after rebuilding it.
 | PEO-22 | People → Time off | An entry with the end date before the start date was saved silently as one day. | Refused with "The end date can't be before the start date." |
 | PEO-06 | People | After renaming a person the message said "Saved changes to <old name>." | It uses the name as saved. |
 
-## Notes — not changed
+## Notes — handled in v0.0.50
 
-| Area | Note |
-|---|---|
-| Dashboard | A plain member never sees the "unassigned jobs" chip (managers and admins do); Help says everyone does. |
-| People | Earlier success / error messages stay on screen while later actions run, so an old error can sit next to a new success. |
-| People, Agreements | The Time off form and the signed-agreement and send / sign dialogs use the browser's own date box, not the app's date picker. |
-| Agreements | Deleting a draft proposal goes back to the customer page with no "Draft deleted." message. |
-| Agreements | The messages for a future "sent" date and a "signed before sent" date were refused correctly, but the script did not capture their text. |
-| Schedule | Search narrows the Jobs panel only; bars on the board stay. That is how it is coded; the plan's wording expected both. |
+Each was checked live on a fresh throwaway copy.
+
+| Area | Note | What was done |
+|---|---|---|
+| Dashboard | A plain member never sees the "unassigned jobs" chip (managers and admins do); Help said everyone does. | The count stays for managers and admins (the people who hand out work); Help now says so. |
+| People | An old error could sit next to a new success in the same card. | Each card (Departments, Work groups, Time off) shows one message at a time. |
+| People, Agreements | The Time off form, the signed-agreement dialog and the Mark sent / Mark signed dialog used the browser's own date box. | They use the app's date picker ("Nov 20, 2026"). |
+| Agreements | Deleting a draft proposal showed no message. | The customer page shows "<customer>'s <year> draft proposal was deleted." |
+| Agreements | The refusal texts for a future "sent" date and a "signed before sent" date were not captured. | Seen live: "The sent date can't be in the future."; the signed-before-sent text is in the same dialog code. |
+| Schedule | Search narrows the Jobs panel only; the plan expected the board to narrow too. | By design: search narrows the panel and outlines matching bars. Help and plan case SCH-28 now say that. |
+
+Still on the browser's date box, on purpose: the Schedule "Jump to date" box, the
+Audit page's From / To filters and the yellow end-date cell on the proposal sheet.
 
 ## What passed
 

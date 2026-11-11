@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { FormMessage } from "@/components/ui/form-message";
+import { DatePicker } from "@/components/ui/date-picker";
 import { PageHeader } from "@/components/ui/page-header";
 import { fmtDateOnly } from "@/lib/tz";
 import { useFlash } from "../use-flash";
@@ -158,7 +159,11 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
       formRef.current?.reset();
       setError(null);
       showFlash("Department added.");
-    } else if (state.error) clearFlash();
+    } else if (state.error) {
+      // Kept in `error` so the next action in this card replaces it.
+      clearFlash();
+      setError(state.error);
+    }
   }, [state, showFlash, clearFlash]);
 
   const rename = (id: string, input: HTMLInputElement, current: string) => {
@@ -166,6 +171,7 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
     if (name === current) return;
     if (!name.trim()) {
       input.value = current;
+      clearFlash();
       setError("Department name is required.");
       return;
     }
@@ -233,7 +239,6 @@ function DepartmentsCard({ departments }: { departments: Dept[] }) {
           </div>
           <DeptSubmit />
         </form>
-        <FormMessage>{state?.error}</FormMessage>
         <FormMessage>{error}</FormMessage>
         <FormMessage tone="success">{flash}</FormMessage>
         {departments.length === 0 ? (
@@ -303,7 +308,11 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
       formRef.current?.reset();
       setError(null);
       showFlash("Work group added.");
-    } else if (state.error) clearFlash();
+    } else if (state.error) {
+      // Kept in `error` so the next action in this card replaces it.
+      clearFlash();
+      setError(state.error);
+    }
   }, [state, showFlash, clearFlash]);
 
   const remove = async (id: string, name: string) => {
@@ -354,7 +363,6 @@ function WorkGroupsCard({ workGroups, people }: { workGroups: WorkGroupLite[]; p
           </div>
           <WorkGroupSubmit />
         </form>
-        <FormMessage>{state?.error}</FormMessage>
         <FormMessage>{error}</FormMessage>
         <FormMessage tone="success">{flash}</FormMessage>
         {workGroups.length === 0 ? (
@@ -1193,6 +1201,7 @@ function TimeOffSubmit() {
 function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: TimeOff[]; byId: Map<string, Person> }) {
   const router = useRouter();
   const [state, formAction] = useActionState(addTimeOffAction, {} as { error?: string; success?: boolean });
+  const [formKey, setFormKey] = useState(0);
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [flash, showFlash, clearFlash] = useFlash();
@@ -1201,9 +1210,14 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
   useEffect(() => {
     if (state.success) {
       formRef.current?.reset();
+      setFormKey((k) => k + 1); // the date pickers keep their own value — remount to clear them
       setError(null);
       showFlash("Time off added.");
-    } else if (state.error) clearFlash();
+    } else if (state.error) {
+      // Kept in `error` so the next action in this card replaces it.
+      clearFlash();
+      setError(state.error);
+    }
   }, [state, showFlash, clearFlash]);
   const nameOf = (t: TimeOff) => {
     const p = byId.get(t.technicianId);
@@ -1246,11 +1260,11 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
           </div>
           <div className="space-y-1">
             <Label htmlFor="to-start">Start</Label>
-            <input id="to-start" name="startDate" type="date" required className={SELECT} />
+            <DatePicker key={`s${formKey}`} id="to-start" name="startDate" required className="w-40" />
           </div>
           <div className="space-y-1">
             <Label htmlFor="to-end">End</Label>
-            <input id="to-end" name="endDate" type="date" required className={SELECT} />
+            <DatePicker key={`e${formKey}`} id="to-end" name="endDate" required className="w-40" />
           </div>
           <div className="flex-1 space-y-1">
             <Label htmlFor="to-reason">Reason</Label>
@@ -1258,7 +1272,6 @@ function TimeOffCard({ people, timeOff, byId }: { people: Person[]; timeOff: Tim
           </div>
           <TimeOffSubmit />
         </form>
-        <FormMessage>{state?.error}</FormMessage>
         <FormMessage>{error}</FormMessage>
         <FormMessage tone="success">{flash}</FormMessage>
         {timeOff.length === 0 ? (

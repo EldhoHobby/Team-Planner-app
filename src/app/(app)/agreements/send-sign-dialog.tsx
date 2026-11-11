@@ -2,7 +2,7 @@
 
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Modal } from "@/components/ui/modal";
 import { FormMessage } from "@/components/ui/form-message";
 import { todayYmd } from "@/lib/tz";
@@ -89,16 +89,12 @@ function Body({ r, onCancel, onConfirm }: { r: SendSignRequest; onCancel: () => 
       </p>
       <div className="space-y-1">
         <label htmlFor={dateId} className="block text-xs font-medium">{signing ? "Signed on" : "Sent on"}</label>
-        <Input
+        <DatePicker
           id={dateId}
-          type="date"
           value={date}
-          max={today}
-          min={min}
           required
-          data-autofocus
-          onChange={(e) => {
-            setDate(e.target.value);
+          onChange={(v) => {
+            setDate(v);
             setError(null);
           }}
           className="w-44"
@@ -121,7 +117,7 @@ function Body({ r, onCancel, onConfirm }: { r: SendSignRequest; onCancel: () => 
       <FormMessage tone="error">{error}</FormMessage>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
-        <Button type="submit">{signing ? "Mark signed" : "Mark sent"}</Button>
+        <Button type="submit" data-autofocus>{signing ? "Mark signed" : "Mark sent"}</Button>
       </div>
     </form>
   );

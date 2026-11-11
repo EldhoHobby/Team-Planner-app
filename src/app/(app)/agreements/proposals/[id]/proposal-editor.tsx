@@ -17,6 +17,7 @@ import type { ProposalDetail } from "@/lib/services/agreements/proposals";
 import { CustomerStatusBadge, ProposalBadge, UnconfirmedSo } from "../../badges";
 import { CloseProposalDialog } from "../../close-proposal-dialog";
 import { ProposalSheet } from "../proposal-sheet";
+import { leaveFlash } from "../../flash";
 import { printInFrame } from "../../print-frame";
 import { SendSignDialog, type SendSignRequest } from "../../send-sign-dialog";
 import type { ActionResult } from "../../types";
@@ -224,7 +225,10 @@ export function ProposalEditor({
       "Draft deleted.",
       (r) => {
         if (r.error) unlockEdits();
-        else router.push(`/agreements/customers/${c.id}?tab=proposals`);
+        else {
+          leaveFlash(`${c.name}'s ${p.year} draft proposal was deleted.`);
+          router.push(`/agreements/customers/${c.id}?tab=proposals`);
+        }
       },
     );
   };
