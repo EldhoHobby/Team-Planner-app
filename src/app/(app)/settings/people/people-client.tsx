@@ -632,10 +632,10 @@ function PeopleTable({
           person={editing}
           canEditSignIn={editing.orgRole !== "OWNER" || viewerIsOwner}
           onClose={closeEdit}
-          onSaved={() => {
+          onSaved={(savedName) => {
             const who = editing;
             setEditing(null);
-            if (who) report(who, {}, `Saved changes to ${displayName(who)}.`);
+            if (who) report(who, {}, `Saved changes to ${savedName ?? displayName(who)}.`);
             router.refresh();
           }}
         />
@@ -957,7 +957,8 @@ function EditPersonModal({
   /** Username + email both work at sign-in: only the Owner may change the Owner's. */
   canEditSignIn: boolean;
   onClose: () => void;
-  onSaved: () => void;
+  /** Called with the name as saved (it may have just been changed). */
+  onSaved: (savedName?: string) => void;
 }) {
   const [pending, startTransition] = useTransition();
   const [name, setName] = useState(person.name ?? "");
@@ -975,7 +976,7 @@ function EditPersonModal({
         ...(canEditSignIn ? { username, email: email.trim() || null } : {}),
       });
       if (res.error) setError(res.error);
-      else onSaved();
+      else onSaved(name.trim() || undefined);
     });
 
   const ownerOnly = "Only the Owner can change the Owner's username or email (both are used to sign in).";

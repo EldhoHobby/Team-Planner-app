@@ -52,6 +52,7 @@ export default async function TasksPage({
     isFieldTrip: t.isFieldTrip,
     location: t.location,
     createdAt: t.createdAt.toISOString(),
+    version: t.version,
   }));
 
   const projectOptions: ProjectOption[] = projects.map((p) => ({

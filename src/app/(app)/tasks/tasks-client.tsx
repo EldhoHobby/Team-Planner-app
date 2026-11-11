@@ -230,6 +230,11 @@ function TaskFormDialog({
         {mode === "edit" && (
           <input type="hidden" name="taskId" value={initialTask?.id} />
         )}
+        {/* Stale-save protection: the version this form loaded. A save after
+            someone else changed the task is refused instead of overwriting. */}
+        {mode === "edit" && initialTask ? (
+          <input type="hidden" name="version" value={initialTask.version} />
+        ) : null}
 
         {/* Title */}
         <div className="space-y-2">

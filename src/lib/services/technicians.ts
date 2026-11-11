@@ -35,6 +35,8 @@ export async function createTechTimeOff(
 
   const start = toUtcMidnight(input.startDate);
   const end = toUtcMidnight(input.endDate);
+  // Refuse rather than silently saving a single day.
+  if (end < start) throw new ForbiddenError("The end date can't be before the start date.");
   const off = await prisma.technicianTimeOff.create({
     data: {
       orgId: scope.ctx.orgId,
