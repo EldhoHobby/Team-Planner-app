@@ -14,11 +14,11 @@ profile)._
 
 | | Version | Notes |
 |---|---|---|
-| **GitHub `main`** | **v0.1.0** | tagged `v0.1.0` (2026-11-12). `improve/ux-review` (v0.0.11 – v0.0.54, built on `feature/service-agreements`) is merged in |
-| **v0.2.0** | 2026-11-12 | Agreements workflow rework (from the reviewed mock-up): `/agreements` is now the **Renewals** work list (one row per renewal, plain-words status, one next-step button, filter chips + search); the old dashboard moved to `/agreements/overview`; the proposal page is a guided three-step renewal with one primary button per step and a "Next: customer" link after signing. No change to saving, pricing, the proposal sheet or the workbook. On branch `improve/agreements-workflow`, not merged or deployed. |
+| **GitHub `main`** | **v0.2.0** | tagged `v0.2.0` (2026-11-12; `improve/agreements-workflow` merged). `v0.1.0` was the first release to production. `improve/ux-review` (v0.0.11 – v0.0.54, built on `feature/service-agreements`) is merged in |
+| **v0.2.0** | 2026-11-12 | Agreements workflow rework (from the reviewed mock-up): `/agreements` is now the **Renewals** work list (one row per renewal, plain-words status, one next-step button, filter chips + search); the old dashboard moved to `/agreements/overview`; the proposal page is a guided three-step renewal with one primary button per step and a "Next: customer" link after signing. No change to saving, pricing, the proposal sheet or the workbook. Merged into `main` and tagged `v0.2.0` on 2026-11-12; not deployed to production yet (production is on v0.1.0). |
 | **Production — `10.210.6.233`** (the user still calls it "the SCADA PC") | **v0.1.0** | since **2026-11-12** (v0.0.10 before that, moved here 2026-11-06). Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Caddyfile as in git (`LAN_IP` in `.env`). Email ingest off. See `DEPLOY.md` section 1 |
 | **Old SCADA PC `10.210.4.65`** | v0.0.8 last deployed (stopped) | **retired** 2026-11-06; stack stopped but the PC is kept as a fallback for now. Don't start it while the new PC is live (data would diverge) |
-| **Dev PC `10.210.4.130`** | v0.1.0 | on `main`, `planner.localhost`, `docker-compose.yml`. Until "Restore agreements only" has been run on production, the dev DB holds the only copy of the service-agreements data |
+| **Dev PC `10.210.4.130`** | v0.2.0 | on `main`, `planner.localhost`, `docker-compose.yml`. Until "Restore agreements only" has been run on production, the dev DB holds the only copy of the service-agreements data |
 
 ---
 
