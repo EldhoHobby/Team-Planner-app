@@ -326,9 +326,21 @@ export default function HelpPage() {
             <UI>Agreements</UI> tracks each customer&apos;s service agreements, renewals and proposals. An admin
             chooses who can see it (Agreements → <UI>Settings</UI> → <UI>Who can see Agreements</UI>: everyone, or
             only chosen people); if you can&apos;t, it isn&apos;t in your sidebar. Only admins and the{" "}
-            <UI>Customer Service</UI> work group can make changes — everyone else sees a <UI>View only</UI> tag. The bar at the top has <UI>Dashboard</UI>, <UI>Pipeline</UI>, <UI>Customers</UI>,{" "}
-            <UI>Proposals</UI> and <UI>Settings</UI>.
+            <UI>Customer Service</UI> work group can make changes — everyone else sees a <UI>View only</UI> tag. The bar at the top has <UI>Renewals</UI>, <UI>Overview</UI>,{" "}
+            <UI>Pipeline</UI>, <UI>Customers</UI>, <UI>Proposals</UI> and <UI>Settings</UI>.
           </p>
+
+          <Sub title="Renewals: where to start">
+            <p className={P}>
+              <UI>Renewals</UI> is one list of everything coming up for renewal. Each row says where it stands in
+              plain words (for example &quot;Renewal due in 50 days&quot; or &quot;Sent 16 days ago, waiting on
+              customer&quot;) and has one button for the next step: <UI>Start proposal</UI>, <UI>Review prices</UI>{" "}
+              or <UI>Mark signed</UI>. The buttons above the list narrow it: <UI>Needs action</UI>,{" "}
+              <UI>No proposal yet</UI>, <UI>Drafts</UI>, <UI>Waiting on customer</UI>, <UI>On hold</UI> (Pending and
+              Expired – still waiting customers), <UI>Signed</UI> (the last 60 days) and <UI>All</UI>. Search finds
+              a customer by name or SO #. The numbers, chart and recent activity are on <UI>Overview</UI>.
+            </p>
+          </Sub>
 
           <Sub title="Customers and agreements">
             <p className={P}>
@@ -343,9 +355,11 @@ export default function HelpPage() {
           <Sub title="Proposals">
             <p className={P}>
               A proposal moves <UI>Draft</UI> → <UI>Sent</UI> → <UI>Signed</UI>, or is closed as <UI>Declined</UI>{" "}
-              (the customer is not renewing) or <UI>Withdrawn</UI> (replaced or no longer offered). On a proposal use{" "}
-              <UI>Mark sent</UI>, <UI>Mark signed</UI> and <UI>Decline / withdraw</UI>; <UI>Back to draft</UI> undoes
-              Sent. On the <UI>Pipeline</UI> you can do the same by dragging cards between columns. Signing copies the
+              (the customer is not renewing) or <UI>Withdrawn</UI> (replaced or no longer offered). The proposal page
+              walks through three steps (<UI>Review prices</UI>, <UI>Send to customer</UI>,{" "}
+              <UI>Record signature</UI>) and shows one main button for the step you are on: <UI>Mark sent</UI>, then{" "}
+              <UI>Mark signed</UI>. <UI>Decline / withdraw</UI> and <UI>Back to draft</UI> sit beside it. After
+              signing, <UI>Next: …</UI> opens the next renewal that needs action. On the <UI>Pipeline</UI> you can do the same by dragging cards between columns. Signing copies the
               proposal&apos;s prices into the customer&apos;s signed agreements. <UI>Print / PDF</UI> prints a
               proposal; on <UI>Proposals</UI> you can print several at once, and{" "}
               <UI>Create proposals in bulk…</UI> starts proposals for every agreement ending in a month you pick.
@@ -362,7 +376,7 @@ export default function HelpPage() {
 
           <Sub title="Lapsed agreements">
             <p className={P}>
-              The Agreements <UI>Dashboard</UI> lists <UI>Lapsed agreements</UI>: ones that ended without renewal
+              <UI>Renewals</UI> and the <UI>Overview</UI> list <UI>Lapsed agreements</UI>: ones that ended without renewal
               while the same customer&apos;s other agreements were renewed. Start a proposal for them, or — if the
               customer isn&apos;t renewing that one — mark the agreement Cancelled on the customer&apos;s{" "}
               <UI>Agreements</UI> tab.

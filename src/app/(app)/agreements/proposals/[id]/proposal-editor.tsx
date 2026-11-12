@@ -4,7 +4,7 @@ import { ymdEastern } from "@/lib/tz";
 import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Check, Printer, RotateCcw, Send, Trash2, Undo2, X } from "lucide-react";
+import { ArrowRight, Check, Printer, RotateCcw, Send, Trash2, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { FormMessage } from "@/components/ui/form-message";
@@ -37,13 +37,16 @@ function signedPct(n: number | null) {
 }
 
 export function ProposalEditor({
-  data, canEdit, today, backHref = "/agreements/proposals",
+  data, canEdit, today, backHref = "/agreements/proposals", backLabel = "Proposals", next = null,
 }: {
   data: ProposalDetail;
   canEdit: boolean;
   today: string;
-  /** The Proposals list as the user left it (filters kept) — always a path under /agreements/proposals. */
+  /** Where the back link goes: Renewals (`/agreements`) or the Proposals list as the user left it (filters kept). */
   backHref?: string;
+  backLabel?: string;
+  /** The next renewal needing action (another customer) — offered once this proposal is finished. */
+  next?: { href: string; label: string } | null;
 }) {
   const router = useRouter();
   const confirm = useConfirm();
@@ -269,7 +272,7 @@ export function ProposalEditor({
     <div className="space-y-4 print:space-y-0">
       <PageHeader
         className="mb-0 print:hidden"
-        back={{ href: backHref, label: "Proposals" }}
+        back={{ href: backHref, label: backLabel }}
         title={
           <span className="flex flex-wrap items-center gap-2">
             {p.year} proposal
@@ -298,42 +301,6 @@ export function ProposalEditor({
             >
               <Printer className="h-4 w-4" aria-hidden /> {printing ? "Preparing…" : "Print / PDF"}
             </Button>
-            {canEdit && p.status === "DRAFT" && (
-              <Button size="sm" disabled={pending} onClick={() => askSendSign("send")}><Send className="h-4 w-4" aria-hidden /> Mark sent</Button>
-            )}
-            {canEdit && p.status === "SENT" && (
-              <Button size="sm" variant="outline" disabled={pending} onClick={() => transition("unsend", "Back to draft.")}><Undo2 className="h-4 w-4" aria-hidden /> Back to draft</Button>
-            )}
-            {canEdit && p.status === "SIGNED" && (
-              <Button size="sm" variant="outline" disabled={pending} onClick={undoSign}>
-                <Undo2 className="h-4 w-4" aria-hidden /> Undo signing
-              </Button>
-            )}
-            {editable && (
-              <>
-                <Button size="sm" variant={p.status === "SENT" ? "default" : "outline"} disabled={pending} onClick={() => askSendSign("sign")}>
-                  <Check className="h-4 w-4" aria-hidden /> Mark signed
-                </Button>
-                <Button size="sm" variant="outline" disabled={pending} onClick={() => setClosing(true)}>
-                  <X className="h-4 w-4" aria-hidden /> Decline / withdraw
-                </Button>
-              </>
-            )}
-            {canEdit && p.status === "DRAFT" && (
-              <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" disabled={pending} onClick={deleteDraft}>
-                <Trash2 className="h-4 w-4" aria-hidden /> Delete draft
-              </Button>
-            )}
-            {canEdit && (p.status === "DECLINED" || p.status === "WITHDRAWN") && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={pending}
-                onClick={() => (c.status === "NOT_RENEWED" ? setReopening(true) : transition("reopen", "Reopened as a draft."))}
-              >
-                <RotateCcw className="h-4 w-4" aria-hidden /> Reopen
-              </Button>
-            )}
           </>
         }
       />
@@ -396,7 +363,96 @@ export function ProposalEditor({
             </dd>
           </div>
         </dl>
-        <Timeline p={p} />
+
+        {/* Guided renewal: Review prices → Send to customer → Record signature */}
+        <div className="mt-4 space-y-3 border-t pt-4">
+          <Steps p={p} />
+
+          <div role="group" aria-label="Next step" className="space-y-2 rounded-md bg-muted/50 px-3 py-3">
+            <p className="text-sm">
+              {p.status === "DRAFT" && "Check the prices in the yellow cells, then mark the proposal as sent."}
+              {p.status === "SENT" && (
+                <>
+                  Sent {fmtDate(p.sentDate) || "—"}
+                  {sentAgo !== null && (
+                    <>
+                      {" "}(
+                      <span className={cn(sentAgo > 14 && "font-semibold text-amber-700 dark:text-amber-400")}>
+                        {sentAgo === 0 ? "today" : `${sentAgo} day${sentAgo === 1 ? "" : "s"} ago`}
+                      </span>
+                      )
+                    </>
+                  )}
+                  . When the signed copy comes back, record it here.
+                </>
+              )}
+              {p.status === "SIGNED" && `Signed ${fmtDate(p.signedDate) || "—"}. The ${p.year} agreements are on the customer's record.`}
+              {(p.status === "DECLINED" || p.status === "WITHDRAWN") && `This proposal was ${p.status === "DECLINED" ? "declined" : "withdrawn"}.`}
+            </p>
+
+            {canEdit && (
+              <div className="flex flex-wrap items-center gap-2">
+                {p.status === "DRAFT" && (
+                  <>
+                    <Button size="sm" disabled={pending} onClick={() => askSendSign("send")}>
+                      <Send className="h-4 w-4" aria-hidden /> Mark sent
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={pending} onClick={() => askSendSign("sign")}>
+                      <Check className="h-4 w-4" aria-hidden /> Mark signed
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={pending} onClick={() => setClosing(true)}>
+                      <X className="h-4 w-4" aria-hidden /> Decline / withdraw
+                    </Button>
+                    <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" disabled={pending} onClick={deleteDraft}>
+                      <Trash2 className="h-4 w-4" aria-hidden /> Delete draft
+                    </Button>
+                  </>
+                )}
+                {p.status === "SENT" && (
+                  <>
+                    <Button size="sm" disabled={pending} onClick={() => askSendSign("sign")}>
+                      <Check className="h-4 w-4" aria-hidden /> Mark signed
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={pending} onClick={() => transition("unsend", "Back to draft.")}>
+                      <Undo2 className="h-4 w-4" aria-hidden /> Back to draft
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={pending} onClick={() => setClosing(true)}>
+                      <X className="h-4 w-4" aria-hidden /> Decline / withdraw
+                    </Button>
+                  </>
+                )}
+                {(p.status === "DECLINED" || p.status === "WITHDRAWN") && (
+                  <Button
+                    size="sm"
+                    disabled={pending}
+                    onClick={() => (c.status === "NOT_RENEWED" ? setReopening(true) : transition("reopen", "Reopened as a draft."))}
+                  >
+                    <RotateCcw className="h-4 w-4" aria-hidden /> Reopen
+                  </Button>
+                )}
+                {(p.status === "SIGNED" || p.status === "DECLINED" || p.status === "WITHDRAWN") && (
+                  <>
+                    {next && (
+                      <Button asChild size="sm" variant={p.status === "SIGNED" ? "default" : "outline"}>
+                        <Link href={next.href}>
+                          Next: {next.label} <ArrowRight className="h-4 w-4" aria-hidden />
+                        </Link>
+                      </Button>
+                    )}
+                    <Button asChild size="sm" variant={p.status === "SIGNED" && !next ? "default" : "outline"}>
+                      <Link href="/agreements">Back to Renewals</Link>
+                    </Button>
+                  </>
+                )}
+                {p.status === "SIGNED" && (
+                  <Button size="sm" variant="ghost" disabled={pending} onClick={undoSign}>
+                    <Undo2 className="h-4 w-4" aria-hidden /> Undo signing
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       </section>
 
       <div aria-live="polite" className="min-h-0 print:hidden">
@@ -479,38 +535,77 @@ export function ProposalEditor({
   );
 }
 
-function Timeline({ p }: { p: ProposalDetail["proposal"] }) {
-  const steps: { label: string; date: string | null; done: boolean; bad?: boolean }[] = [
-    { label: `Created${p.createdBy ? ` by ${p.createdBy}` : ""}`, date: ymdEastern(p.createdAt), done: true },
-    // A Draft is never "sent", even if a stray sent date came in from the workbook.
-    { label: "Sent", date: p.status === "DRAFT" ? null : p.sentDate, done: p.status !== "DRAFT" && !!p.sentDate },
-    p.status === "DECLINED" || p.status === "WITHDRAWN"
-      ? { label: p.status === "DECLINED" ? "Declined" : "Withdrawn", date: p.closedDate, done: true, bad: true }
-      : { label: "Signed", date: p.signedDate, done: !!p.signedDate },
+/** The three renewal steps; the current one is highlighted. Declined / withdrawn add a red marker. */
+function Steps({ p }: { p: ProposalDetail["proposal"] }) {
+  const closed = p.status === "DECLINED" || p.status === "WITHDRAWN";
+  // A Draft is never "sent", even if a stray sent date came in from the workbook.
+  const sent = p.status !== "DRAFT" && !!p.sentDate;
+  type State = "done" | "current" | "upcoming";
+  const steps: { label: string; state: State; note: string | null }[] = [
+    {
+      label: "Review prices",
+      state: p.status === "DRAFT" ? "current" : "done",
+      note: p.status === "DRAFT" ? "Check the yellow cells below" : null,
+    },
+    {
+      label: "Send to customer",
+      state: sent || p.status === "SIGNED" ? "done" : "upcoming",
+      note: sent ? `Sent ${fmtDate(p.sentDate)}` : p.status === "SIGNED" ? "Not marked sent" : null,
+    },
+    {
+      label: "Record signature",
+      state: p.status === "SIGNED" ? "done" : p.status === "SENT" ? "current" : "upcoming",
+      note: p.status === "SIGNED" && p.signedDate ? `Signed ${fmtDate(p.signedDate)}` : null,
+    },
   ];
   return (
-    <div className="mt-3 border-t pt-3">
-      <ol className="flex flex-wrap items-center gap-x-2 gap-y-2 text-sm">
+    <div className="space-y-2">
+      <ol className="flex flex-col gap-2 text-sm sm:flex-row sm:flex-wrap sm:items-start sm:gap-x-6">
         {steps.map((s, i) => (
-          <li key={s.label} className="flex items-center gap-2">
+          <li key={s.label} aria-current={s.state === "current" ? "step" : undefined} className="flex min-w-0 items-start gap-2">
             <span
               aria-hidden
               className={cn(
-                "flex h-5 w-5 items-center justify-center rounded-full border text-[10px]",
-                s.done ? (s.bad ? "border-red-500 bg-red-500 text-white" : "border-primary bg-primary text-primary-foreground") : "text-muted-foreground",
+                "mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
+                s.state === "done" && "border-primary bg-primary text-primary-foreground",
+                s.state === "current" && "border-primary text-primary ring-2 ring-primary/30",
+                s.state === "upcoming" && "text-muted-foreground",
               )}
             >
-              {s.done ? (s.bad ? "×" : "✓") : i + 1}
+              {s.state === "done" ? <Check className="h-3.5 w-3.5" /> : i + 1}
             </span>
-            <span className={s.done ? "" : "text-muted-foreground"}>
-              {s.label}
-              {s.date && <span className="text-muted-foreground"> · {fmtDate(s.date)}</span>}
+            <span className="min-w-0">
+              <span
+                className={cn(
+                  "block",
+                  s.state === "current" && "font-semibold text-primary",
+                  s.state === "upcoming" && "text-muted-foreground",
+                )}
+              >
+                {s.label}
+                {s.state === "done" && <span className="sr-only"> (done)</span>}
+                {s.state === "current" && <span className="sr-only"> (current step)</span>}
+              </span>
+              {s.note && <span className="block text-xs text-muted-foreground">{s.note}</span>}
             </span>
-            {i < steps.length - 1 && <span aria-hidden className="mx-1 h-px w-8 bg-border" />}
           </li>
         ))}
+        {closed && (
+          <li className="flex min-w-0 items-start gap-2">
+            <span aria-hidden className="mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-red-600 bg-red-600 text-white">
+              <X className="h-3.5 w-3.5" />
+            </span>
+            <span className="min-w-0">
+              <span className="block font-semibold text-red-700 dark:text-red-400">{p.status === "DECLINED" ? "Declined" : "Withdrawn"}</span>
+              {p.closedDate && <span className="block text-xs text-muted-foreground">{fmtDate(p.closedDate)}</span>}
+            </span>
+          </li>
+        )}
       </ol>
-      {p.declineReason && <p className="mt-2 text-sm text-muted-foreground">Reason: {p.declineReason}</p>}
+      {p.declineReason && <p className="text-sm text-muted-foreground">Reason: {p.declineReason}</p>}
+      <p className="text-xs text-muted-foreground">
+        Created{p.createdBy ? ` by ${p.createdBy}` : ""} · {fmtDate(ymdEastern(p.createdAt))}
+      </p>
     </div>
   );
 }
