@@ -155,8 +155,8 @@ and open the Schedule and Dashboard.
 
 #### First update after v0.0.10 (one-time notes)
 
-Production is on v0.0.10; the next release jumps to the service-agreements line
-(v0.0.11 → v0.0.43+). Things to know before that update:
+Production is on v0.0.10; the next release is **v0.1.0** (everything from
+v0.0.11 to v0.0.54, merged to `main`). Things to know before that update:
 
 - **Do the one-time Caddyfile switch (1.3) in step 4**, before `git pull`.
 - `ollama` / `ollama-init` now only start with `--profile ai`. After the update
@@ -174,9 +174,9 @@ Production is on v0.0.10; the next release jumps to the service-agreements line
   pulls it on the first build.
 
 - **Rehearse the migrations on a copy of production first** (below). The jump
-  adds seven migrations (change history + task version column, the whole
-  service-agreements schema, agreement settings / redesign, data fixes) on top
-  of the three v0.0.10 already has.
+  adds eight migrations (change history + task version column, the whole
+  service-agreements schema, agreement settings / redesign, data fixes, soft
+  delete + job version) on top of the three v0.0.10 already has.
 - The compose files now **pin** `caddy:2.11.8-alpine`, `postgres:16.15-alpine`
   and `ollama/ollama:0.40.14`. Step 5 pulls them; without it `up -d` fails
   with "pull access denied / no such image" because of `pull_policy: never`.
