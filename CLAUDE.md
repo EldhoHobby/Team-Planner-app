@@ -525,7 +525,7 @@ host normally has no npm — Docker is the supported path).
   UTC and the browser in Eastern, so anything showing "today" or a time must go
   through `src/lib/tz.ts` (`todayYmd`, `todayUtcMs`, `daysFromToday`,
   `fmtEastern`, `fmtDateOnly`) or React throws hydration error #418.
-- **Agreements workflow (v0.2.0):** `/agreements` is the **Renewals** work list (one row per
+- **Agreements workflow (v0.1.1):** `/agreements` is the **Renewals** work list (one row per
   renewal — due / expired / lapsed / draft / sent / recently signed — with a plain-words status and ONE
   next-step button; filter chips + search kept in the URL as `?show=` / `?q=`). Rules are pure in
   `src/lib/agreements/renewal-list.ts` (`buildRenewalRows`, `standing`, `RENEWAL_FILTERS`; unit-tested),
