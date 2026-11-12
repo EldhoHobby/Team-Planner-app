@@ -1,3 +1,4 @@
+import { requireAgreementsAccess } from "@/app/(app)/agreements/access";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { getProposal, type ProposalDetail } from "@/lib/services/agreements/proposals";
@@ -13,6 +14,7 @@ export const metadata = { title: "Print proposals" };
 export default async function PrintProposals({ searchParams }: { searchParams: Promise<{ ids?: string; title?: string }> }) {
   await requireAuth();
   const { scope } = await requireScope();
+  await requireAgreementsAccess(scope);
   const sp = await searchParams;
   const ids = (sp.ids ?? "").split(",").filter(Boolean).slice(0, 300);
   const rules = await getSettings(scope); // once for the whole batch, not once per proposal

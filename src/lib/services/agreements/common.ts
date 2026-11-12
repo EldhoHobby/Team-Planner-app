@@ -5,7 +5,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "@/lib/services/audit";
 import { recordFieldChanges, type FieldChange } from "@/lib/services/change-history";
 import { assertFreshWrite, versionGuard } from "@/lib/db/optimistic";
-import { AGREEMENT_LABELS, SA_AGREEMENTS, SA_EDITOR_GROUP, type SaAgreement } from "@/lib/agreements/constants";
+import { AGREEMENT_LABELS, SA_AGREEMENTS, SA_EDITOR_GROUP, SA_VIEWER_GROUP, type SaAgreement } from "@/lib/agreements/constants";
 import { FIXED_PRICE_AGREEMENTS, type PricingRules } from "@/lib/agreements/pricing";
 import type { LineLite, ProposalLite } from "@/lib/agreements/renewal";
 import { fieldLabel, formatChangeValue } from "@/lib/agreements/history-format";
@@ -54,6 +54,39 @@ export async function canEditAgreements(scope: TenantScope): Promise<boolean> {
     select: { id: true },
   });
   return !!m;
+}
+
+/**
+ * Who may SEE the service agreements: org admins and the editor group always; everyone else
+ * only when the "Agreements Viewers" work group doesn't exist (= open to all) or they are in it.
+ * Takes plain ids so the app shell can ask without building a scope.
+ */
+export async function agreementsVisibleTo(who: { orgId: string; userId: string; isOrgAdmin: boolean }): Promise<boolean> {
+  if (who.isOrgAdmin) return true;
+  const groups = await prisma.workGroup.findMany({
+    where: {
+      orgId: who.orgId,
+      archived: false,
+      OR: [
+        { name: { equals: SA_VIEWER_GROUP, mode: "insensitive" } },
+        { name: { equals: SA_EDITOR_GROUP, mode: "insensitive" } },
+      ],
+    },
+    select: { name: true, members: { where: { userId: who.userId }, select: { id: true } } },
+  });
+  const restricted = groups.some((g) => g.name.toLowerCase() === SA_VIEWER_GROUP.toLowerCase());
+  if (!restricted) return true;
+  return groups.some((g) => g.members.length > 0);
+}
+
+export function canViewAgreements(scope: TenantScope): Promise<boolean> {
+  return agreementsVisibleTo({ orgId: scope.ctx.orgId, userId: scope.ctx.userId, isOrgAdmin: scope.ctx.isOrgAdmin });
+}
+
+export async function assertCanView(scope: TenantScope): Promise<void> {
+  if (!(await canViewAgreements(scope))) {
+    throw new ForbiddenError("You don't have access to the service agreements.");
+  }
 }
 
 export async function assertCanEdit(scope: TenantScope): Promise<void> {

@@ -1,3 +1,4 @@
+import { requireAgreementsAccess } from "@/app/(app)/agreements/access";
 import Link from "next/link";
 import { ArrowRight, StickyNote } from "lucide-react";
 import { requireAuth } from "@/lib/auth/guard";
@@ -146,6 +147,7 @@ function LapsedSection({ items, canEdit }: { items: LapsedItem[]; canEdit: boole
 export default async function AgreementsDashboard() {
   await requireAuth();
   const { scope } = await requireScope();
+  await requireAgreementsAccess(scope);
   await recordPageView(scope, "Service agreements");
   const [d, canEdit] = await Promise.all([getDashboard(scope), canEditAgreements(scope)]);
   const header = (

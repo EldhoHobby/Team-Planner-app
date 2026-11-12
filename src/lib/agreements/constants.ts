@@ -89,6 +89,13 @@ export const HISTORY_YEARS = 5;
 /** Members of this work group may edit agreements (org admins always can). */
 export const SA_EDITOR_GROUP = "Customer Service";
 
+/**
+ * While this work group exists (not archived), only its members — plus org admins and the
+ * editor group — can SEE the service agreements. With no such group everyone in the org can.
+ * Managed from Agreements → Settings → "Who can see Agreements".
+ */
+export const SA_VIEWER_GROUP = "Agreements Viewers";
+
 /** "$12,345" (whole dollars). */
 export function fmtMoney(n: number | null | undefined): string {
   if (n === null || n === undefined) return "";

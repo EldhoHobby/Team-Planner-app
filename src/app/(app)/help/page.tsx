@@ -106,10 +106,10 @@ export default function HelpPage() {
           <ul className={UL}>
             <li><UI>Dashboard</UI> — your open tasks (and your people&apos;s, if you manage anyone), plus the jobs you&apos;re booked on.</li>
             <li><UI>Schedule</UI> — the field-service board: who is on which job, on which days.</li>
-            <li><UI>Tasks</UI> — tasks organised under projects.</li>
-            <li><UI>Timesheet</UI> — enter your hours for the week and produce the timesheet Excel file.</li>
-            <li><UI>Projects</UI> — the projects that group the tasks on the Tasks page.</li>
-            <li><UI>Agreements</UI> — service agreements: customers, renewals and proposals.</li>
+            <li><UI>Tasks</UI> — tasks organised under projects (admins only).</li>
+            <li><UI>Timesheet</UI> — enter your hours for the week and produce the timesheet Excel file (admins only).</li>
+            <li><UI>Projects</UI> — the projects that group the tasks on the Tasks page (admins only).</li>
+            <li><UI>Agreements</UI> — service agreements: customers, renewals and proposals (shown only if you have access).</li>
             <li><UI>Activity</UI> — everything you have done in the app recently, newest first.</li>
             <li><UI>Help</UI> — this page.</li>
           </ul>
@@ -189,8 +189,8 @@ export default function HelpPage() {
 
           <Sub title="The Tasks page">
             <p className={P}>
-              <UI>Tasks</UI> is a separate list of project tasks (each belongs to a project from the <UI>Projects</UI>{" "}
-              page). Use <UI>New task</UI> to add one, and the filters such as <UI>Assigned to me</UI> and{" "}
+              <UI>Tasks</UI> (admins only) is a separate list of project tasks (each belongs to a project from the{" "}
+              <UI>Projects</UI> page). Use <UI>New task</UI> to add one, and the filters such as <UI>Assigned to me</UI> and{" "}
               <UI>Hide done</UI> to narrow the list.
             </p>
           </Sub>
@@ -300,7 +300,7 @@ export default function HelpPage() {
         {/* ─────────────── Timesheet ─────────────── */}
         <Section id="timesheet" title="Timesheet">
           <p className={P}>
-            The <UI>Timesheet</UI> is your weekly grid, by week ending. Enter hours under <UI>DIRECT LABOR</UI> (by
+            The <UI>Timesheet</UI> (admins only) is your weekly grid, by week ending. Enter hours under <UI>DIRECT LABOR</UI> (by
             S.O. and customer) and <UI>INDIRECT LABOR</UI>, add <UI>Comments</UI> if needed, then <UI>Save</UI>.
           </p>
           <ul className={UL}>
@@ -323,9 +323,10 @@ export default function HelpPage() {
         {/* ─────────────── Agreements ─────────────── */}
         <Section id="agreements" title="Service agreements">
           <p className={P}>
-            <UI>Agreements</UI> tracks each customer&apos;s service agreements, renewals and proposals. Everyone can
-            look; only admins and the <UI>Customer Service</UI> work group can make changes — everyone else sees a{" "}
-            <UI>View only</UI> tag. The bar at the top has <UI>Dashboard</UI>, <UI>Pipeline</UI>, <UI>Customers</UI>,{" "}
+            <UI>Agreements</UI> tracks each customer&apos;s service agreements, renewals and proposals. An admin
+            chooses who can see it (Agreements → <UI>Settings</UI> → <UI>Who can see Agreements</UI>: everyone, or
+            only chosen people); if you can&apos;t, it isn&apos;t in your sidebar. Only admins and the{" "}
+            <UI>Customer Service</UI> work group can make changes — everyone else sees a <UI>View only</UI> tag. The bar at the top has <UI>Dashboard</UI>, <UI>Pipeline</UI>, <UI>Customers</UI>,{" "}
             <UI>Proposals</UI> and <UI>Settings</UI>.
           </p>
 

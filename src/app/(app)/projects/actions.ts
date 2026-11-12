@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireScope } from "@/lib/auth/current-user";
+import { requireAdminScope } from "@/lib/auth/current-user";
 import { actionError } from "@/lib/log";
 import { createProject, archiveProject, restoreProject, renameProject } from "@/lib/services/projects";
 import type { CreateProjectState } from "./types";
@@ -17,7 +17,7 @@ export async function createProjectAction(
   _prev: CreateProjectState,
   formData: FormData,
 ): Promise<CreateProjectState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Projects");
   const parsed = CreateSchema.safeParse({
     name: formData.get("name"),
     teamId: formData.get("teamId"),
@@ -39,7 +39,7 @@ export async function createProjectAction(
 export async function archiveProjectAction(input: {
   projectId: string;
 }): Promise<{ error?: string }> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Projects");
   const id = String(input?.projectId ?? "");
   if (!id) return { error: "Missing project id." };
   try {
@@ -55,7 +55,7 @@ export async function archiveProjectAction(input: {
 export async function restoreProjectAction(input: {
   projectId: string;
 }): Promise<{ error?: string }> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Projects");
   const id = String(input?.projectId ?? "");
   if (!id) return { error: "Missing project id." };
   try {
@@ -77,7 +77,7 @@ export async function renameProjectAction(input: {
   projectId: string;
   name: string;
 }): Promise<{ error?: string }> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Projects");
   const parsed = RenameSchema.safeParse(input);
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };

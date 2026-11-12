@@ -89,6 +89,20 @@ feature services add their own rules on top (dashboard tasks, agreements edit
 rights, People). Keep using `scope.team()` / `whereTeam()` anyway — the
 per-team filter is still there if visibility is narrowed later.
 
+**Page visibility (v0.0.54).** Tasks, Projects and Timesheet are ADMIN-ONLY:
+hidden in the sidebar (`adminOnly` in `nav-sidebar.tsx`), the pages redirect to
+`HOME_PATH`, and their actions / the timesheet export use `requireAdminScope()`
+(`current-user.ts`). The field-service job actions that also live in
+`tasks/actions.ts` stay open to everyone. **Agreements** can be limited to
+chosen people: while a non-archived work group named "Agreements Viewers"
+(`SA_VIEWER_GROUP`) exists, only org admins, the Customer Service (editor)
+group and its members see the module — `agreementsVisibleTo()` /
+`canViewAgreements()` in `services/agreements/common.ts`; every Agreements
+`page.tsx` calls `requireAgreementsAccess(scope)` (`agreements/access.ts`) and
+the app shell hides the nav item. Admins manage it on Agreements → Settings →
+"Who can see Agreements" (`services/agreements/access.ts`; "Everyone" archives
+the group and keeps its members). New Agreements pages MUST add the guard.
+
 **Secrets pattern.** Sessions and set-password (reset) links use the same
 helper (`src/lib/auth/tokens.ts`): hand the user a 256-bit random token, store only
 its SHA-256 hash. Compare hashes; never store raw tokens. Passwords are Argon2id

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/client";
 import { getSessionActor } from "@/lib/auth/session";
 import { displayHandle } from "@/lib/users";
+import { agreementsVisibleTo } from "@/lib/services/agreements/common";
 import { NavSidebar } from "@/components/nav-sidebar";
 import { MobileNav } from "@/components/mobile-nav";
 import { ViewAsBanner } from "@/components/view-as";
@@ -17,9 +18,13 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   // what that person sees).
   const effMembership = await prisma.membership.findFirst({
     where: { userId: user.id },
-    select: { role: true },
+    select: { role: true, orgId: true },
   });
   const isAdmin = effMembership?.role === "OWNER" || effMembership?.role === "ADMIN";
+  // Agreements can be limited to chosen people (Agreements → Settings).
+  const canSeeAgreements = effMembership
+    ? await agreementsVisibleTo({ orgId: effMembership.orgId, userId: user.id, isOrgAdmin: isAdmin })
+    : false;
 
   // "View as" is an OWNER-only testing tool (checked against the REAL user).
   let viewAs: { people: { id: string; label: string }[]; currentId: string; selfId: string } | undefined;
@@ -60,11 +65,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </a>
       <ThemeSync theme={user.theme ?? null} />
       {/* md and up: fixed sidebar column. Below md: MobileNav's top bar + drawer. */}
-      <NavSidebar user={navUser} isAdmin={isAdmin} viewAs={viewAs} />
+      <NavSidebar user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} viewAs={viewAs} />
       {/* min-w-0 lets this column shrink below its content's width, so wide
           tables scroll inside their own container instead of stretching the shell. */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden print:block print:overflow-visible">
-        <MobileNav user={navUser} isAdmin={isAdmin} viewAs={viewAs} />
+        <MobileNav user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} viewAs={viewAs} />
         {actor.impersonating ? <ViewAsBanner targetLabel={displayHandle(user)} /> : null}
         <main
           id="main-content"

@@ -14,6 +14,7 @@ import {
   type ProposalAction, type ProposalEditVersions,
 } from "@/lib/services/agreements/proposals";
 import { resetAgreements } from "@/lib/services/agreements/import";
+import { setAgreementAccess } from "@/lib/services/agreements/access";
 import { checkConfirmPassword } from "@/lib/services/full-backup";
 import { importAgreementsWorkbook } from "@/lib/services/agreements/workbook";
 import type { SaAgreement } from "@/lib/agreements/constants";
@@ -192,6 +193,13 @@ export async function saveSettingsAction(input: Omit<SettingsRow, "version"> & {
       ),
       expectedVersion: version(input.version),
     }),
+  );
+}
+
+/** Admin-only: who can see the service agreements (everyone, or only the people chosen). */
+export async function saveAgreementAccessAction(input: { restricted: boolean; userIds: string[] }) {
+  return run("agreements.saveAccess", "Couldn't save who can see Agreements. Please try again.", (scope) =>
+    setAgreementAccess(scope, { restricted: input?.restricted, userIds: input?.userIds }),
   );
 }
 

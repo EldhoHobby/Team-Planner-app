@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { HOME_PATH } from "@/lib/home";
 import { requireScope } from "@/lib/auth/current-user";
 import { requireAuth } from "@/lib/auth/guard";
 import { listProjects } from "@/lib/services/projects";
@@ -11,6 +13,8 @@ export const metadata = { title: "Projects" };
 export default async function ProjectsPage() {
   await requireAuth();
   const { scope } = await requireScope();
+  // Admins only (hidden from the sidebar for everyone else).
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "Projects");
 
   const teamWhere = scope.ctx.isOrgAdmin

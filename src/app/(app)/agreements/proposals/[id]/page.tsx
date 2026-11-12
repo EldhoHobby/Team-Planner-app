@@ -1,3 +1,4 @@
+import { requireAgreementsAccess } from "@/app/(app)/agreements/access";
 import { notFound } from "next/navigation";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
@@ -38,6 +39,7 @@ export default async function ProposalPage({
 }) {
   await requireAuth();
   const { scope } = await requireScope();
+  await requireAgreementsAccess(scope);
   const [{ id }, sp] = await Promise.all([params, searchParams]);
   const [data, canEdit] = await Promise.all([getProposal(scope, id), canEditAgreements(scope)]);
   if (!data) notFound();

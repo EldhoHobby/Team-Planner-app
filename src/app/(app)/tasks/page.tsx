@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { HOME_PATH } from "@/lib/home";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { listTasks } from "@/lib/services/tasks";
@@ -17,6 +19,8 @@ export default async function TasksPage({
 }) {
   const user = await requireAuth();
   const { scope } = await requireScope();
+  // Admins only (hidden from the sidebar for everyone else).
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "Tasks");
   const params = await searchParams;
   const projectParam = Array.isArray(params.project) ? params.project[0] : params.project;

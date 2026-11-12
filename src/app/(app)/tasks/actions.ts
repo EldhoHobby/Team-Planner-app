@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireScope } from "@/lib/auth/current-user";
+import { requireAdminScope, requireScope } from "@/lib/auth/current-user";
 import { actionError } from "@/lib/log";
 import { createTask, updateTask, deleteTask } from "@/lib/services/tasks";
 import {
@@ -68,7 +68,7 @@ export async function createTaskAction(
   _prev: TaskFormState,
   formData: FormData,
 ): Promise<TaskFormState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const parsed = CreateSchema.safeParse({
     title: formData.get("title"),
     projectId: formData.get("projectId"),
@@ -102,7 +102,7 @@ export async function updateTaskAction(
   _prev: TaskFormState,
   formData: FormData,
 ): Promise<TaskFormState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const parsed = UpdateSchema.safeParse({
     taskId: formData.get("taskId"),
     title: formData.get("title"),
@@ -138,7 +138,7 @@ export async function deleteTaskAction(
   _prev: TaskFormState,
   formData: FormData,
 ): Promise<TaskFormState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const taskId = String(formData.get("taskId") ?? "");
   if (!taskId) return { error: "Missing task id." };
   try {
@@ -532,7 +532,7 @@ export async function applyScheduleImportAction(
 }
 
 export async function listTaskHistoryAction(input: { taskId: string }): Promise<AuditEntry[]> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const rows = await listAudit(scope, "task", input.taskId);
   return rows.map((r) => ({
     action: r.action,
@@ -543,7 +543,7 @@ export async function listTaskHistoryAction(input: { taskId: string }): Promise<
 }
 
 export async function listProjectHistoryAction(input: { projectId: string }): Promise<AuditEntry[]> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const rows = await listAudit(scope, "project", input.projectId);
   return rows.map((r) => ({
     action: r.action,

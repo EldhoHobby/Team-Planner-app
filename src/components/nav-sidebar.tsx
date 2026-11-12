@@ -11,15 +11,23 @@ import { VERSION_LABEL } from "@/lib/version";
 
 // Each label is the page's heading (PageHeader title), so the sidebar and the
 // page always use the same name.
-type NavItem = { href: string; label: string; icon: typeof LayoutDashboard };
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  /** Shown to org OWNER/ADMIN only (the page itself also redirects everyone else). */
+  adminOnly?: boolean;
+  /** Shown only to people allowed to see the service agreements. */
+  agreements?: boolean;
+};
 
 const WORK_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
-  { href: "/tasks", label: "Tasks", icon: ListChecks },
-  { href: "/timesheet", label: "Timesheet", icon: Clock },
-  { href: "/projects", label: "Projects", icon: FolderOpen },
-  { href: "/agreements", label: "Agreements", icon: Handshake },
+  { href: "/tasks", label: "Tasks", icon: ListChecks, adminOnly: true },
+  { href: "/timesheet", label: "Timesheet", icon: Clock, adminOnly: true },
+  { href: "/projects", label: "Projects", icon: FolderOpen, adminOnly: true },
+  { href: "/agreements", label: "Agreements", icon: Handshake, agreements: true },
   { href: "/activity", label: "Activity", icon: History },
   { href: "/help", label: "Help", icon: LifeBuoy },
 ];
@@ -36,8 +44,10 @@ const ADMIN_NAV: NavItem[] = [
 /** Props shared by the desktop sidebar and the phone drawer (built by the app layout). */
 export interface NavProps {
   user: { email: string; name: string | null };
-  /** Effective user's org role — hides admin-only pages (People/Holidays/Data/Email/Audit). */
+  /** Effective user's org role — hides admin-only pages (Tasks/Timesheet/Projects + the Admin group). */
   isAdmin: boolean;
+  /** Whether the effective user may see the service agreements (Agreements → Settings → Who can see). */
+  canSeeAgreements: boolean;
   /** OWNER-only "view as" picker data; omitted for everyone else. */
   viewAs?: { people: ViewAsPerson[]; currentId: string; selfId: string };
 }
@@ -111,6 +121,7 @@ function NavGroup({
 export function NavPanel({
   user,
   isAdmin,
+  canSeeAgreements,
   viewAs,
   idPrefix,
   onNavigate,
@@ -122,10 +133,11 @@ export function NavPanel({
 }) {
   const pathname = usePathname();
   const onAccount = pathname.startsWith("/settings/account");
+  const workNav = WORK_NAV.filter((i) => (!i.adminOnly || isAdmin) && (!i.agreements || canSeeAgreements));
   return (
     <>
       <nav aria-label="Main" className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain p-2">
-        <NavGroup title="Work" items={WORK_NAV} pathname={pathname} idPrefix={idPrefix} onNavigate={onNavigate} />
+        <NavGroup title="Work" items={workNav} pathname={pathname} idPrefix={idPrefix} onNavigate={onNavigate} />
         {isAdmin ? (
           <NavGroup title="Admin" items={ADMIN_NAV} pathname={pathname} idPrefix={idPrefix} onNavigate={onNavigate} />
         ) : null}

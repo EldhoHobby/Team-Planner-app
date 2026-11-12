@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { HOME_PATH } from "@/lib/home";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import {
@@ -20,6 +22,8 @@ export default async function TimesheetPage({
 }) {
   const user = await requireAuth();
   const { scope } = await requireScope();
+  // Admins only (hidden from the sidebar for everyone else).
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "Timesheet");
   const { week } = await searchParams;
 

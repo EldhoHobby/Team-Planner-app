@@ -15,6 +15,8 @@ export async function GET(req: Request) {
   } catch {
     return new Response("Unauthorized", { status: 401 });
   }
+  // The Timesheet is admins-only.
+  if (!scope.ctx.isOrgAdmin) return new Response("Only admins can use the Timesheet.", { status: 403 });
 
   const weekParam = new URL(req.url).searchParams.get("week");
   const weekDate = weekParam ? new Date(`${weekParam}T00:00:00.000Z`) : null;

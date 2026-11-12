@@ -1,3 +1,4 @@
+import { requireAgreementsAccess } from "@/app/(app)/agreements/access";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
@@ -30,6 +31,7 @@ export default async function ProposalsPage({
 }) {
   await requireAuth();
   const { scope } = await requireScope();
+  await requireAgreementsAccess(scope);
   await recordPageView(scope, "Service agreement proposals");
   const sp = await searchParams;
   const [rows, canEdit] = await Promise.all([listProposals(scope), canEditAgreements(scope)]);
