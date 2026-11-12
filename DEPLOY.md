@@ -22,11 +22,11 @@ from `C:\TeamPlanner` unless a step says otherwise.
 | **PC** | `10.210.6.233` — Windows + Docker Desktop, **has internet** |
 | **In production since** | 2026-11-06 (moved from the old SCADA PC, see section 6) |
 | **URL** | `https://10.210.6.233:8443` (self-signed `tls internal` cert — click through the warning) |
-| **Folder** | `C:\TeamPlanner` = a **git clone of `main`** (running **v0.0.10**) |
+| **Folder** | `C:\TeamPlanner` = a **git clone of `main`** (running **v0.1.0** since 2026-11-12) |
 | **Compose file** | `docker-compose.offline.yml` (uses locally built / pulled images, `pull_policy: never`) |
 | **Images** | `team-planner-app:latest` + `team-planner-app-migrator:latest`, **built on this PC** from the clone; Caddy / Postgres (and Ollama, only for AI) pulled with `docker pull` |
 | **`.env`** | `DB_PASSWORD`, `APP_URL=https://10.210.6.233:8443`, `HTTPS_PORT=8443`, `LAN_IP=10.210.6.233`, `BACKUP_KEEP_DAYS=14` — not in git; keep a copy somewhere safe (it holds the DB password). An old `MAX_UPLOAD_MB` / `SESSION_SECRET` line is ignored |
-| **Caddyfile** | v0.0.10 (running now): **edited locally** to `10.210.6.233`. From the next update on, the Caddyfile reads `LAN_IP` from `.env` and is no longer edited — one-time switch in 1.3 |
+| **Caddyfile** | As in git: it reads `LAN_IP` from `.env`, no local edit (1.3). The old hand-edited v0.0.10 file is kept in `C:\TeamPlanner-local\Caddyfile` for a rollback to v0.0.10 only |
 | **Email ingest / AI** | off (`EMAIL_INGEST_ENABLED` unset); the `ollama` containers only run with `--profile ai` (section 5) |
 | **Data** | Docker volumes `teamplanner_db_data` (database) and `teamplanner_uploads` (attachments); dumps in `C:\TeamPlanner\backups` |
 
@@ -77,9 +77,7 @@ Optional, if people attach files to tasks — copy the uploads out too:
 docker compose -f docker-compose.offline.yml cp app:/app/uploads "backups\uploads-$(Get-Date -Format yyyyMMdd-HHmmss)"
 ```
 
-**4. Pull the new code.** The **first** update after v0.0.10 still has the
-locally edited Caddyfile — do the one-time switch in 1.3 first (add `LAN_IP`
-to `.env`, discard the edit). After that the clone has no local changes:
+**4. Pull the new code.** The clone should have no local changes:
 
 ```powershell
 git status --short
@@ -153,14 +151,16 @@ Expect `{"status":"ok","db":"up",...}`. Then open `https://10.210.6.233:8443`
 and check the **sidebar footer** shows the new version and git hash, sign in,
 and open the Schedule and Dashboard.
 
-#### First update after v0.0.10 (one-time notes)
+#### The v0.0.10 → v0.1.0 update (done 2026-11-12)
 
-Production is on v0.0.10; the next release is **v0.1.0** (everything from
-v0.0.11 to v0.0.54, merged to `main`). Things to know before that update:
+Production went from v0.0.10 to **v0.1.0** (everything from v0.0.11 to
+v0.0.54) on 2026-11-12. These were the one-time notes for that jump — kept for
+reference, for a rollback to v0.0.10, and because a few items may still be open
+(the old `ollama` container, moving the agreement data, the old images):
 
-- **Do the one-time Caddyfile switch (1.3) in step 4**, before `git pull`.
-- `ollama` / `ollama-init` now only start with `--profile ai`. After the update
-  the old `ollama` container from v0.0.10 keeps running until you remove it
+- The one-time Caddyfile switch (1.3) was done in step 4, before `git pull`.
+- `ollama` / `ollama-init` now only start with `--profile ai`. The old
+  `ollama` container from v0.0.10 keeps running until it is removed
   (AI is off on production):
 
   ```powershell
@@ -173,8 +173,8 @@ v0.0.11 to v0.0.54, merged to `main`). Things to know before that update:
 - The build's Node base image is pinned (`node:22.23-alpine`); `docker build`
   pulls it on the first build.
 
-- **Rehearse the migrations on a copy of production first** (below). The jump
-  adds eight migrations (change history + task version column, the whole
+- **Before any update that adds migrations, rehearse them on a copy of
+  production first** (below). This jump added eight migrations (change history + task version column, the whole
   service-agreements schema, agreement settings / redesign, data fixes, soft
   delete + job version) on top of the three v0.0.10 already has.
 - The compose files now **pin** `caddy:2.11.8-alpine`, `postgres:16.15-alpine`
@@ -340,8 +340,9 @@ The Caddyfile in git no longer names any IP: it serves `planner.localhost` plus
 `LAN_IP=10.210.6.233` in `.env`, so the clone has **no local Caddyfile edit** and
 `git pull` / `git checkout` run cleanly.
 
-**One-time switch (first update after v0.0.10)** — production's running
-Caddyfile is still the hand-edited one. During 1.1, after step 3 (proxy stopped,
+**One-time switch (done on production at the v0.1.0 update, 2026-11-12)** —
+v0.0.10's Caddyfile was edited by hand. The steps are kept for any other host
+that still has a hand-edited Caddyfile. During 1.1, after step 3 (proxy stopped,
 backup taken) and before `git pull`:
 
 **a. Keep a copy of the working production Caddyfile outside the repo** (needed
@@ -564,10 +565,7 @@ overwritten"), and a rollback checkout to v0.0.10 removes `scripts\` entirely.
 New-Item -ItemType Directory -Force C:\TeamPlanner-local
 ```
 
-Production runs v0.0.10, which doesn't have `scripts\` yet — before the update,
-copy `scripts\backup-offsite.ps1` from the repo (dev PC / GitHub) to
-`C:\TeamPlanner-local\backup-offsite.ps1` with Explorer. After an update that
-changes the script, refresh the copy from the clone:
+Copy the script out of the clone (and again after an update that changes it):
 
 ```powershell
 Copy-Item C:\TeamPlanner\scripts\backup-offsite.ps1 C:\TeamPlanner-local\backup-offsite.ps1 -Force

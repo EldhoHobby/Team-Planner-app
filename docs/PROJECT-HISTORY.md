@@ -14,10 +14,10 @@ profile)._
 
 | | Version | Notes |
 |---|---|---|
-| **GitHub `main`** | v0.0.10 | tagged up to `v0.0.10`; v0.0.11–v0.0.40 live on `feature/service-agreements`, v0.0.41–v0.0.44 on `improve/ux-review` (not merged, not tagged yet) |
-| **Production — new PC `10.210.6.233`** | **v0.0.10** | since **2026-11-06**. Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Locally edited Caddyfile (new IP) until the next update switches it to `LAN_IP` in `.env` (`DEPLOY.md` 1.3). Email ingest off. Data moved from SCADA with an in-container `pg_dump` + `docker compose cp` + `pg_restore --clean --if-exists --no-owner`. Auto sign-in (Sysinternals Autologon) planned. See `DEPLOY.md` section 1 |
+| **GitHub `main`** | **v0.1.0** | tagged `v0.1.0` (2026-11-12). `improve/ux-review` (v0.0.11 – v0.0.54, built on `feature/service-agreements`) is merged in |
+| **Production — `10.210.6.233`** (the user still calls it "the SCADA PC") | **v0.1.0** | since **2026-11-12** (v0.0.10 before that, moved here 2026-11-06). Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Caddyfile as in git (`LAN_IP` in `.env`). Email ingest off. See `DEPLOY.md` section 1 |
 | **Old SCADA PC `10.210.4.65`** | v0.0.8 last deployed (stopped) | **retired** 2026-11-06; stack stopped but the PC is kept as a fallback for now. Don't start it while the new PC is live (data would diverge) |
-| **Dev PC `10.210.4.130`** | v0.0.44 | branch **`improve/ux-review`** (on top of `feature/service-agreements`), `planner.localhost`, `docker-compose.yml`. Phases 0–3 of the UX review are committed (v0.0.41–v0.0.44); not merged or deployed yet. The dev DB holds the only copy of the service-agreements data |
+| **Dev PC `10.210.4.130`** | v0.1.0 | on `main`, `planner.localhost`, `docker-compose.yml`. Until "Restore agreements only" has been run on production, the dev DB holds the only copy of the service-agreements data |
 
 ---
 
@@ -105,13 +105,16 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
 
 ## Open issues / things to check
 
-- **Upgrade production from v0.0.10 to the agreements release** — merge
-  `feature/service-agreements` (+ `improve/ux-review`) to `main`, tag it, then
-  follow `DEPLOY.md` 1.1. **Rehearse the migrations on a copy of production
-  first** (`DEPLOY.md` "First update after v0.0.10": seven new migrations on
-  top of v0.0.10's three, newly pinned base images to pull, the one-time
-  Caddyfile → `LAN_IP` switch in 1.3, and removing the now-optional `ollama`
-  container).
+- ~~Upgrade production from v0.0.10~~ — **done 2026-11-12**: production runs
+  v0.1.0 (deployed by the user per `DEPLOY.md` 1.1, reported working).
+- **After the v0.1.0 deploy — check each was done on production:** remove the
+  old `ollama` container; "Restore agreements only" (next item); choose who
+  sees Agreements (Agreements → Settings → Who can see Agreements — open to
+  everyone until saved); create the "Customer Service" work group (agreement
+  editors — it does not exist on dev, so until then only admins can edit).
+  Keep the old Docker images (`caddy:2-alpine`, `postgres:16-alpine`,
+  `ollama/ollama`) until v0.1.0 has run for a while — a rollback to v0.0.10
+  needs them.
 - **Agreement data exists only on dev** — move it with **Restore agreements
   only** (Settings → Data): (1) upgrade production, (2) take a production full
   backup, (3) on dev download a full backup, (4) on production run "Restore
@@ -125,10 +128,9 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
 - **Off-PC backups on production** — schedule `backup-offsite.ps1` from a copy
   kept OUTSIDE the clone in `C:\TeamPlanner-local\` (`DEPLOY.md` 2.3) once a
   destination share / USB drive is chosen.
-- **Production Caddyfile is still a local edit** in the git clone (v0.0.10).
-  Fixed in the code: the Caddyfile now reads `LAN_IP` from `.env`. At the next
-  update, add `LAN_IP=10.210.6.233` to production's `.env` and discard the edit
-  (`DEPLOY.md` 1.3) — after that no stash routine is needed.
+- ~~Production Caddyfile is a local edit~~ — fixed at the v0.1.0 update
+  (`LAN_IP=10.210.6.233` in `.env`; the old file is kept in
+  `C:\TeamPlanner-local\Caddyfile`).
 - **Auto sign-in on the new PC** (Autologon + lock, BIOS power-on, active
   hours — `DEPLOY.md` 1.4), then test with a reboot.
 - **Old SCADA PC** — retire for good (wipe or repurpose) once the new PC has
@@ -170,8 +172,7 @@ customers directory, project-linking in the New Job dialog.
   browser renders disagree.
 - **Deploy to production** (new PC `10.210.6.233`) = merge + tag on `main` → on
   the PC: stop proxy → in-container `pg_dump` backup → `git pull` (the
-  Caddyfile is no longer edited locally — `LAN_IP` in `.env`; one-time switch
-  in `DEPLOY.md` 1.3) → `docker pull` the pinned base images → rebuild both
+  Caddyfile is not edited locally — `LAN_IP` in `.env`) → `docker pull` the pinned base images → rebuild both
   images (`--target runner` / `--target migrator`) → `docker compose -f
   docker-compose.offline.yml up -d` (+ `--profile ai` only if AI is on) →
   check the footer version + `/api/health`. Full steps, rollback and backups
