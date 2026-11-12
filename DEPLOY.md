@@ -46,6 +46,15 @@ copied out with `docker compose cp`, then on the new PC
 Plan ~10–15 minutes of downtime (the images are built while the site is down,
 so nobody writes data after the backup). Do it outside working hours.
 
+**Shortcut:** `scripts\update-production.ps1` runs steps 1-4 and 6-8 below in one
+go, checks each one, and starts the proxy again if the backup, the pull or a
+build fails. It does not pull base images (step 5 - only needed when a release
+changes the pinned tags) and does not roll back (1.2).
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\TeamPlanner\scripts\update-production.ps1
+```
+
 **1. Go to the folder and note what is running now** — write the commit hash
 down; it is what you roll back to.
 
