@@ -20,7 +20,7 @@ export class StaleSaveError extends Error {
   readonly stale = true;
   constructor(what = "record") {
     super(
-      `Someone else changed this ${what} while you were editing. ` +
+      `Someone else changed ${what === "settings" ? "these settings" : `this ${what}`} while you were editing. ` +
         "Your change was NOT saved — reload to see the latest version, then try again.",
     );
     this.name = "StaleSaveError";

@@ -117,12 +117,17 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [flash, showFlash, clearFlash] = useFlash();
   const formRef = useRef<HTMLFormElement>(null);
+  // The date picker keeps its own state, so it is remounted to clear it.
+  const [formKey, setFormKey] = useState(0);
+  // Set on submit: the date already had a holiday, so this add renames it.
+  const renaming = useRef(false);
 
   // Each submit returns a new state object, so this runs once per add.
   useEffect(() => {
     if (state.success) {
       formRef.current?.reset();
-      showFlash("Holiday added.");
+      setFormKey((k) => k + 1);
+      showFlash(renaming.current ? "Holiday renamed." : "Holiday added.");
       router.refresh();
     } else if (state.error) {
       clearFlash();
@@ -159,10 +164,18 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
           <CardDescription>One per date — adding a date that already has a holiday just renames it.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
-          <form ref={formRef} action={formAction} className="flex flex-wrap items-end gap-3">
+          <form
+            ref={formRef}
+            action={formAction}
+            onSubmit={(e) => {
+              const date = new FormData(e.currentTarget).get("date");
+              renaming.current = holidays.some((h) => h.date === date);
+            }}
+            className="flex flex-wrap items-end gap-3"
+          >
             <div className="space-y-1">
               <Label htmlFor="holiday-date">Date</Label>
-              <DatePicker id="holiday-date" name="date" required />
+              <DatePicker key={formKey} id="holiday-date" name="date" required />
             </div>
             <div className="flex-1 space-y-1">
               <Label htmlFor="holiday-name">Name</Label>
