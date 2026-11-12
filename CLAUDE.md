@@ -202,6 +202,11 @@ admin-only. Never export secrets (password hashes, tokens). Export route:
 referenced by **username, name or email** on the Time Off and Jobs sheets (no id
 column there).
 
+The **Holidays page** has its own Holidays-only round-trip (Export / Import buttons;
+`buildHolidaysWorkbook` / `runHolidaysImport` in `data-io.ts`, `GET /api/holidays/export`,
+admins only) on the same Holidays columns + importer, shown in the Schedule's two-step
+`ImportDialog` (now configurable via `ImportDialogConfig`).
+
 The **schedule window** has its own Jobs-only Excel round-trip (Import button +
 `src/app/api/schedule/export` → `.xlsx`), built on the SAME shared Jobs columns /
 importer in `data-io.ts` (`buildJobsWorkbook` / `runJobsImport`) — so it stays in

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { AlertCircle, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { previewScheduleImportAction, applyScheduleImportAction } from "../tasks/actions";
@@ -30,13 +30,51 @@ const OFFLINE = "Could not reach the server — check your connection and try ag
  * that preview would create or update something. The dialog can't be closed
  * while a request runs; after Apply it stays open on the result.
  */
-export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  // Mounted only while open, so every opening starts with a clean slate.
-  if (!open) return null;
-  return <OpenImportDialog onClose={onClose} />;
+type ImportAction = (prev: DataIoState, formData: FormData) => Promise<DataIoState>;
+
+/** What differs between the Schedule's import (the default) and another single-sheet import (e.g. Holidays). */
+export interface ImportDialogConfig {
+  title: string;
+  description: string;
+  /** The "Columns on the … sheet" help line. */
+  columns: ReactNode;
+  preview: ImportAction;
+  apply: ImportAction;
+  /** Shown when Apply got no answer (the outcome is unknown). */
+  unknownOutcome: string;
 }
 
-function OpenImportDialog({ onClose }: { onClose: () => void }) {
+const SCHEDULE_IMPORT: ImportDialogConfig = {
+  title: "Import schedule (Excel)",
+  description:
+    "Upload the exported .xlsx workbook — you see what would change before anything is saved. Rows with an id are updated; blank-id rows are created (nothing is deleted). Tip: use Export first to get a template with the right columns.",
+  columns: (
+    <>
+      Columns on the <span className="font-medium">Jobs</span> sheet: id, soNumber, customer, title, scope,
+      jobType, jobStatus, hardware, priority, technician, workGroup, project, startDate, durationDays,
+      tentative, version. Title is required; put the person&apos;s name in the technician column. The end
+      date is computed from startDate + durationDays. Leave version as exported — it stops an old file
+      from overwriting a job that was changed in the app since.
+    </>
+  ),
+  preview: previewScheduleImportAction,
+  apply: applyScheduleImportAction,
+  unknownOutcome: "Could not reach the server — the import may not have run. Close this and check the board.",
+};
+
+export function ImportDialog({
+  open, onClose, config = SCHEDULE_IMPORT,
+}: {
+  open: boolean;
+  onClose: () => void;
+  config?: ImportDialogConfig;
+}) {
+  // Mounted only while open, so every opening starts with a clean slate.
+  if (!open) return null;
+  return <OpenImportDialog onClose={onClose} config={config} />;
+}
+
+function OpenImportDialog({ onClose, config }: { onClose: () => void; config: ImportDialogConfig }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -68,7 +106,7 @@ function OpenImportDialog({ onClose }: { onClose: () => void }) {
     fd.set("file", f);
     let res: DataIoState;
     try {
-      res = await previewScheduleImportAction({}, fd);
+      res = await config.preview({}, fd);
     } catch {
       res = { error: OFFLINE };
     }
@@ -100,11 +138,11 @@ function OpenImportDialog({ onClose }: { onClose: () => void }) {
     fd.set("file", file);
     let res: DataIoState;
     try {
-      res = await applyScheduleImportAction({}, fd);
+      res = await config.apply({}, fd);
     } catch {
       // Unknown outcome: drop the preview so Apply can't run the same rows twice.
       if (my === seq.current) setBusy(null);
-      setResult({ error: "Could not reach the server — the import may not have run. Close this and check the board." });
+      setResult({ error: config.unknownOutcome });
       return;
     }
     if (my === seq.current) setBusy(null);
@@ -128,8 +166,8 @@ function OpenImportDialog({ onClose }: { onClose: () => void }) {
     <Modal
       open
       onClose={onClose}
-      title="Import schedule (Excel)"
-      description="Upload the exported .xlsx workbook — you see what would change before anything is saved. Rows with an id are updated; blank-id rows are created (nothing is deleted). Tip: use Export first to get a template with the right columns."
+      title={config.title}
+      description={config.description}
       size="lg"
       canClose={canClose}
       dirty={dirty}
@@ -149,13 +187,7 @@ function OpenImportDialog({ onClose }: { onClose: () => void }) {
             onChange={(e) => onPick(e.target.files?.[0] ?? null)}
           />
         </div>
-        <p className="text-xs text-muted-foreground">
-          Columns on the <span className="font-medium">Jobs</span> sheet: id, soNumber, customer, title, scope,
-          jobType, jobStatus, hardware, priority, technician, workGroup, project, startDate, durationDays,
-          tentative, version. Title is required; put the person&apos;s name in the technician column. The end
-          date is computed from startDate + durationDays. Leave version as exported — it stops an old file
-          from overwriting a job that was changed in the app since.
-        </p>
+        <p className="text-xs text-muted-foreground">{config.columns}</p>
 
         {busy === "preview" ? <FormMessage tone="info">Reading the workbook…</FormMessage> : null}
         {busy === "apply" ? (
