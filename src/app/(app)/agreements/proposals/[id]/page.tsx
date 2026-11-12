@@ -5,6 +5,7 @@ import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
 import { getProposal } from "@/lib/services/agreements/proposals";
 import { canEditAgreements } from "@/lib/services/agreements/common";
+import { getNextRenewal } from "@/lib/services/agreements/renewals";
 import { todayYmd } from "@/lib/tz";
 import { ProposalEditor } from "./proposal-editor";
 
@@ -43,6 +44,22 @@ export default async function ProposalPage({
   const [{ id }, sp] = await Promise.all([params, searchParams]);
   const [data, canEdit] = await Promise.all([getProposal(scope, id), canEditAgreements(scope)]);
   if (!data) notFound();
-  await recordPageView(scope, "Service agreement proposal");
-  return <ProposalEditor data={data} canEdit={canEdit} today={todayYmd()} backHref={listHref(sp.back)} />;
+  // "Next renewal" is only offered once this proposal is finished (signed / declined / withdrawn).
+  const finished = ["SIGNED", "DECLINED", "WITHDRAWN"].includes(data.proposal.status);
+  const [next] = await Promise.all([
+    finished ? getNextRenewal(scope, data.customer.id) : Promise.resolve(null),
+    recordPageView(scope, "Service agreement proposal"),
+  ]);
+  // Opened from the Proposals list (`?back=` present) → back to that list with its filters; otherwise → Renewals.
+  const fromList = typeof sp.back === "string" && sp.back !== "";
+  return (
+    <ProposalEditor
+      data={data}
+      canEdit={canEdit}
+      today={todayYmd()}
+      backHref={fromList ? listHref(sp.back) : "/agreements"}
+      backLabel={fromList ? "Proposals" : "Renewals"}
+      next={next}
+    />
+  );
 }

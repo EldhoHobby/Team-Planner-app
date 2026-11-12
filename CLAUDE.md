@@ -525,7 +525,16 @@ host normally has no npm — Docker is the supported path).
   UTC and the browser in Eastern, so anything showing "today" or a time must go
   through `src/lib/tz.ts` (`todayYmd`, `todayUtcMs`, `daysFromToday`,
   `fmtEastern`, `fmtDateOnly`) or React throws hydration error #418.
-- **Service agreements (`/agreements`, v0.0.14 redesign):** Dashboard (KPIs, needs-action
+- **Agreements workflow (v0.2.0):** `/agreements` is the **Renewals** work list (one row per
+  renewal — due / expired / lapsed / draft / sent / recently signed — with a plain-words status and ONE
+  next-step button; filter chips + search kept in the URL as `?show=` / `?q=`). Rules are pure in
+  `src/lib/agreements/renewal-list.ts` (`buildRenewalRows`, `standing`, `RENEWAL_FILTERS`; unit-tested),
+  service `src/lib/services/agreements/renewals.ts` (`getRenewals`, `getNextRenewal`), client
+  `agreements/renewals-list.tsx`. The old dashboard is `/agreements/overview` ("Overview"). The proposal
+  page is a guided three-step renewal (Review prices → Send to customer → Record signature) with one
+  primary button per status and a "Next: <customer>" link once finished; the save queue, locks and
+  dialogs are unchanged.
+- **Service agreements (`/agreements`, v0.0.14 redesign):** Dashboard (now at `/agreements/overview`; KPIs, needs-action
   list, renewals-by-month chart, recent activity), Pipeline board (Due → Draft → Sent → Signed /
   Declined, drag to move), Customers list + customer page (header card; tabs Agreements /
   History / Proposals / Calls & repairs / Activity), Proposals list (bulk create by end month,
