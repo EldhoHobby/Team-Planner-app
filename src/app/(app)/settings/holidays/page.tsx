@@ -3,15 +3,18 @@ import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { listHolidays } from "@/lib/services/holidays";
 import { recordPageView } from "@/lib/services/audit";
+import { HOME_PATH } from "@/lib/home";
 import { HolidaysClient } from "./holidays-client";
 import type { HolidayRow } from "./types";
+import type { Metadata } from "next";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Holidays" };
 
 export default async function HolidaysPage() {
   await requireAuth();
   const { scope } = await requireScope();
-  if (!scope.ctx.isOrgAdmin) redirect("/schedule");
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "Holidays");
 
   const holidays = await listHolidays(scope);

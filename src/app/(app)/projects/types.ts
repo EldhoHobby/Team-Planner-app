@@ -6,7 +6,14 @@ export type ProjectRow = {
   description: string | null;
   teamId: string;
   teamName: string;
+  /** Generic tasks in the project (schedule jobs NOT included). */
   taskCount: number;
+  /** Schedule jobs in the project (only the system container has any). */
+  jobCount: number;
+  /** The auto-created "Field Service" container that holds the schedule's jobs:
+   *  links to /schedule, can't be renamed or archived. */
+  isSystem: boolean;
+  archived: boolean;
   createdAt: string;
 };
 

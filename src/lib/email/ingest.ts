@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/client";
 import { emailAiEnabled, summarizeEmail } from "@/lib/email/summarize";
 import { TAG_RE, matchAssignees, stripAssignmentMarkers } from "@/lib/email/match-assignees";
+import { logError } from "@/lib/log";
 
 // ─────────────────────────── Email → task ingest ───────────────────────────
 //
@@ -79,8 +80,8 @@ async function recordEmail(
         taskCount: data.taskCount ?? 0,
       },
     });
-  } catch {
-    /* stats must never break ingest */
+  } catch (e) {
+    logError("email-ingest stats", e); // stats must never break ingest
   }
 }
 
@@ -89,8 +90,8 @@ async function pruneEmailLog(orgId: string) {
   try {
     const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);
     await prisma.emailIngestLog.deleteMany({ where: { orgId, occurredAt: { lt: cutoff } } });
-  } catch {
-    /* ignore */
+  } catch (e) {
+    logError("email-ingest prune", e);
   }
 }
 
@@ -107,8 +108,8 @@ async function log(orgId: string, action: string, summary: string) {
         summary: summary.slice(0, 500),
       },
     });
-  } catch {
-    /* logging must never break ingest */
+  } catch (e) {
+    logError("email-ingest audit", e); // logging must never break ingest
   }
 }
 
@@ -137,7 +138,6 @@ function isUniqueViolation(e: unknown): boolean {
 
 
 declare global {
-  // eslint-disable-next-line no-var
   var __emailIngestRunning: boolean | undefined;
 }
 
@@ -177,12 +177,25 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
   });
   const byEmail = new Map(people.filter((p) => p.email).map((p) => [p.email!.toLowerCase(), p]));
 
-  const client = new ImapFlow({
+  const imapOptions = {
     host: process.env.IMAP_HOST ?? "imap.gmail.com",
     port: Number(process.env.IMAP_PORT ?? 993),
     secure: true,
     auth: { user: process.env.IMAP_USER!, pass: process.env.IMAP_PASSWORD! },
-    logger: false,
+    logger: false as const,
+    // Fail a dead / unreachable server in bounded time instead of hanging a
+    // pass (the single-pass guard would then block every later poll). An idle
+    // socket is still cut by imapflow's default socketTimeout (5 min) — long
+    // enough for a slow local-AI call between IMAP commands.
+    connectionTimeout: 30_000,
+    greetingTimeout: 15_000,
+  };
+  const client = new ImapFlow(imapOptions);
+  // A dropped socket is reported as an "error" EVENT. With no listener Node
+  // treats it as unhandled and the whole app process crashes, so record it
+  // here; the awaited IMAP call then rejects and the pass ends normally.
+  client.on("error", (err: unknown) => {
+    logError("email-ingest IMAP connection", err);
   });
 
   try {
@@ -198,8 +211,9 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
         const markSeen = async () => {
           try {
             await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
-          } catch {
-            /* connection hiccup — the dedupe check catches any re-read */
+          } catch (e) {
+            // Connection hiccup — the dedupe check catches any re-read.
+            logError("email-ingest mark seen", e);
           }
         };
         // Hoisted so the error path can still attribute the failure.
@@ -236,10 +250,10 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
           const owners: { id: string; name: string | null; username: string }[] =
             matched.length ? matched : sender ? [sender] : [];
           if (!owners.length) {
-            await log(org.id, "skipped", `Email "${subject}" from ${fromAddr || "unknown"}: no @username tag or full name found, and sender is not a known user.`);
+            await log(org.id, "skipped", `Email "${subject}" from ${fromAddr || "unknown"}: no @username tag or full name found, and the sender is not a person in the app.`);
             await recordEmail(org.id, {
               messageId, fromAddr, subject,
-              outcome: "SKIPPED", detail: "No @username tag or full name found, and sender is not a known user.",
+              outcome: "SKIPPED", detail: "No @username tag or full name found, and the sender is not a person in the app.",
             });
             await markSeen();
             res.skipped++;
@@ -248,6 +262,10 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
 
           // Per-owner dedupe: only create for people who don't have this email
           // yet, so a partial multi-tag failure fills in the rest on retry.
+          // Deliberately NO deletedAt filter: a task someone deleted (soft
+          // delete, "Recently deleted") must not be re-created by the same
+          // Message-ID — the DB unique (orgId, ownerId, externalSource,
+          // externalId) also still covers the soft-deleted row.
           const existing = await prisma.techTask.findMany({
             where: { orgId: org.id, externalSource: "email", externalId: messageId },
             select: { ownerId: true },
@@ -339,8 +357,13 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
     await pruneEmailLog(org.id); // 30-day retention
     await client.logout();
   } catch (e) {
+    logError("email-ingest pass", e);
     res.errors.push(e instanceof Error ? e.message : "IMAP connection failed");
-    try { await client.logout(); } catch { /* already closed */ }
+    try {
+      await client.logout();
+    } catch {
+      /* already closed — nothing to log */
+    }
   }
   return res;
 }
@@ -348,7 +371,6 @@ async function runIngestPass(res: IngestResult): Promise<IngestResult> {
 // ── Background poller (started once per server process from instrumentation) ──
 
 declare global {
-  // eslint-disable-next-line no-var
   var __emailIngestTimer: ReturnType<typeof setInterval> | undefined;
 }
 
@@ -358,10 +380,12 @@ export function startEmailPoller(): void {
   const raw = Number(process.env.EMAIL_POLL_SECONDS ?? 120);
   const seconds = Number.isFinite(raw) ? Math.max(30, raw) : 120; // NaN would make setInterval spin
   globalThis.__emailIngestTimer = setInterval(() => {
-    ingestOnce().catch(() => {
-      /* next tick retries; per-message errors are captured in the result */
+    ingestOnce().catch((e) => {
+      // Never throw from the timer — the next tick retries; per-message errors
+      // are captured in the result.
+      logError("email-ingest poll", e);
     });
   }, seconds * 1000);
   // First pass shortly after boot (give the DB a moment).
-  setTimeout(() => void ingestOnce().catch(() => {}), 10_000);
+  setTimeout(() => void ingestOnce().catch((e) => logError("email-ingest first poll", e)), 10_000);
 }

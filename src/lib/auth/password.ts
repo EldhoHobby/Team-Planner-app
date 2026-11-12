@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import { logError } from "@/lib/log";
 
 // Argon2id is the recommended password hashing algorithm (memory-hard, resistant
 // to GPU/ASIC cracking). Defaults here are sensible for a server with ~spare RAM;
@@ -17,8 +18,9 @@ export function hashPassword(plain: string): Promise<string> {
 export async function verifyPassword(hash: string, plain: string): Promise<boolean> {
   try {
     return await argon2.verify(hash, plain);
-  } catch {
+  } catch (e) {
     // Malformed hash or verification error — treat as a failed login, never throw.
+    logError("verifyPassword", e);
     return false;
   }
 }

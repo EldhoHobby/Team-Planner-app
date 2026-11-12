@@ -1,17 +1,18 @@
 "use client";
 
-import { History } from "lucide-react";
-
-import { useEffect, useActionState, useState } from "react";
-import { useFormStatus } from "react-dom";
+import { startTransition, useCallback, useEffect, useActionState, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { ListChecks, Plus, X } from "lucide-react";
+import { History, ListChecks, Plus, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { daysFromToday } from "@/lib/tz";
+import { daysFromToday, fmtDateOnly, fmtEastern, todayYmd } from "@/lib/tz";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
+import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 import { createTaskAction, updateTaskAction, deleteTaskAction, listTaskHistoryAction } from "./actions";
 import type {
   TaskRow,
@@ -30,7 +31,7 @@ const selectClass =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
-  TODO: "Todo",
+  TODO: "To Do",
   IN_PROGRESS: "In Progress",
   BLOCKED: "Blocked",
   DONE: "Done",
@@ -131,87 +132,13 @@ function AssigneeBubble({ name, email }: { name: string | null; email: string })
   );
 }
 
-// ─── Modal wrapper ───
-
-function Modal({
-  open,
-  onClose,
-  title,
-  children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onMouseDown={onClose}
-    >
-      <div
-        className="relative flex w-full max-w-lg flex-col rounded-xl border bg-background shadow-lg"
-        style={{ maxHeight: "90vh" }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b px-6 py-4">
-          <h2 className="text-base font-semibold">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded text-muted-foreground hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="overflow-y-auto">{children}</div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Task form (create + edit) ───
 
-function SubmitButton({ label, pendingLabel }: { label: string; pendingLabel: string }) {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" disabled={pending} className="flex-1">
-      {pending ? pendingLabel : label}
-    </Button>
-  );
-}
+// Same limits as the task schemas in ./actions.ts.
+const MAX = { title: 200, description: 2000, location: 200 } as const;
 
-function DeleteButton() {
-  const { pending } = useFormStatus();
-  return (
-    <button
-      type="submit"
-      disabled={pending}
-      onClick={(e) => {
-        if (!window.confirm("Delete this task permanently?")) {
-          e.preventDefault();
-        }
-      }}
-      className="rounded-md px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-    >
-      {pending ? "Deleting…" : "Delete"}
-    </button>
-  );
-}
-
-function TaskForm({
+/** The create / edit task window (shared Modal). Mount it only while open. */
+function TaskFormDialog({
   mode,
   initialTask,
   projects,
@@ -226,8 +153,11 @@ function TaskForm({
 }) {
   const action = mode === "create" ? createTaskAction : updateTaskAction;
   const initialState: TaskFormState = {};
-  const [state, formAction] = useActionState(action, initialState);
-  const [deleteState, deleteFormAction] = useActionState(deleteTaskAction, initialState);
+  const [state, formAction, saving] = useActionState(action, initialState);
+  const [deleteState, deleteFormAction, deleting] = useActionState(deleteTaskAction, initialState);
+  const confirm = useConfirm();
+  // Anything typed yet → Escape / backdrop / X ask before discarding it.
+  const [dirty, setDirty] = useState(false);
   const [history, setHistory] = useState<AuditEntry[] | null>(null);
   const loadHistory = async () => setHistory(await listTaskHistoryAction({ taskId: initialTask?.id ?? "" }));
 
@@ -237,9 +167,19 @@ function TaskForm({
   );
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
-  const availableAssignees = teamMembers.filter(
+  const departmentMembers = teamMembers.filter(
     (m) => m.teamId === selectedProject?.teamId,
   );
+  // Keep existing assignees from OTHER departments visible (and ticked) —
+  // saving rewrites assignments from these checkboxes, so a hidden assignee
+  // would otherwise be silently dropped.
+  const outsideAssignees = (initialTask?.assignees ?? [])
+    .filter((a) => !departmentMembers.some((m) => m.userId === a.id))
+    .map((a) => ({ userId: a.id, name: a.name, email: a.email, outside: true }));
+  const availableAssignees = [
+    ...departmentMembers.map((m) => ({ userId: m.userId, name: m.name, email: m.email, outside: false })),
+    ...outsideAssignees,
+  ];
   const currentAssigneeIds = new Set(
     initialTask?.assignees.map((a) => a.id) ?? [],
   );
@@ -249,12 +189,52 @@ function TaskForm({
     if (state.success || deleteState.success) onClose();
   }, [state.success, deleteState.success, onClose]);
 
+  // Dispatched by hand instead of `<form action>`: React resets a form after
+  // its action returns (also on `{ error }`), which threw away what was typed
+  // whenever the server rejected the save.
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (saving || deleting) return;
+    const fd = new FormData(e.currentTarget);
+    startTransition(() => formAction(fd));
+  };
+
+  const remove = async () => {
+    if (!initialTask || saving || deleting) return;
+    const ok = await confirm({
+      title: `Delete task “${initialTask.title}”?`,
+      message: "The task and its assignments will be permanently deleted. This cannot be undone.",
+      confirmLabel: "Delete task",
+      tone: "danger",
+    });
+    if (!ok) return;
+    const fd = new FormData();
+    fd.set("taskId", initialTask.id);
+    startTransition(() => deleteFormAction(fd));
+  };
+
   return (
-    <>
-      <form action={formAction} className="space-y-4 p-6">
+    <Modal
+      open
+      onClose={onClose}
+      title={mode === "create" ? "New task" : "Edit task"}
+      canClose={() => !saving && !deleting}
+      dirty={dirty}
+      confirmClose={
+        mode === "create"
+          ? "This task has not been created yet — what you typed will be lost."
+          : "Your changes to this task have not been saved."
+      }
+    >
+      <form onSubmit={submit} onChange={() => setDirty(true)} className="space-y-4">
         {mode === "edit" && (
           <input type="hidden" name="taskId" value={initialTask?.id} />
         )}
+        {/* Stale-save protection: the version this form loaded. A save after
+            someone else changed the task is refused instead of overwriting. */}
+        {mode === "edit" && initialTask ? (
+          <input type="hidden" name="version" value={initialTask.version} />
+        ) : null}
 
         {/* Title */}
         <div className="space-y-2">
@@ -263,6 +243,7 @@ function TaskForm({
             id="task-title"
             name="title"
             required
+            maxLength={MAX.title}
             placeholder="What needs to be done?"
             defaultValue={initialTask?.title}
           />
@@ -298,7 +279,7 @@ function TaskForm({
         )}
 
         {/* Status + Priority */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="task-status">Status</Label>
             <select
@@ -307,7 +288,7 @@ function TaskForm({
               className={selectClass}
               defaultValue={initialTask?.status ?? "TODO"}
             >
-              <option value="TODO">Todo</option>
+              <option value="TODO">To Do</option>
               <option value="IN_PROGRESS">In Progress</option>
               <option value="BLOCKED">Blocked</option>
               <option value="DONE">Done</option>
@@ -330,15 +311,17 @@ function TaskForm({
         </div>
 
         {/* Due date + Estimate */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="task-due">
               Due date{" "}
               <span className="font-normal text-muted-foreground">(optional)</span>
             </Label>
             <DatePicker
+              id="task-due"
               name="dueDate"
               defaultValue={initialTask?.dueDate ? initialTask.dueDate.slice(0, 10) : ""}
+              onChange={() => setDirty(true)}
             />
           </div>
           <div className="space-y-2">
@@ -368,6 +351,7 @@ function TaskForm({
             id="task-desc"
             name="description"
             rows={3}
+            maxLength={MAX.description}
             className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             placeholder="Add details, context, or links…"
             defaultValue={initialTask?.description ?? undefined}
@@ -375,7 +359,7 @@ function TaskForm({
         </div>
 
         {/* Field trip + location */}
-        <div className="grid grid-cols-2 items-end gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end">
           <label className="flex h-9 items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -392,6 +376,7 @@ function TaskForm({
             <Input
               id="task-location"
               name="location"
+              maxLength={MAX.location}
               placeholder="Site / address"
               defaultValue={initialTask?.location ?? undefined}
             />
@@ -425,6 +410,11 @@ function TaskForm({
                         ({m.email})
                       </span>
                     )}
+                    {m.outside && (
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        · other department
+                      </span>
+                    )}
                   </span>
                 </label>
               ))}
@@ -432,18 +422,15 @@ function TaskForm({
           </div>
         )}
 
-        {state.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {state.error}
-          </p>
-        )}
+        <FormMessage tone="error">{state.error}</FormMessage>
 
         <div className="flex items-center gap-2">
-          <SubmitButton
-            label={mode === "create" ? "Create task" : "Save changes"}
-            pendingLabel={mode === "create" ? "Creating…" : "Saving…"}
-          />
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button type="submit" disabled={saving || deleting} className="flex-1">
+            {saving
+              ? mode === "create" ? "Creating…" : "Saving…"
+              : mode === "create" ? "Create task" : "Save changes"}
+          </Button>
+          <Button type="button" variant="outline" disabled={saving || deleting} onClick={onClose}>
             Cancel
           </Button>
         </div>
@@ -451,27 +438,29 @@ function TaskForm({
 
       {/* Delete section — only in edit mode */}
       {mode === "edit" && initialTask && (
-        <div className="border-t px-6 py-4">
-          <form action={deleteFormAction} className="flex items-center gap-2">
-            <input type="hidden" name="taskId" value={initialTask.id} />
-            {deleteState.error && (
-              <p className="flex-1 text-xs text-destructive">
-                {deleteState.error}
-              </p>
-            )}
-            <DeleteButton />
+        <div className="mt-4 border-t pt-4">
+          <div className="flex items-center gap-2">
+            <FormMessage tone="error" className="flex-1 text-xs">{deleteState.error}</FormMessage>
+            <button
+              type="button"
+              disabled={saving || deleting}
+              onClick={() => void remove()}
+              className="rounded-md px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
             <Button type="button" variant="ghost" size="sm" onClick={loadHistory} className="ml-auto">
               <History className="mr-1.5 h-4 w-4" /> {history ? "Refresh history" : "History"}
             </Button>
-          </form>
+          </div>
           {history && (
             <div className="mt-4 border-t pt-4">
-              <h4 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Change History</h4>
+              <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Change history</h3>
               {history.length ? (
                 <ul className="space-y-1.5 text-xs">
                   {history.map((h, i) => (
                     <li key={i} className="flex gap-2 text-muted-foreground">
-                      <span className="shrink-0">{new Date(h.createdAt).toLocaleString()}</span>
+                      <span className="shrink-0">{fmtEastern(h.createdAt, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                       <span className="text-foreground">{h.summary}</span>
                     </li>
                   ))}
@@ -483,11 +472,21 @@ function TaskForm({
           )}
         </div>
       )}
-    </>
+    </Modal>
   );
 }
 
 // ─── Task row ───
+
+/** Due date label; the year is shown only when it is not the current year
+ *  (Eastern "today", so server and browser renders agree). */
+function fmtDue(iso: string): string {
+  const sameYear = new Date(iso).getUTCFullYear() === Number(todayYmd().slice(0, 4));
+  return fmtDateOnly(
+    iso,
+    sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" },
+  );
+}
 
 function TaskRow({
   task,
@@ -501,6 +500,11 @@ function TaskRow({
   const daysLeft = task.status !== "DONE" && task.dueDate ? daysFromToday(task.dueDate) : null;
   const overdue = daysLeft !== null && daysLeft < 0;
   const dueSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 2;
+  const dueClass = overdue
+    ? "font-medium text-destructive"
+    : dueSoon
+      ? "font-medium text-amber-600 dark:text-amber-400"
+      : "text-muted-foreground";
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 hover:bg-muted/30">
@@ -535,6 +539,19 @@ function TaskRow({
             {task.location ? ` · ${task.location}` : ""}
           </span>
         </p>
+        {/* Small screens: the chips and the due date are hidden on the right,
+            so show "status · due date" under the title instead. */}
+        <p className="mt-0.5 flex items-center gap-1.5 text-xs sm:hidden">
+          <span className={cn("rounded-full px-1.5 py-px text-[10px] font-medium", STATUS_COLORS[task.status])}>
+            {STATUS_LABELS[task.status]}
+          </span>
+          {task.dueDate ? (
+            <span className={dueClass}>
+              Due {fmtDue(task.dueDate)}
+              {overdue ? " · overdue" : ""}
+            </span>
+          ) : null}
+        </p>
       </div>
 
       {/* Chips */}
@@ -546,24 +563,11 @@ function TaskRow({
 
       {/* Due date */}
       {task.dueDate ? (
-        <span
-          className={cn(
-            "hidden whitespace-nowrap text-xs lg:block",
-            overdue
-              ? "font-medium text-destructive"
-              : dueSoon
-                ? "font-medium text-amber-600 dark:text-amber-400"
-                : "text-muted-foreground",
-          )}
-        >
-          {new Date(task.dueDate).toLocaleDateString(undefined, {
-            month: "short",
-            day: "numeric",
-            timeZone: "UTC",
-          })}
+        <span className={cn("hidden whitespace-nowrap text-xs sm:block", dueClass)}>
+          {fmtDue(task.dueDate)}
         </span>
       ) : (
-        <span className="hidden w-16 lg:block" />
+        <span className="hidden w-16 sm:block" />
       )}
 
       {/* Assignee bubbles */}
@@ -580,7 +584,9 @@ function TaskRow({
 
       {/* Edit button */}
       <button
+        type="button"
         onClick={() => onEdit(task)}
+        aria-label={`Edit task ${task.title}`}
         className="rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         Edit
@@ -598,11 +604,15 @@ function FilterBar({
   projectFilter,
   originFilter,
   mine,
+  query,
+  hideDone,
   onStatus: setStatus,
   onPriority: setPriority,
   onProject: setProject,
   onOrigin: setOrigin,
   onMine: setMine,
+  onQuery: setQuery,
+  onHideDone: setHideDone,
 }: {
   projects: ProjectOption[];
   statusFilter: string;
@@ -610,17 +620,42 @@ function FilterBar({
   projectFilter: string;
   originFilter: string;
   mine: boolean;
+  query: string;
+  hideDone: boolean;
   onStatus: (v: string) => void;
   onPriority: (v: string) => void;
   onProject: (v: string) => void;
   onOrigin: (v: string) => void;
   onMine: (v: boolean) => void;
+  onQuery: (v: string) => void;
+  onHideDone: (v: boolean) => void;
 }) {
   const filterSelect =
     "h-8 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-  const hasFilter = statusFilter || priorityFilter || projectFilter || originFilter || mine;
+  const hasFilter = statusFilter || priorityFilter || projectFilter || originFilter || mine || query;
   return (
     <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2">
+      <div className="relative w-full sm:w-56">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search title / description"
+          aria-label="Search tasks"
+          className={`${filterSelect} w-full pl-7`}
+        />
+      </div>
+      <label className="flex items-center gap-1.5 rounded-md border border-input px-2 py-1 text-xs">
+        <input
+          type="checkbox"
+          checked={hideDone}
+          disabled={statusFilter === "DONE"}
+          onChange={(e) => setHideDone(e.target.checked)}
+          className="h-3.5 w-3.5 rounded border-input accent-primary"
+        />
+        Hide done
+      </label>
       <label className="flex items-center gap-1.5 rounded-md border border-input px-2 py-1 text-xs">
         <input
           type="checkbox"
@@ -630,7 +665,12 @@ function FilterBar({
         />
         Assigned to me
       </label>
-      <select value={originFilter} onChange={(e) => setOrigin(e.target.value)} className={filterSelect}>
+      <select
+        value={originFilter}
+        onChange={(e) => setOrigin(e.target.value)}
+        aria-label="Filter by origin"
+        className={filterSelect}
+      >
         <option value="">All origins</option>
         <option value="SELF">Self</option>
         <option value="MANAGER">Assigned</option>
@@ -639,10 +679,11 @@ function FilterBar({
       <select
         value={statusFilter}
         onChange={(e) => setStatus(e.target.value)}
+        aria-label="Filter by status"
         className={filterSelect}
       >
         <option value="">All statuses</option>
-        <option value="TODO">Todo</option>
+        <option value="TODO">To Do</option>
         <option value="IN_PROGRESS">In Progress</option>
         <option value="BLOCKED">Blocked</option>
         <option value="DONE">Done</option>
@@ -650,6 +691,7 @@ function FilterBar({
       <select
         value={priorityFilter}
         onChange={(e) => setPriority(e.target.value)}
+        aria-label="Filter by priority"
         className={filterSelect}
       >
         <option value="">All priorities</option>
@@ -662,6 +704,7 @@ function FilterBar({
         <select
           value={projectFilter}
           onChange={(e) => setProject(e.target.value)}
+          aria-label="Filter by project"
           className={filterSelect}
         >
           <option value="">All projects</option>
@@ -680,6 +723,7 @@ function FilterBar({
             setProject("");
             setOrigin("");
             setMine(false);
+            setQuery("");
           }}
           className="text-xs text-muted-foreground hover:text-foreground"
         >
@@ -695,49 +739,80 @@ function FilterBar({
 export function TasksClient({
   tasks,
   projects,
-  teams,
   teamMembers,
   currentUserId,
+  initialProjectId = "",
 }: {
   tasks: TaskRow[];
   projects: ProjectOption[];
-  teams: { id: string; name: string }[];
   teamMembers: TeamMember[];
   currentUserId: string;
+  /** From /tasks?project=<id> (validated server-side); "" = all projects. */
+  initialProjectId?: string;
 }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
-  const [projectFilter, setProjectFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState(initialProjectId);
   const [originFilter, setOriginFilter] = useState("");
   const [mine, setMine] = useState(false);
+  const [query, setQuery] = useState("");
+  // "Hide done" is on by default and remembered per browser. Read after mount
+  // (localStorage is browser-only) to keep the server and browser renders equal.
+  const [hideDone, setHideDoneState] = useState(true);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("tasks.hideDone");
+      if (v === "0") setHideDoneState(false);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const setHideDone = (v: boolean) => {
+    setHideDoneState(v);
+    try {
+      localStorage.setItem("tasks.hideDone", v ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
   const [createOpen, setCreateOpen] = useState(false);
   const [editTask, setEditTask] = useState<TaskRow | null>(null);
+  const closeCreate = useCallback(() => setCreateOpen(false), []);
+  const closeEdit = useCallback(() => setEditTask(null), []);
 
+  const q = query.trim().toLowerCase();
   const filtered = tasks.filter(
     (t) =>
       (!statusFilter || t.status === statusFilter) &&
+      // An explicit "Done" status filter wins over "Hide done".
+      (!hideDone || statusFilter === "DONE" || t.status !== "DONE") &&
       (!priorityFilter || t.priority === priorityFilter) &&
       (!projectFilter || t.projectId === projectFilter) &&
       (!originFilter || t.origin === originFilter) &&
-      (!mine || t.assignees.some((a) => a.id === currentUserId)),
+      (!mine || t.assignees.some((a) => a.id === currentUserId)) &&
+      (!q || t.title.toLowerCase().includes(q) || (t.description ?? "").toLowerCase().includes(q)),
   );
+  const hiddenDone = hideDone && statusFilter !== "DONE" ? tasks.filter((t) => t.status === "DONE").length : 0;
 
   const noProjects = projects.length === 0;
 
   return (
     <>
       {/* Page */}
-      <main className="flex h-full flex-col">
+      <div className="flex h-full flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between border-b px-6 py-4">
-          <h1 className="text-xl font-semibold">Tasks</h1>
-          {!noProjects && (
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="mr-1.5 h-4 w-4" />
-              New task
-            </Button>
-          )}
-        </div>
+        <PageHeader
+          className="mb-0 items-center border-b px-4 py-4 md:px-6"
+          title="Tasks"
+          actions={
+            !noProjects ? (
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                New task
+              </Button>
+            ) : undefined
+          }
+        />
 
         {/* Filters */}
         {tasks.length > 0 && (
@@ -748,11 +823,15 @@ export function TasksClient({
             projectFilter={projectFilter}
             originFilter={originFilter}
             mine={mine}
+            query={query}
+            hideDone={hideDone}
             onStatus={setStatusFilter}
             onPriority={setPriorityFilter}
             onProject={setProjectFilter}
             onOrigin={setOriginFilter}
             onMine={setMine}
+            onQuery={setQuery}
+            onHideDone={setHideDone}
           />
         )}
 
@@ -783,7 +862,9 @@ export function TasksClient({
                 <p className="mt-1 text-sm text-muted-foreground">
                   {tasks.length === 0
                     ? "Create your first task to get started."
-                    : "Try clearing the filters."}
+                    : hiddenDone
+                      ? `Try clearing the filters — ${hiddenDone} done task${hiddenDone === 1 ? " is" : "s are"} hidden.`
+                      : "Try clearing the filters."}
                 </p>
               </div>
               {tasks.length === 0 ? (
@@ -799,6 +880,7 @@ export function TasksClient({
                     setProjectFilter("");
                     setOriginFilter("");
                     setMine(false);
+                    setQuery("");
                   }}
                   className="text-sm text-primary hover:underline"
                 >
@@ -812,42 +894,44 @@ export function TasksClient({
               {filtered.map((task) => (
                 <TaskRow key={task.id} task={task} onEdit={setEditTask} />
               ))}
+              {hiddenDone ? (
+                <div className="px-4 py-3 text-xs text-muted-foreground">
+                  {hiddenDone} done task{hiddenDone === 1 ? "" : "s"} hidden ·{" "}
+                  <button
+                    type="button"
+                    onClick={() => setHideDone(false)}
+                    className="font-medium text-primary hover:underline"
+                  >
+                    Show done
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
-      </main>
+      </div>
 
       {/* Create modal */}
-      <Modal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        title="New task"
-      >
-        <TaskForm
+      {createOpen && (
+        <TaskFormDialog
           mode="create"
           projects={projects}
           teamMembers={teamMembers}
-          onClose={() => setCreateOpen(false)}
+          onClose={closeCreate}
         />
-      </Modal>
+      )}
 
       {/* Edit modal */}
-      <Modal
-        open={editTask !== null}
-        onClose={() => setEditTask(null)}
-        title="Edit task"
-      >
-        {editTask && (
-          <TaskForm
-            key={editTask.id}
-            mode="edit"
-            initialTask={editTask}
-            projects={projects}
-            teamMembers={teamMembers}
-            onClose={() => setEditTask(null)}
-          />
-        )}
-      </Modal>
+      {editTask && (
+        <TaskFormDialog
+          key={editTask.id}
+          mode="edit"
+          initialTask={editTask}
+          projects={projects}
+          teamMembers={teamMembers}
+          onClose={closeEdit}
+        />
+      )}
     </>
   );
 }

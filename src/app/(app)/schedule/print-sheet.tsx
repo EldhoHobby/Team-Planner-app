@@ -1,10 +1,11 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
 import { startOfWeekSunday, addDays, toUtcMidnight, MS_PER_DAY } from "@/lib/scheduling/calc";
-import { dotStyle } from "@/lib/scheduling/colors";
-import { fmtEastern } from "@/lib/tz";
-import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
+import { dotStyle, toHex } from "@/lib/scheduling/colors";
+import { fmtDateOnly, fmtEastern } from "@/lib/tz";
+import type { BoardLane, JobRow, TechTimeOff } from "./types";
 
 // Purpose-built PRINT layout for the schedule (hidden on screen; the
 // interactive board is hidden in print). Renders a clean report:
@@ -27,41 +28,66 @@ function covers(j: JobRow, day: Date): boolean {
   return parseYmd(j.startDate).getTime() <= t && t <= parseYmd(j.endDate ?? j.startDate).getTime();
 }
 
-/** Soft, print-friendly chip: white body, technician color as a left bar. */
+/** Soft, print-friendly chip: white body, technician color as a left bar.
+ *  toHex: legacy named colours ("blue") are not valid CSS border colours here. */
 function chipStyle(color: string | null | undefined) {
-  return { borderLeft: `3px solid ${color ?? "#64748b"}` } as const;
+  return { borderLeft: `3px solid ${toHex(color)}` } as const;
 }
 
 /** Month-grid job bar: rectangle OUTLINED in the person's colour (no fill). */
 function outlineBarStyle(color: string | null | undefined) {
   return {
-    border: `2px solid ${color ?? "#64748b"}`,
+    border: `2px solid ${toHex(color)}`,
     backgroundColor: "#ffffff",
     color: "#000000",
   } as const;
 }
+
+const PRINTED_FMT: Intl.DateTimeFormatOptions = {
+  month: "2-digit",
+  day: "2-digit",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+};
 
 export function PrintSheet({
   view,
   anchor,
   weekDays,
   jobs,
-  techs,
+  lanes,
   timeOff,
   holidays,
   rangeLabel,
   conflicts,
+  filterNote,
 }: {
   view: "timeline" | "calendar";
   anchor: Date;
   weekDays: Date[];
-  jobs: JobRow[]; // already filtered to the visible technicians (incl. unscheduled)
-  techs: TechnicianOption[]; // visible, active technicians (row order)
+  jobs: JobRow[]; // already filtered like the screen (incl. unscheduled; completed dropped)
+  /** The SAME lanes the timeline shows (incl. greyed inactive / archived ones). */
+  lanes: BoardLane[];
   timeOff: TechTimeOff[];
   holidays: Map<string, string>;
   rangeLabel: string;
   conflicts: Set<string>; // job ids with a scheduling conflict (double-book / PTO)
+  /** "Filters: … · completed jobs not shown" — null when nothing is filtered or hidden. */
+  filterNote: string | null;
 }) {
+  // The "printed" stamp is set when printing actually starts (beforeprint),
+  // not when the board last rendered. Written straight to the DOM so it is
+  // in place before the browser lays out the printout.
+  const printedRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const stamp = () => {
+      if (printedRef.current) printedRef.current.textContent = fmtEastern(new Date(), PRINTED_FMT);
+    };
+    window.addEventListener("beforeprint", stamp);
+    return () => window.removeEventListener("beforeprint", stamp);
+  }, []);
+  const people = lanes.filter((l): l is BoardLane & { id: string } => l.id !== null);
   const isOff = (techId: string, day: Date) =>
     timeOff.some(
       (o) =>
@@ -71,7 +97,6 @@ export function PrintSheet({
     );
 
   const dated = jobs.filter((j) => j.startDate);
-  const unassignedDated = dated.filter((j) => !j.technicianId);
   // First day the printout covers — jobs ending before this that aren't
   // completed are flagged PAST in the summary.
   const firstDayYmd = ymd(view === "calendar" ? startOfWeekSunday(anchor) : weekDays[0]);
@@ -85,18 +110,23 @@ export function PrintSheet({
           <p className="text-[11px] text-neutral-600">
             {view === "calendar" ? "Month view" : "Week view"} · {rangeLabel}
           </p>
+          {filterNote ? <p className="text-[10px] text-neutral-600">{filterNote}</p> : null}
         </div>
         {/* Eastern time so server + browser renders agree; the minute can still
-            tick between the two renders, hence suppressHydrationWarning. */}
-        <p className="text-[9px] text-neutral-500" suppressHydrationWarning>
-          printed {fmtEastern(new Date(), { month: "2-digit", day: "2-digit", year: "numeric", hour: "numeric", minute: "2-digit" })}
+            tick between the two renders, hence suppressHydrationWarning. Re-stamped
+            on beforeprint (see above). */}
+        <p className="text-[9px] text-neutral-500">
+          printed{" "}
+          <span ref={printedRef} suppressHydrationWarning>
+            {fmtEastern(new Date(), PRINTED_FMT)}
+          </span>
         </p>
       </div>
 
       {/* Technician colour legend — the key to the bars below */}
-      {view === "calendar" && techs.length ? (
+      {view === "calendar" && people.length ? (
         <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
-          {techs.map((t) => (
+          {people.map((t) => (
             <span key={t.id} className="inline-flex items-center gap-1">
               <span className="inline-block h-2.5 w-2.5 rounded-full" style={dotStyle(t.color)} />
               {t.name}
@@ -106,9 +136,9 @@ export function PrintSheet({
       ) : null}
 
       {view === "timeline" ? (
-        <WeekGrid weekDays={weekDays} techs={techs} dated={dated} unassigned={unassignedDated} isOff={isOff} holidays={holidays} conflicts={conflicts} />
+        <WeekGrid weekDays={weekDays} lanes={lanes} dated={dated} isOff={isOff} holidays={holidays} conflicts={conflicts} />
       ) : (
-        <MonthGrid anchor={anchor} dated={dated} techs={techs} holidays={holidays} isOff={isOff} conflicts={conflicts} />
+        <MonthGrid anchor={anchor} dated={dated} people={people} holidays={holidays} isOff={isOff} conflicts={conflicts} />
       )}
 
       {/* ONE summary of the whole workload: grouped by SO, groups ordered by
@@ -127,8 +157,7 @@ export function PrintSheet({
 function JobSummary({ jobs, firstDayYmd, conflicts }: { jobs: JobRow[]; firstDayYmd: string; conflicts: Set<string> }) {
   if (!jobs.length) return null;
 
-  const fmtD = (s: string) =>
-    parseYmd(s).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+  const fmtD = (s: string) => fmtDateOnly(s, { month: "short", day: "numeric" });
   // "(x days)" segment. ONLY an explicit 0 is the "days TBD" placeholder; a
   // null/blank duration follows the app-wide default of 1 day.
   const daysLabel = (d: number | null | undefined) =>
@@ -166,7 +195,7 @@ function JobSummary({ jobs, firstDayYmd, conflicts }: { jobs: JobRow[]; firstDay
     // the space left under the calendar, the browser moves it to a fresh page.
     <div className="mt-2 break-inside-avoid">
       <p className="mb-0.5 border-b border-black text-[11px] font-bold">
-        JOB SUMMARY — {nScheduled} scheduled, {nTentative} tentative scheduled, {nNone} nonscheduled
+        JOB SUMMARY — {nScheduled} scheduled, {nTentative} tentative, {nNone} unscheduled
       </p>
       <div className="columns-2 gap-4">
         {ordered.map(([so, list]) => {
@@ -194,7 +223,7 @@ function JobSummary({ jobs, firstDayYmd, conflicts }: { jobs: JobRow[]; firstDay
                   <span className="font-semibold">{j.title}</span>
                   <span className="text-neutral-600">
                     {j.technicianName ? ` — ${j.technicianName}` : " — Unassigned"}
-                    {j.tentative ? " (tent.)" : ""}
+                    {j.tentative ? " (tentative)" : ""}
                   </span>
                   {conflicts.has(j.id) ? (
                     <AlertTriangle className="ml-1 inline h-2.5 w-2.5 align-middle text-red-600" aria-label="Conflict" />
@@ -214,17 +243,15 @@ const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function WeekGrid({
   weekDays,
-  techs,
+  lanes,
   dated,
-  unassigned,
   isOff,
   holidays,
   conflicts,
 }: {
   weekDays: Date[];
-  techs: TechnicianOption[];
+  lanes: BoardLane[];
   dated: JobRow[];
-  unassigned: JobRow[];
   isOff: (techId: string, day: Date) => boolean;
   holidays: Map<string, string>;
   conflicts: Set<string>;
@@ -246,7 +273,7 @@ function WeekGrid({
               ) : null}
               <span className="font-semibold">{j.title}</span>
               {j.soNumber ? <span className="text-neutral-600"> {j.soNumber}</span> : null}
-              {j.tentative ? <span className="text-neutral-500"> (tent.)</span> : null}
+              {j.tentative ? <span className="text-neutral-500"> (tentative)</span> : null}
               {j.durationDays === 0 ? (
                 <span className="text-neutral-500"> TBD</span>
               ) : (j.durationDays ?? 1) > 1 ? (
@@ -267,7 +294,7 @@ function WeekGrid({
     <table className="w-full table-fixed border-collapse">
       <thead>
         <tr>
-          <th className="w-[9%] border border-neutral-400 bg-neutral-200 p-0.5 text-left text-[9px]">Technician</th>
+          <th className="w-[9%] border border-neutral-400 bg-neutral-200 p-0.5 text-left text-[9px]">Person</th>
           {weekDays.map((d, i) => {
             const holiday = holidays.get(ymd(d));
             return (
@@ -280,22 +307,23 @@ function WeekGrid({
         </tr>
       </thead>
       <tbody>
-        {techs.map((t) => (
-          <tr key={t.id}>
-            <td className="border border-neutral-400 p-0.5 font-semibold" style={chipStyle(t.color)}>
-              <span className="pl-1">{t.name}</span>
-            </td>
-            {weekDays.map((d) => renderCell(t.id, d, isOff(t.id, d)))}
-          </tr>
-        ))}
-        {unassigned.length > 0 ? (
-          <tr>
-            <td className="border border-neutral-400 p-0.5 font-semibold text-neutral-600">
-              <span className="pl-1">Unassigned</span>
-            </td>
-            {weekDays.map((d) => renderCell(null, d, false))}
-          </tr>
-        ) : null}
+        {lanes.map((l) =>
+          l.id === null ? (
+            <tr key="unassigned">
+              <td className="border border-neutral-400 p-0.5 font-semibold text-neutral-600">
+                <span className="pl-1">Unassigned</span>
+              </td>
+              {weekDays.map((d) => renderCell(null, d, false))}
+            </tr>
+          ) : (
+            <tr key={l.id} className={l.inactive ? "text-neutral-500" : ""}>
+              <td className="border border-neutral-400 p-0.5 font-semibold" style={chipStyle(l.color)}>
+                <span className="pl-1">{l.name}</span>
+              </td>
+              {weekDays.map((d) => renderCell(l.id, d, isOff(l.id!, d)))}
+            </tr>
+          ),
+        )}
       </tbody>
     </table>
   );
@@ -333,14 +361,14 @@ function packPrintWeek(dated: JobRow[], weekStart: Date): { job: JobRow; startCo
 function MonthGrid({
   anchor,
   dated,
-  techs,
+  people,
   holidays,
   isOff,
   conflicts,
 }: {
   anchor: Date;
   dated: JobRow[];
-  techs: TechnicianOption[];
+  people: (BoardLane & { id: string })[];
   holidays: Map<string, string>;
   isOff: (techId: string, day: Date) => boolean;
   conflicts: Set<string>;
@@ -348,7 +376,9 @@ function MonthGrid({
   const gridStart = startOfWeekSunday(anchor);
   const monthIdx = addDays(gridStart, 17).getUTCMonth();
   const weeks = Array.from({ length: 6 }, (_, w) => addDays(gridStart, w * 7));
-  const techName = new Map(techs.map((t) => [t.id, t.name]));
+  // Lane names (incl. "(archived)"), falling back to the job's own person name.
+  const techName = new Map(people.map((t) => [t.id, t.name]));
+  const techs = people;
 
   return (
     <div className="border-l border-t border-neutral-400">
@@ -417,8 +447,8 @@ function MonthGrid({
                   ) : null}
                   {job.soNumber ? `${job.soNumber} · ` : ""}
                   <span className="font-bold">{job.title}</span>
-                  {` — ${job.technicianId ? techName.get(job.technicianId) ?? "?" : "Unassigned"}`}
-                  {job.tentative ? " (tent.)" : ""}
+                  {` — ${job.technicianId ? techName.get(job.technicianId) ?? job.technicianName ?? "Unknown person" : "Unassigned"}`}
+                  {job.tentative ? " (tentative)" : ""}
                   {job.durationDays === 0 ? " · TBD" : ""}
                   {endsAfter ? " ▸" : ""}
                 </div>

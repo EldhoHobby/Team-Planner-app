@@ -1,6 +1,8 @@
 import { requireScope } from "@/lib/auth/current-user";
 import { generateTimesheetXlsx, weekEndingFor, currentWeekEnding } from "@/lib/services/timesheets";
 import { writeAudit } from "@/lib/services/audit";
+import { ForbiddenError } from "@/lib/auth/current-user";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +15,15 @@ export async function GET(req: Request) {
   } catch {
     return new Response("Unauthorized", { status: 401 });
   }
+  // The Timesheet is admins-only.
+  if (!scope.ctx.isOrgAdmin) return new Response("Only admins can use the Timesheet.", { status: 403 });
 
   const weekParam = new URL(req.url).searchParams.get("week");
-  const weekEnding = weekParam
-    ? weekEndingFor(new Date(`${weekParam}T00:00:00.000Z`))
-    : currentWeekEnding();
+  const weekDate = weekParam ? new Date(`${weekParam}T00:00:00.000Z`) : null;
+  if (weekParam && (!/^\d{4}-\d{2}-\d{2}$/.test(weekParam) || Number.isNaN(weekDate!.getTime()))) {
+    return new Response("Invalid week.", { status: 400 });
+  }
+  const weekEnding = weekDate ? weekEndingFor(weekDate) : currentWeekEnding();
 
   try {
     const { buffer, filename } = await generateTimesheetXlsx(scope, weekEnding);
@@ -34,7 +40,13 @@ export async function GET(req: Request) {
       },
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Could not generate the timesheet.";
-    return new Response(msg, { status: 400 });
+    logError("timesheet export", e);
+    // ForbiddenError carries a user-facing reason (e.g. the template is missing
+    // on the host); anything else gets a short generic message.
+    const msg = e instanceof ForbiddenError ? e.message : "Could not generate the timesheet. Please try again.";
+    return new Response(msg, {
+      status: 500,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
   }
 }

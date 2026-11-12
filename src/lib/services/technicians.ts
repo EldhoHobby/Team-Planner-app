@@ -3,6 +3,7 @@ import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { toUtcMidnight } from "@/lib/scheduling/calc";
 import { writeAudit } from "./audit";
+import { assertPersonInScope } from "./people";
 
 function assertAdmin(scope: TenantScope) {
   if (!scope.ctx.isOrgAdmin) {
@@ -21,14 +22,6 @@ export function listTechTimeOff(scope: TenantScope) {
   });
 }
 
-async function assertPersonInScope(scope: TenantScope, userId: string) {
-  const membership = await prisma.membership.findFirst({
-    where: { userId, orgId: scope.ctx.orgId },
-    select: { id: true },
-  });
-  if (!membership) throw new ForbiddenError("That person is not in your organization");
-}
-
 export async function createTechTimeOff(
   scope: TenantScope,
   input: { technicianId: string; startDate: Date; endDate: Date; reason?: string },
@@ -42,6 +35,8 @@ export async function createTechTimeOff(
 
   const start = toUtcMidnight(input.startDate);
   const end = toUtcMidnight(input.endDate);
+  // Refuse rather than silently saving a single day.
+  if (end < start) throw new ForbiddenError("The end date can't be before the start date.");
   const off = await prisma.technicianTimeOff.create({
     data: {
       orgId: scope.ctx.orgId,

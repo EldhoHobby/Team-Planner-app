@@ -1,8 +1,17 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
-import type { TaskStatus, TaskPriority, TaskKind } from "@prisma/client";
+import { Prisma, type TaskStatus, type TaskPriority, type TaskKind } from "@prisma/client";
 import { writeAudit } from "./audit";
+import { NOT_DELETED } from "@/lib/db/soft-delete";
+import { StaleSaveError, versionGuard } from "@/lib/db/optimistic";
+
+// Generic (project) tasks share the Task table with field-service jobs. Every
+// function here works on kind GENERAL only — jobs are managed by
+// field-service.ts (soft delete, restore, version-guarded saves) — and never
+// sees a soft-deleted row. Deleting a generic task stays PERMANENT (the Tasks
+// page has no "Recently deleted" yet); its saves bump `version` and are
+// guarded when the caller sends the version it loaded.
 
 export type { TaskStatus, TaskPriority };
 
@@ -21,15 +30,31 @@ export type CreateTaskInput = {
 
 export type UpdateTaskInput = {
   title?: string;
-  description?: string;
+  /** undefined = unchanged; null / "" = clear. */
+  description?: string | null;
   status?: TaskStatus;
   priority?: TaskPriority;
   dueDate?: Date | null;
   estimateHrs?: number | null;
   assigneeIds?: string[];
   isFieldTrip?: boolean;
-  location?: string;
+  /** undefined = unchanged; null / "" = clear. */
+  location?: string | null;
+  /** Optimistic lock: the version the form loaded (omitted = no check; the save still bumps it). */
+  expectedVersion?: number;
 };
+
+/** De-duplicate assignee ids and make sure every one is a member of the
+ *  caller's org (never trust ids posted by the form). */
+async function assertAssigneesInOrg(scope: TenantScope, ids: string[]): Promise<string[]> {
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return unique;
+  const found = await prisma.membership.count({
+    where: { orgId: scope.ctx.orgId, userId: { in: unique } },
+  });
+  if (found !== unique.length) throw new ForbiddenError("One or more assignees are not in this organization.");
+  return unique;
+}
 
 const TASK_INCLUDE = {
   project: { select: { name: true, teamId: true } },
@@ -45,6 +70,7 @@ export async function listTasks(
   return prisma.task.findMany({
     where: scope.whereTeam({
       kind: "GENERAL" as TaskKind, // field-service jobs live on the schedule board, not here
+      ...NOT_DELETED,
       ...(filters.projectId ? { projectId: filters.projectId } : {}),
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.assigneeId
@@ -61,6 +87,7 @@ export async function createTask(scope: TenantScope, data: CreateTaskInput) {
     where: { id: data.projectId, ...scope.team() },
   });
   if (!project) throw new ForbiddenError("Project not in scope");
+  if (data.assigneeIds) data = { ...data, assigneeIds: await assertAssigneesInOrg(scope, data.assigneeIds) };
 
   // Origin: assigning to anyone other than yourself = MANAGER-assigned; otherwise
   // it's your own task (SELF). Outlook-origin tasks come in via the sync connector.
@@ -105,13 +132,29 @@ export async function updateTask(
   data: UpdateTaskInput,
 ) {
   const existing = await prisma.task.findFirst({
-    where: { id, ...scope.team() },
+    where: { id, kind: "GENERAL", ...NOT_DELETED, ...scope.team() },
+    include: { assignments: { select: { userId: true } } },
   });
   if (!existing) throw new ForbiddenError("Task not found");
+  if (data.expectedVersion !== undefined && data.expectedVersion !== existing.version) {
+    throw new StaleSaveError("task");
+  }
 
+  // Only rewrite assignments (and log "assigned to …") when the set changed.
+  let nextAssignees: string[] | undefined;
+  if (data.assigneeIds !== undefined) {
+    const wanted = await assertAssigneesInOrg(scope, data.assigneeIds);
+    const before = new Set(existing.assignments.map((a) => a.userId));
+    const changed = wanted.length !== before.size || wanted.some((uid) => !before.has(uid));
+    if (changed) nextAssignees = wanted;
+  }
+
+  // Guarded write: the extra (non-unique) where fields make `update` throw
+  // P2025 when the version moved on or the row was deleted meanwhile.
   const task = await prisma.task.update({
-    where: { id },
+    where: { id, ...NOT_DELETED, ...versionGuard(data.expectedVersion) },
     data: {
+      version: { increment: 1 },
       ...(data.title !== undefined ? { title: data.title.trim() } : {}),
       ...(data.description !== undefined
         ? { description: data.description?.trim() || null }
@@ -127,21 +170,24 @@ export async function updateTask(
       ...(data.status !== undefined && existing.externalId && data.status !== existing.status
         ? { syncDirty: true }
         : {}),
-      ...(data.assigneeIds !== undefined
+      ...(nextAssignees !== undefined
         ? {
             assignments: {
               deleteMany: {},
-              create: data.assigneeIds.map((userId) => ({ userId })),
+              create: nextAssignees.map((userId) => ({ userId })),
             },
           }
         : {}),
     },
     include: TASK_INCLUDE,
+  }).catch((e: unknown) => {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") throw new StaleSaveError("task");
+    throw e;
   });
   // Call out what changed where it matters for the audit trail: assignment
   // and status changes get explicit summaries instead of a generic "updated".
   const parts: string[] = [];
-  if (data.assigneeIds !== undefined) {
+  if (nextAssignees !== undefined) {
     const names = task.assignments.map((a) => a.user.name ?? a.user.username).join(", ");
     parts.push(names ? `assigned to ${names}` : "unassigned");
   }
@@ -157,9 +203,10 @@ export async function updateTask(
   return task;
 }
 
+/** Permanently delete a GENERIC task (jobs are soft-deleted via deleteJob). */
 export async function deleteTask(scope: TenantScope, id: string) {
   const task = await prisma.task.findFirst({
-    where: { id, ...scope.team() },
+    where: { id, kind: "GENERAL", ...NOT_DELETED, ...scope.team() },
   });
   if (!task) throw new ForbiddenError("Task not found");
   await prisma.task.delete({ where: { id } });

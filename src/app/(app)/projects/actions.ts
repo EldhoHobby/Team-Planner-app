@@ -2,21 +2,22 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
-import { createProject, archiveProject } from "@/lib/services/projects";
+import { requireAdminScope } from "@/lib/auth/current-user";
+import { actionError } from "@/lib/log";
+import { createProject, archiveProject, restoreProject, renameProject } from "@/lib/services/projects";
 import type { CreateProjectState } from "./types";
 
 const CreateSchema = z.object({
-  name: z.string().min(1, "Name is required").max(80, "Name too long"),
-  teamId: z.string().min(1, "Team is required"),
-  description: z.string().max(500, "Description too long").optional(),
+  name: z.string().min(1, "Name is required").max(80, "Name must be 80 characters or fewer."),
+  teamId: z.string().min(1, "Department is required"),
+  description: z.string().max(500, "Description must be 500 characters or fewer.").optional(),
 });
 
 export async function createProjectAction(
   _prev: CreateProjectState,
   formData: FormData,
 ): Promise<CreateProjectState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Projects");
   const parsed = CreateSchema.safeParse({
     name: formData.get("name"),
     teamId: formData.get("teamId"),
@@ -31,20 +32,62 @@ export async function createProjectAction(
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not create the project." };
+    return actionError("createProjectAction", e, "Could not create the project.");
   }
 }
 
-export async function archiveProjectAction(formData: FormData): Promise<void> {
-  const { scope } = await requireScope();
-  const id = String(formData.get("projectId") ?? "");
-  if (!id) return;
+export async function archiveProjectAction(input: {
+  projectId: string;
+}): Promise<{ error?: string }> {
+  const { scope } = await requireAdminScope("Projects");
+  const id = String(input?.projectId ?? "");
+  if (!id) return { error: "Missing project id." };
   try {
     await archiveProject(scope, id);
     revalidatePath("/projects");
     revalidatePath("/tasks");
-  } catch {
-    // swallow — forbidden/not-found is a no-op in the UI
+    return {};
+  } catch (e) {
+    return actionError("archiveProjectAction", e, "Could not archive the project.");
+  }
+}
+
+export async function restoreProjectAction(input: {
+  projectId: string;
+}): Promise<{ error?: string }> {
+  const { scope } = await requireAdminScope("Projects");
+  const id = String(input?.projectId ?? "");
+  if (!id) return { error: "Missing project id." };
+  try {
+    await restoreProject(scope, id);
+    revalidatePath("/projects");
+    revalidatePath("/tasks");
+    return {};
+  } catch (e) {
+    return actionError("restoreProjectAction", e, "Could not restore the project.");
+  }
+}
+
+const RenameSchema = z.object({
+  projectId: z.string().min(1, "Missing project id."),
+  name: z.string().trim().min(1, "Name is required").max(80, "Name must be 80 characters or fewer."),
+});
+
+export async function renameProjectAction(input: {
+  projectId: string;
+  name: string;
+}): Promise<{ error?: string }> {
+  const { scope } = await requireAdminScope("Projects");
+  const parsed = RenameSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  try {
+    await renameProject(scope, parsed.data.projectId, parsed.data.name);
+    revalidatePath("/projects");
+    revalidatePath("/tasks");
+    return {};
+  } catch (e) {
+    return actionError("renameProjectAction", e, "Could not rename the project.");
   }
 }

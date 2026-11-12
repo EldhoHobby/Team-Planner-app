@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireAdminScope, requireScope } from "@/lib/auth/current-user";
+import { actionError } from "@/lib/log";
 import { createTask, updateTask, deleteTask } from "@/lib/services/tasks";
 import {
   createJob,
@@ -16,45 +17,58 @@ import {
   addJobComment,
   editJobComment,
   deleteJobComment,
+  listJobHistory,
+  listDeletedJobs,
+  restoreJob,
   type JobNoteRow,
 } from "@/lib/services/field-service";
 import { runJobsImport } from "@/lib/services/data-io";
+import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
+import type { DeletedItemRow } from "@/lib/db/soft-delete";
 import { listAudit, writeAudit } from "@/lib/services/audit";
 import type { TaskFormState } from "./types";
-import type { JobFormState, ImportState, AuditEntry } from "../schedule/types";
+import type { JobFormState, AuditEntry } from "../schedule/types";
+import { importSizeError, type DataIoState as ScheduleImportState } from "../settings/data/types";
 
 const STATUSES = ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"] as const;
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 
 const CreateSchema = z.object({
-  title: z.string().min(1, "Title is required").max(200),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer."),
   projectId: z.string().min(1, "Project is required"),
   status: z.enum(STATUSES).default("TODO"),
   priority: z.enum(PRIORITIES).default("MEDIUM"),
-  description: z.string().max(2000).optional(),
+  description: z.string().max(2000, "Description must be 2000 characters or fewer.").optional(),
   dueDate: z.string().optional(),
-  estimateHrs: z.coerce.number().positive().optional(),
+  estimateHrs: z.coerce.number().positive("Estimate must be more than 0 hours.").optional(),
   assigneeIds: z.array(z.string()).default([]),
-  location: z.string().max(200).optional(),
+  location: z.string().max(200, "Location must be 200 characters or fewer.").optional(),
 });
 
 const UpdateSchema = z.object({
   taskId: z.string().min(1),
-  title: z.string().min(1, "Title is required").max(200),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer."),
   status: z.enum(STATUSES),
   priority: z.enum(PRIORITIES),
-  description: z.string().max(2000).optional(),
+  // null = the field was emptied in the form → cleared in the DB.
+  description: z.string().max(2000, "Description must be 2000 characters or fewer.").nullable(),
   dueDate: z.string().optional(),
-  estimateHrs: z.coerce.number().positive().optional(),
+  estimateHrs: z.coerce.number().positive("Estimate must be more than 0 hours.").nullable(),
   assigneeIds: z.array(z.string()).default([]),
-  location: z.string().max(200).optional(),
+  location: z.string().max(200, "Location must be 200 characters or fewer.").nullable(),
 });
+
+/** A form text value, or null when blank (so clearing a field clears it). */
+const blankToNull = (v: FormDataEntryValue | null): string | null => {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s ? s : null;
+};
 
 export async function createTaskAction(
   _prev: TaskFormState,
   formData: FormData,
 ): Promise<TaskFormState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const parsed = CreateSchema.safeParse({
     title: formData.get("title"),
     projectId: formData.get("projectId"),
@@ -80,8 +94,7 @@ export async function createTaskAction(
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not create the task." };
+    return actionError("createTaskAction", e, "Could not create the task.");
   }
 }
 
@@ -89,17 +102,17 @@ export async function updateTaskAction(
   _prev: TaskFormState,
   formData: FormData,
 ): Promise<TaskFormState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const parsed = UpdateSchema.safeParse({
     taskId: formData.get("taskId"),
     title: formData.get("title"),
     status: formData.get("status"),
     priority: formData.get("priority"),
-    description: formData.get("description") || undefined,
+    description: blankToNull(formData.get("description")),
     dueDate: formData.get("dueDate") || undefined,
-    estimateHrs: formData.get("estimateHrs") || undefined,
+    estimateHrs: blankToNull(formData.get("estimateHrs")),
     assigneeIds: formData.getAll("assigneeIds"),
-    location: formData.get("location") || undefined,
+    location: blankToNull(formData.get("location")),
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
@@ -111,12 +124,13 @@ export async function updateTaskAction(
       ...rest,
       isFieldTrip,
       dueDate: dueDateStr ? new Date(dueDateStr) : null,
+      // Optional: a form that sends the version it loaded gets stale-save protection.
+      expectedVersion: parseExpectedVersion(formData.get("version")),
     });
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the task." };
+    return actionError("updateTaskAction", e, "Could not update the task.");
   }
 }
 
@@ -124,7 +138,7 @@ export async function deleteTaskAction(
   _prev: TaskFormState,
   formData: FormData,
 ): Promise<TaskFormState> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const taskId = String(formData.get("taskId") ?? "");
   if (!taskId) return { error: "Missing task id." };
   try {
@@ -132,28 +146,34 @@ export async function deleteTaskAction(
     revalidatePath("/tasks");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the task." };
+    return actionError("deleteTaskAction", e, "Could not delete the task.");
   }
 }
 
 // ─────────────────── Field-service jobs (schedule dashboard) ───────────────────
+
+/** actionError + `stale: true` when someone else saved the job first (nothing was written). */
+function jobActionError(context: string, e: unknown, fallback: string): JobFormState {
+  const r = actionError(context, e, fallback);
+  if (e instanceof StaleSaveError) revalidatePath("/schedule");
+  return e instanceof StaleSaveError ? { ...r, stale: true } : r;
+}
 
 const JOB_TYPES = ["COMMISSIONING", "TRAINING", "ANNUAL_MAINTENANCE", "EMERGENCY_SUPPORT"] as const;
 const JOB_STATUSES = ["UNCONFIRMED", "SCHEDULED", "IN_PROGRESS", "COMPLETED"] as const;
 // NOTE: PRIORITIES is already declared near the top of this file — reuse it.
 
 const CreateJobSchema = z.object({
-  title: z.string().min(1, "Title is required").max(200),
-  soNumber: z.string().max(60).optional(),
-  customerName: z.string().max(160).optional(),
-  description: z.string().max(4000).optional(),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer."),
+  soNumber: z.string().max(60, "SO number must be 60 characters or fewer.").optional(),
+  customerName: z.string().max(160, "Customer must be 160 characters or fewer.").optional(),
+  description: z.string().max(4000, "Scope of work must be 4000 characters or fewer.").optional(),
   jobType: z.enum(JOB_TYPES).optional(),
-  hardwareTarget: z.string().max(120).optional(),
+  hardwareTarget: z.string().max(120, "Hardware / product must be 120 characters or fewer.").optional(),
   technicianId: z.string().optional(),
   startDate: z.string().optional(),
   // 0 = "days TBD" placeholder (schedules as a 1-day block); 1..60 = real length.
-  durationDays: z.coerce.number().int().nonnegative().max(60).optional(),
+  durationDays: z.coerce.number().int("Duration must be a whole number of days.").nonnegative("Duration must be between 0 and 60 days.").max(60, "Duration must be between 0 and 60 days.").optional(),
 });
 
 export async function createJobAction(
@@ -187,8 +207,7 @@ export async function createJobAction(
     revalidatePath("/schedule");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not create the job." };
+    return actionError("createJobAction", e, "Could not create the job.");
   }
 }
 
@@ -196,18 +215,19 @@ export async function createJobAction(
 
 const UpdateJobSchema = z.object({
   jobId: z.string().min(1),
-  title: z.string().min(1, "Title is required").max(200).optional(),
-  soNumber: z.string().max(60).optional().nullable(),
-  customerName: z.string().max(160).optional().nullable(),
-  description: z.string().max(4000).optional().nullable(),
+  title: z.string().min(1, "Title is required").max(200, "Title must be 200 characters or fewer.").optional(),
+  soNumber: z.string().max(60, "SO number must be 60 characters or fewer.").optional().nullable(),
+  customerName: z.string().max(160, "Customer must be 160 characters or fewer.").optional().nullable(),
+  description: z.string().max(4000, "Scope of work must be 4000 characters or fewer.").optional().nullable(),
   jobType: z.enum(JOB_TYPES).optional().nullable(),
-  hardwareTarget: z.string().max(120).optional().nullable(),
+  hardwareTarget: z.string().max(120, "Hardware / product must be 120 characters or fewer.").optional().nullable(),
   priority: z.enum(PRIORITIES).optional(),
   technicianId: z.string().optional().nullable(),
   startDate: z.string().optional().nullable(),
-  durationDays: z.coerce.number().int().nonnegative().max(60).optional().nullable(),
+  durationDays: z.coerce.number().int("Duration must be a whole number of days.").nonnegative("Duration must be between 0 and 60 days.").max(60, "Duration must be between 0 and 60 days.").optional().nullable(),
   jobStatus: z.enum(JOB_STATUSES).optional(),
   tentative: z.boolean().optional(),
+  expectedVersion: z.number().int().min(1).optional(),
 });
 
 export async function updateJobAction(input: {
@@ -224,6 +244,8 @@ export async function updateJobAction(input: {
   durationDays?: number | null;
   jobStatus?: (typeof JOB_STATUSES)[number];
   tentative?: boolean;
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
   const parsed = UpdateJobSchema.safeParse(input);
@@ -232,83 +254,127 @@ export async function updateJobAction(input: {
   }
   const { jobId, startDate, ...rest } = parsed.data;
   try {
-    await updateJob(scope, jobId, {
+    const job = await updateJob(scope, jobId, {
       ...rest,
       startDate: startDate ? new Date(startDate) : startDate === null ? null : undefined,
     });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the job." };
+    return jobActionError("updateJobAction", e, "Could not update the job.");
   }
 }
+
+// A real calendar day as YYYY-MM-DD (rejects "2026-02-31" and other junk).
+const YmdSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Enter a valid date.")
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00.000Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, "Enter a valid date.");
+
+const RescheduleJobSchema = z.object({
+  jobId: z.string().min(1),
+  startDate: YmdSchema.nullable().optional(),
+  // Same 0..60 bound as create/update (0 = "days TBD").
+  durationDays: z
+    .number({ invalid_type_error: "Duration must be a whole number of days." })
+    .int("Duration must be a whole number of days.")
+    .min(0, "Duration must be between 0 and 60 days.")
+    .max(60, "Duration must be between 0 and 60 days.")
+    .nullable()
+    .optional(),
+  technicianId: z.string().min(1).nullable().optional(),
+  jobStatus: z.enum(JOB_STATUSES, { errorMap: () => ({ message: "Invalid status." }) }).optional(),
+  expectedVersion: z.number().int().min(1).optional(),
+});
 
 export async function rescheduleJobAction(input: {
   jobId: string;
   startDate?: string | null;
   durationDays?: number | null;
   technicianId?: string | null;
+  /** Restore an exact status (the board's Undo). */
+  jobStatus?: (typeof JOB_STATUSES)[number];
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
+  const parsed = RescheduleJobSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  }
+  const data = parsed.data;
   try {
-    await rescheduleJob(scope, input.jobId, {
-      ...(input.startDate !== undefined
-        ? { startDate: input.startDate ? new Date(input.startDate) : null }
+    const job = await rescheduleJob(scope, data.jobId, {
+      ...(data.startDate !== undefined
+        ? { startDate: data.startDate ? new Date(`${data.startDate}T00:00:00.000Z`) : null }
         : {}),
-      ...(input.durationDays !== undefined ? { durationDays: input.durationDays } : {}),
-      ...(input.technicianId !== undefined ? { technicianId: input.technicianId } : {}),
+      ...(data.durationDays !== undefined ? { durationDays: data.durationDays } : {}),
+      ...(data.technicianId !== undefined ? { technicianId: data.technicianId } : {}),
+      ...(data.jobStatus !== undefined ? { jobStatus: data.jobStatus } : {}),
+      expectedVersion: data.expectedVersion,
     });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not reschedule the job." };
+    return jobActionError("rescheduleJobAction", e, "Could not reschedule the job.");
   }
 }
+
+const SetJobStatusSchema = z.object({
+  jobId: z.string().min(1),
+  jobStatus: z.enum(JOB_STATUSES, { errorMap: () => ({ message: "Invalid status." }) }),
+  expectedVersion: z.number().int().min(1).optional(),
+});
 
 export async function setJobStatusAction(input: {
   jobId: string;
   jobStatus: (typeof JOB_STATUSES)[number];
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
-  if (!JOB_STATUSES.includes(input.jobStatus)) return { error: "Invalid status." };
+  const parsed = SetJobStatusSchema.safeParse(input);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid status." };
+  }
   try {
-    await setJobStatus(scope, input.jobId, input.jobStatus);
+    const job = await setJobStatus(scope, parsed.data.jobId, parsed.data.jobStatus, {
+      expectedVersion: parsed.data.expectedVersion,
+    });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update status." };
+    return jobActionError("setJobStatusAction", e, "Could not update status.");
   }
 }
 
 export async function setJobTentativeAction(input: {
   jobId: string;
   tentative: boolean;
+  /** Optimistic lock: the job version the client loaded. */
+  expectedVersion?: number;
 }): Promise<JobFormState> {
   const { scope } = await requireScope();
   try {
-    await setJobTentative(scope, input.jobId, input.tentative);
+    const job = await setJobTentative(scope, input.jobId, input.tentative === true, {
+      expectedVersion: parseExpectedVersion(input.expectedVersion),
+    });
     revalidatePath("/schedule");
-    return { success: true };
+    return { success: true, version: job.version };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not update the job." };
+    return jobActionError("setJobTentativeAction", e, "Could not update the job.");
   }
 }
 
 export async function listJobHistoryAction(input: { jobId: string }): Promise<AuditEntry[]> {
   const { scope } = await requireScope();
-  // Comments are rendered from JobNote in the editor thread — keep them out of
-  // the change-history fetch so they can't crowd out real changes.
-  const rows = await listAudit(scope, "job", input.jobId, { excludeActions: ["commented"] });
-  return rows.map((r) => ({
-    action: r.action,
-    summary: r.summary,
-    actorEmail: r.actorEmail,
-    createdAt: r.createdAt.toISOString(),
-  }));
+  // Comments are rendered from JobNote in the editor thread — the service keeps
+  // them out of the change-history fetch so they can't crowd out real changes,
+  // and resolves each actor to a display name (like comment authors).
+  return listJobHistory(scope, input.jobId);
 }
 
 // ─── Job comment thread (reason-for-change + discussion) ───
@@ -328,8 +394,7 @@ export async function addJobCommentAction(input: {
     revalidatePath("/schedule");
     return { note };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not add the comment." };
+    return actionError("addJobCommentAction", e, "Could not add the comment.");
   }
 }
 
@@ -341,8 +406,7 @@ export async function editJobCommentAction(input: {
   try {
     return { note: await editJobComment(scope, input.noteId, input.body) };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not edit the comment." };
+    return actionError("editJobCommentAction", e, "Could not edit the comment.");
   }
 }
 
@@ -354,8 +418,7 @@ export async function deleteJobCommentAction(input: {
     await deleteJobComment(scope, input.noteId);
     return { ok: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the comment." };
+    return actionError("deleteJobCommentAction", e, "Could not delete the comment.");
   }
 }
 
@@ -367,38 +430,94 @@ export async function duplicateJobAction(input: { jobId: string }): Promise<JobF
     revalidatePath("/schedule");
     return { success: true, jobId: copy.id };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not duplicate the job." };
+    return actionError("duplicateJobAction", e, "Could not duplicate the job.");
   }
 }
 
+/** Soft delete — the job goes to "Recently deleted" (restorable for 30 days). */
 export async function deleteJobAction(input: { jobId: string }): Promise<JobFormState> {
-  const { scope } = await requireScope();
   try {
+    const { scope } = await requireScope();
     await deleteJob(scope, input.jobId);
     revalidatePath("/schedule");
+    revalidatePath("/dashboard");
     return { success: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not delete the job." };
+    return actionError("deleteJobAction", e, "Could not delete the job.");
   }
 }
 
-// Excel import for the schedule window. Upserts jobs by id using the shared Jobs
-// sheet definition in data-io.ts (round-trips with the schedule Export and the
-// admin Data round-trip). Not gated on org-admin — any scheduler may import.
-export async function importScheduleXlsxAction(
-  _prev: ImportState,
-  formData: FormData,
-): Promise<ImportState> {
-  const { scope } = await requireScope();
+/** Undo a delete / restore from "Recently deleted". */
+export async function restoreJobAction(input: { jobId: string }): Promise<JobFormState> {
+  try {
+    const { scope } = await requireScope();
+    const job = await restoreJob(scope, input.jobId);
+    revalidatePath("/schedule");
+    revalidatePath("/dashboard");
+    return { success: true, jobId: job.id, version: job.version };
+  } catch (e) {
+    return actionError("restoreJobAction", e, "Could not restore the job.");
+  }
+}
+
+/** Jobs deleted in the last 30 days (the Schedule's "Recently deleted" dialog). */
+export async function listDeletedJobsAction(): Promise<{ items?: DeletedItemRow[]; error?: string }> {
+  try {
+    const { scope } = await requireScope();
+    return { items: await listDeletedJobs(scope) };
+  } catch (e) {
+    return actionError("listDeletedJobsAction", e, "Could not load recently deleted jobs.");
+  }
+}
+
+// Excel import for the schedule window — two steps, like Settings → Data:
+// PREVIEW (runJobsImport with apply=false: reads only, writes nothing, audits
+// nothing) then APPLY (apply=true + one audit entry). Upserts jobs by id using
+// the shared Jobs sheet definition in data-io.ts (round-trips with the schedule
+// Export and the admin Data round-trip). Not gated on org-admin — any
+// scheduler may import.
+
+/** The uploaded workbook, or the message to show (missing / too big / not Excel). */
+async function scheduleWorkbook(formData: FormData, missing: string): Promise<{ buf: ArrayBuffer } | { error: string }> {
   const file = formData.get("file");
   if (!file || typeof file !== "object" || !("arrayBuffer" in file) || (file as File).size === 0) {
-    return { error: "Choose an .xlsx file first." };
+    return { error: missing };
   }
+  // Check size + type BEFORE parsing: ExcelJS loads the whole workbook in memory.
+  const tooBig = importSizeError((file as File).size);
+  if (tooBig) return { error: tooBig };
+  if (!/\.xls[xm]$/i.test((file as File).name ?? "")) {
+    return { error: "That isn't an Excel workbook — choose the exported .xlsx file." };
+  }
+  return { buf: await (file as File).arrayBuffer() };
+}
+
+/** Step 1: what the import WOULD do. Writes nothing and is not audited. */
+export async function previewScheduleImportAction(
+  _prev: ScheduleImportState,
+  formData: FormData,
+): Promise<ScheduleImportState> {
   try {
-    const buf = await (file as File).arrayBuffer();
-    const summary = await runJobsImport(scope, buf, true);
+    const { scope } = await requireScope();
+    const file = await scheduleWorkbook(formData, "Choose an .xlsx file first.");
+    if ("error" in file) return { error: file.error };
+    const summary = await runJobsImport(scope, file.buf, false);
+    return { phase: "preview", summary };
+  } catch (e) {
+    return actionError("schedule.previewImport", e, "Could not read that file — is it the exported .xlsx workbook?");
+  }
+}
+
+/** Step 2: apply the workbook (re-checked row by row on the server) + audit it. */
+export async function applyScheduleImportAction(
+  _prev: ScheduleImportState,
+  formData: FormData,
+): Promise<ScheduleImportState> {
+  try {
+    const { scope } = await requireScope();
+    const file = await scheduleWorkbook(formData, "Choose the file again to apply it.");
+    if ("error" in file) return { error: file.error };
+    const summary = await runJobsImport(scope, file.buf, true);
     await writeAudit(scope, {
       entity: "data",
       entityId: "schedule-import",
@@ -406,24 +525,14 @@ export async function importScheduleXlsxAction(
       summary: `Applied the schedule (Jobs) Excel import: ${summary.totalCreated} created, ${summary.totalUpdated} updated.`,
     });
     revalidatePath("/schedule");
-    const r = summary.results[0];
-    const note = r && r.errors.length
-      ? ` (${r.errors.slice(0, 3).join("; ")}${r.errors.length > 3 ? "…" : ""})`
-      : "";
-    const warn = r?.warnings?.length
-      ? ` ⚠ ${r.warnings.length} possible duplicate(s): ${r.warnings.slice(0, 2).join("; ")}${r.warnings.length > 2 ? "…" : ""}`
-      : "";
-    return {
-      message: `Imported ${summary.totalCreated} created, ${summary.totalUpdated} updated, ${r?.skipped ?? 0} skipped.${note}${warn}`,
-    };
+    return { phase: "applied", summary };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not read that file — is it the exported .xlsx workbook?" };
+    return actionError("schedule.applyImport", e, "The import failed — please try again.");
   }
 }
 
 export async function listTaskHistoryAction(input: { taskId: string }): Promise<AuditEntry[]> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const rows = await listAudit(scope, "task", input.taskId);
   return rows.map((r) => ({
     action: r.action,
@@ -434,19 +543,8 @@ export async function listTaskHistoryAction(input: { taskId: string }): Promise<
 }
 
 export async function listProjectHistoryAction(input: { projectId: string }): Promise<AuditEntry[]> {
-  const { scope } = await requireScope();
+  const { scope } = await requireAdminScope("Tasks");
   const rows = await listAudit(scope, "project", input.projectId);
-  return rows.map((r) => ({
-    action: r.action,
-    summary: r.summary,
-    actorEmail: r.actorEmail,
-    createdAt: r.createdAt.toISOString(),
-  }));
-}
-
-export async function listTechnicianHistoryAction(input: { technicianId: string }): Promise<AuditEntry[]> {
-  const { scope } = await requireScope();
-  const rows = await listAudit(scope, "technician", input.technicianId);
   return rows.map((r) => ({
     action: r.action,
     summary: r.summary,

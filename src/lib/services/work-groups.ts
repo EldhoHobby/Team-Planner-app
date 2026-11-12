@@ -75,14 +75,33 @@ export async function setWorkGroupMembers(
 /** Add/remove a single person (used from the People page row editor). */
 export async function setPersonWorkGroups(scope: TenantScope, userId: string, groupIds: string[]) {
   assertAdmin(scope);
+  // Prisma ignores `undefined` in a where — a missing id would match EVERYONE.
+  if (typeof userId !== "string" || !userId) throw new ForbiddenError("Invalid request.");
+  if (!Array.isArray(groupIds) || !groupIds.every((id) => typeof id === "string")) {
+    throw new ForbiddenError("Invalid request.");
+  }
+  // The person must be in this org (tenancy guard).
+  const member = await prisma.membership.findFirst({
+    where: { userId, orgId: scope.ctx.orgId },
+    select: { user: { select: { name: true, username: true } } },
+  });
+  if (!member) throw new ForbiddenError("That person is not in your organization");
+
+  // Only ACTIVE groups are replaced: the People page only knows non-archived
+  // groups, so memberships in archived ones are left untouched.
+  const activeGroups = { orgId: scope.ctx.orgId, archived: false };
   const valid = await prisma.workGroup.findMany({
-    where: { id: { in: groupIds }, orgId: scope.ctx.orgId },
+    where: { id: { in: groupIds }, ...activeGroups },
     select: { id: true },
   });
   const validIds = valid.map((g) => g.id);
+  const before = await prisma.workGroupMembership.findMany({
+    where: { userId, workGroup: activeGroups },
+    select: { workGroupId: true, workGroup: { select: { name: true } } },
+  });
   await prisma.$transaction(async (tx) => {
     await tx.workGroupMembership.deleteMany({
-      where: { userId, workGroup: { orgId: scope.ctx.orgId } },
+      where: { userId, workGroup: activeGroups },
     });
     if (validIds.length) {
       await tx.workGroupMembership.createMany({
@@ -90,6 +109,27 @@ export async function setPersonWorkGroups(scope: TenantScope, userId: string, gr
       });
     }
   });
+
+  // Audit what actually changed, by work-group name.
+  const beforeIds = before.map((b) => b.workGroupId);
+  const added = validIds.filter((id) => !beforeIds.includes(id));
+  const removed = before.filter((b) => !validIds.includes(b.workGroupId)).map((b) => b.workGroup.name);
+  if (added.length || removed.length) {
+    const addedNames = added.length
+      ? (await prisma.workGroup.findMany({ where: { id: { in: added }, orgId: scope.ctx.orgId }, select: { name: true } })).map((g) => g.name)
+      : [];
+    const parts = [
+      ...(addedNames.length ? [`added to ${addedNames.join(", ")}`] : []),
+      ...(removed.length ? [`removed from ${removed.join(", ")}`] : []),
+    ];
+    const who = member.user.name ?? member.user.username;
+    await writeAudit(scope, {
+      entity: "member",
+      entityId: userId,
+      action: "updated",
+      summary: `Work groups for ${who}: ${parts.join("; ")}`,
+    });
+  }
 }
 
 async function assertGroupInScope(scope: TenantScope, id: string) {

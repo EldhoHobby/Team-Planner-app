@@ -1,6 +1,8 @@
-import { requireScope } from "@/lib/auth/current-user";
+import { todayYmd } from "@/lib/tz";
+import { requireScope, UnauthorizedError, ForbiddenError } from "@/lib/auth/current-user";
 import { buildJobsWorkbook } from "@/lib/services/data-io";
 import { writeAudit } from "@/lib/services/audit";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -17,14 +19,23 @@ export async function GET() {
       action: "exported",
       summary: "Downloaded the schedule (Jobs) Excel export.",
     });
-    const date = new Date().toISOString().slice(0, 10);
+    const date = todayYmd();
     return new Response(Buffer.from(data as ArrayBuffer), {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="schedule-${date}.xlsx"`,
       },
     });
-  } catch {
-    return new Response("Unauthorized", { status: 401 });
+  } catch (e) {
+    // Only a missing/expired session is "Unauthorized"; anything else is a real
+    // failure the client shows inline (see the Export button in schedule-client).
+    if (e instanceof UnauthorizedError) {
+      return new Response("Your session has expired — sign in again.", { status: 401 });
+    }
+    if (e instanceof ForbiddenError) {
+      return new Response(e.message, { status: 403 });
+    }
+    logError("schedule-export", e);
+    return new Response("Could not build the schedule export.", { status: 500 });
   }
 }

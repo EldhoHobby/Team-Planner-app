@@ -5,10 +5,17 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { toHex, nextIdentityColor } from "@/lib/scheduling/colors";
 import { endFromDuration } from "@/lib/scheduling/calc";
 import { createJob } from "@/lib/services/field-service";
+import { isSystemProject, reservedProjectNameError, systemProjectMessage } from "@/lib/services/projects";
+import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
+import { TECH_TASK_HISTORY_FIELDS } from "@/lib/services/tech-tasks";
 import { hashPassword } from "@/lib/auth/password";
 import { generateToken } from "@/lib/auth/tokens";
 import { uniqueUsername } from "@/lib/auth/username";
 import { normalizeUsername, isValidUsername } from "@/lib/users";
+import { callerIsOwner, looksLikeEmail } from "@/lib/services/people";
+import { logError } from "@/lib/log";
+import { NOT_DELETED } from "@/lib/db/soft-delete";
+import { versionGuard } from "@/lib/db/optimistic";
 import {
   ymd,
   sheetRows,
@@ -98,7 +105,7 @@ async function jobsExportRows(scope: TenantScope): Promise<Record<string, unknow
   const projects = await prisma.project.findMany({ where: { orgId }, select: { id: true, name: true } });
   const projName = new Map(projects.map((p) => [p.id, p.name]));
   const jobs = await prisma.task.findMany({
-    where: scope.whereTeam({ kind: "FIELD_SERVICE" as const }),
+    where: scope.whereTeam({ kind: "FIELD_SERVICE" as const, ...NOT_DELETED }),
     orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
   });
   return jobs.map((j) => ({
@@ -110,6 +117,9 @@ async function jobsExportRows(scope: TenantScope): Promise<Record<string, unknow
     project: projName.get(j.projectId) ?? "",
     startDate: ymd(j.startDate), durationDays: j.durationDays ?? "",
     tentative: j.tentative ? "true" : "false",
+    // Optimistic lock: re-importing a row whose job changed in the app since
+    // this export is refused as a conflict (blank = no check).
+    version: j.version,
   }));
 }
 
@@ -184,6 +194,8 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
     "For Time Off and Jobs, set the person by username, name or email (must match someone exactly).",
     "Departments can nest: set 'parent' to another department's name (blank = top level).",
     "Jobs may reference a cross-functional pool via 'workGroup' (by name; blank = none).",
+    "Jobs: leave 'version' as exported — a row whose job changed in the app after this export is skipped as a conflict (blank = no check).",
+    "Deleted jobs and dashboard tasks are not exported; rows for items deleted since the export are skipped.",
     "Holidays round-trip by date: one holiday per date; re-importing the same date renames it.",
     "Preview note: Time Off/Jobs rows naming a person created in the same file may warn in Preview but resolve on Apply.",
   ].forEach((t) => info.addRow({ t }));
@@ -216,7 +228,7 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
 
   // My Tasks (dashboard open-items, all people) — full round-trip.
   const techTasks = await prisma.techTask.findMany({
-    where: { orgId },
+    where: { orgId, ...NOT_DELETED },
     orderBy: [{ ownerId: "asc" }, { priority: "asc" }, { createdAt: "asc" }],
   });
   addSheet(wb, SHEET.techTasks,
@@ -277,13 +289,20 @@ export async function buildWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer>
  * People import — full round-trip. Blank id = CREATE a person (login user with a
  * placeholder password; hand them a set-password link from the People page),
  * known id = UPDATE their settings. Never touches passwords/secrets. Color blank
- * = auto-generate on create / keep on update. Safety: rows may not demote an
- * OWNER, and the importing admin cannot archive themselves.
+ * = auto-generate on create / keep on update. Safety (same rules as the People
+ * page, see services/people.ts): nobody becomes or stops being OWNER via import,
+ * the OWNER can't be archived, and the importing admin cannot archive or demote
+ * themselves ("view as": both the effective and the real user count as self).
+ * Only the Owner may change the Owner's username or email (both sign in).
+ * Usernames / emails are validated only when NEW or CHANGED — an unchanged
+ * stored legacy value never fails a row.
  */
 async function importPeople(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
   const res: SheetResult = { sheet: SHEET.people, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: [] };
   const orgId = scope.ctx.orgId;
+  const selfIds = [scope.ctx.userId, scope.ctx.realUserId].filter((x): x is string => !!x);
   const err = (line: number, msg: string) => { res.skipped++; res.errors.push(`${SHEET.people} row ${line}: ${msg}`); };
+  const importerIsOwner = await callerIsOwner(scope);
 
   const teams = await prisma.team.findMany({ where: { orgId }, select: { id: true, name: true } });
   const teamByName = new Map(teams.map((t) => [t.name.trim().toLowerCase(), t.id]));
@@ -327,18 +346,27 @@ async function importPeople(scope: TenantScope, rows: Record<string, string>[], 
         });
         if (!ex) { err(line, "id not found"); continue; }
         const exRole = ex.memberships[0]?.role ?? "MEMBER";
+        const isSelf = selfIds.includes(p.id);
         if (exRole === "OWNER" && p.orgRole !== "OWNER") { err(line, "cannot change the OWNER's role via import"); continue; }
-        if (p.id === scope.ctx.userId && p.archived) { err(line, "you cannot archive yourself"); continue; }
-        if (p.username) {
-          const wanted = normalizeUsername(p.username);
-          if (!isValidUsername(wanted)) { err(line, "invalid username"); continue; }
-          if (wanted !== ex.username) {
-            const clash = await prisma.user.findUnique({ where: { username: wanted }, select: { id: true } });
-            if (clash) { err(line, "username already taken"); continue; }
-          }
-          p.username = wanted;
+        if (exRole !== "OWNER" && p.orgRole === "OWNER") { err(line, "cannot make someone the OWNER via import"); continue; }
+        if (exRole === "OWNER" && p.archived && !ex.archived) { err(line, "the OWNER cannot be archived"); continue; }
+        if (isSelf && p.archived) { err(line, "you cannot archive yourself"); continue; }
+        if (isSelf && exRole === "ADMIN" && p.orgRole !== "ADMIN") { err(line, "you cannot remove your own admin access"); continue; }
+        // Blank username = keep; blank email = clear. Compare with the stored value first.
+        const wantedUsername = p.username && p.username !== ex.username ? normalizeUsername(p.username) : ex.username;
+        const usernameChanged = wantedUsername !== ex.username;
+        const emailChanged = (email ?? "") !== (ex.email ?? "").toLowerCase();
+        if (exRole === "OWNER" && !importerIsOwner && (usernameChanged || emailChanged)) {
+          err(line, "only the Owner can change the Owner's username or email"); continue;
         }
-        if (email && email !== ex.email) {
+        if (usernameChanged) {
+          if (!isValidUsername(wantedUsername)) { err(line, "invalid username"); continue; }
+          const clash = await prisma.user.findUnique({ where: { username: wantedUsername }, select: { id: true } });
+          if (clash) { err(line, "username already taken"); continue; }
+        }
+        if (p.username) p.username = wantedUsername;
+        if (emailChanged && email) {
+          if (!looksLikeEmail(email)) { err(line, "invalid email"); continue; }
           const clash = await prisma.user.findUnique({ where: { email }, select: { id: true } });
           if (clash && clash.id !== p.id) { err(line, "email already in use"); continue; }
         }
@@ -391,6 +419,7 @@ async function importPeople(scope: TenantScope, rows: Record<string, string>[], 
       } else {
         // ── CREATE ──
         if (email) {
+          if (!looksLikeEmail(email)) { err(line, "invalid email"); continue; }
           const clash = await prisma.user.findUnique({ where: { email }, select: { id: true } });
           if (clash) { err(line, "email already in use"); continue; }
         }
@@ -428,7 +457,8 @@ async function importPeople(scope: TenantScope, rows: Record<string, string>[], 
         }
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.people} row ${line}`, e);
       err(line, "could not save");
     }
   }
@@ -470,9 +500,11 @@ async function importTechTasks(scope: TenantScope, rows: Record<string, string>[
       if (id) {
         const ex = await prisma.techTask.findFirst({
           where: { id, orgId: scope.ctx.orgId },
-          select: { id: true, ownerId: true, title: true, priority: true, state: true, targetDate: true, location: true, notes: true, completedAt: true },
+          select: { id: true, ownerId: true, title: true, priority: true, state: true, targetDate: true, location: true, notes: true, completedAt: true, deletedAt: true },
         });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.techTasks} row ${line}: id not found`); continue; }
+        // A deleted task is never silently brought back (or duplicated) by an import.
+        if (ex.deletedAt) { res.skipped++; res.errors.push(`${SHEET.techTasks} row ${line}: skipped — this task was deleted (restore it from Recently deleted on the Dashboard first)`); continue; }
         const same =
           ex.ownerId === ownerId &&
           ex.title === title &&
@@ -483,16 +515,22 @@ async function importTechTasks(scope: TenantScope, rows: Record<string, string>[
           (ex.notes ?? "") === (notes ?? "");
         if (same) { res.unchanged++; continue; }
         if (apply) {
-          await prisma.techTask.update({
-            where: { id },
-            data: {
-              ownerId, title, priority, state, targetDate,
-              location, notes,
-              completedAt:
-                state === "DONE"
-                  ? (ex.completedAt ?? new Date())
-                  : null,
-            },
+          // Bump the optimistic-lock version (stale open tickets must not
+          // overwrite imported values) and keep the permanent field history.
+          await prisma.$transaction(async (tx) => {
+            const updated = await tx.techTask.update({
+              where: { id, ...NOT_DELETED },
+              data: {
+                ownerId, title, priority, state, targetDate,
+                location, notes,
+                completedAt:
+                  state === "DONE"
+                    ? (ex.completedAt ?? new Date())
+                    : null,
+                version: { increment: 1 },
+              },
+            });
+            await recordFieldChanges(tx, scope, "techtask", id, diffFields(ex, updated, TECH_TASK_HISTORY_FIELDS));
           });
         }
         res.updated++;
@@ -511,7 +549,8 @@ async function importTechTasks(scope: TenantScope, rows: Record<string, string>[
         }
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.techTasks} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.techTasks} row ${line}: could not save`);
     }
   }
@@ -543,7 +582,8 @@ async function importTimeOff(scope: TenantScope, rows: Record<string, string>[],
         if (apply) await prisma.technicianTimeOff.create({ data: { orgId: scope.ctx.orgId, ...data } });
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.timeOff} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.timeOff} row ${line}: could not save`);
     }
   }
@@ -580,14 +620,25 @@ async function importTeams(scope: TenantScope, rows: Record<string, string>[], a
         if (apply) {
           const created = await prisma.team.create({ data: { orgId: scope.ctx.orgId, name, parentTeamId } });
           idByName.set(name.trim().toLowerCase(), created.id);
+        } else if (!idByName.has(name.trim().toLowerCase())) {
+          // Preview: remember the name so a sub-department later in the same
+          // file resolves its parent, exactly as it will on Apply.
+          idByName.set(name.trim().toLowerCase(), `preview:${name}`);
         }
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.teams} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.teams} row ${line}: name may already exist`);
     }
   }
   return res;
+}
+
+/** Text equality that ignores Windows vs Unix line breaks (Excel rewrites them). */
+function sameText(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (s: string | null | undefined) => (s ?? "").split(String.fromCharCode(13)).join("");
+  return norm(a) === norm(b);
 }
 
 async function importProjects(scope: TenantScope, rows: Record<string, string>[], apply: boolean): Promise<SheetResult> {
@@ -607,14 +658,26 @@ async function importProjects(scope: TenantScope, rows: Record<string, string>[]
         const ex = await prisma.project.findFirst({ where: { id, orgId: scope.ctx.orgId }, select: { id: true, name: true, description: true, archived: true } });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: id not found`); continue; }
         if (ex.name === name && (ex.description ?? "") === (description ?? "") && ex.archived === archived) { res.unchanged++; continue; }
+        // The schedule finds its container project BY NAME: never rename or
+        // archive it from a sheet, and no other project may take that name.
+        const renamed = ex.name !== name;
+        const archiving = archived && !ex.archived;
+        if ((renamed || archiving) && (await isSystemProject(scope, id))) {
+          res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: ${systemProjectMessage(renamed ? "renamed" : "archived")}`); continue;
+        }
+        const reserved = renamed ? reservedProjectNameError(name) : null;
+        if (reserved) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: ${reserved}`); continue; }
         if (apply) await prisma.project.update({ where: { id }, data: { name, description, archived } });
         res.updated++;
       } else {
+        const reserved = reservedProjectNameError(name);
+        if (reserved) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: ${reserved}`); continue; }
         if (!teamId || !teamById.has(teamId)) { res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: unknown team`); continue; }
         if (apply) await prisma.project.create({ data: { orgId: scope.ctx.orgId, teamId, name, description, archived } });
         res.created++;
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.projects} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.projects} row ${line}: could not save`);
     }
   }
@@ -633,7 +696,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
   const jobKey = (so: string | null | undefined, title: string | null | undefined) =>
     `${(so ?? "").trim().toLowerCase()}|${(title ?? "").trim().toLowerCase()}`;
   const existing = await prisma.task.findMany({
-    where: { kind: "FIELD_SERVICE", ...scope.team() },
+    where: { kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team() },
     select: { id: true, soNumber: true, title: true },
   });
   const existingByKey = new Map<string, string[]>();
@@ -660,10 +723,10 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
     if (!parsed.success) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: ${parsed.error.issues[0]?.message ?? "invalid row"}`); continue; }
     const {
       id, soNumber, customer, title, scope: scopeText, jobType, jobStatus,
-      hardware, priority, technician, workGroup, startDate: start, durationDays, tentative,
+      hardware, priority, technician, workGroup, startDate: start, durationDays, tentative, version,
     } = parsed.data;
 
-    let technicianId: string | null = technician ? techs.byName.get(technician.toLowerCase()) ?? null : null;
+    const technicianId: string | null = technician ? techs.byName.get(technician.toLowerCase()) ?? null : null;
     if (technician && !technicianId) {
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: unknown technician`); continue;
     }
@@ -690,9 +753,12 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
             id: true, title: true, soNumber: true, customerName: true, description: true,
             jobType: true, jobStatus: true, hardwareTarget: true, priority: true,
             technicianId: true, workGroupId: true, startDate: true, durationDays: true, tentative: true,
+            deletedAt: true, version: true,
           },
         });
         if (!ex) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: id not found`); continue; }
+        // A deleted job is never silently brought back (or duplicated) by an import.
+        if (ex.deletedAt) { res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: skipped — this job was deleted (restore it from Recently deleted on the Schedule first)`); continue; }
         const dur = durationDays ?? ex.durationDays ?? 1;
         const end = start ? endFromDuration(start, dur) : null;
         const data = {
@@ -715,7 +781,8 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           ex.title === data.title &&
           (ex.soNumber ?? "") === (data.soNumber ?? "") &&
           (ex.customerName ?? "") === (data.customerName ?? "") &&
-          (ex.description ?? "") === (data.description ?? "") &&
+          // Excel drops the CR of Windows line breaks — that is not a change.
+          sameText(ex.description, data.description) &&
           (ex.jobType ?? null) === (data.jobType ?? null) &&
           (ex.hardwareTarget ?? "") === (data.hardwareTarget ?? "") &&
           ex.priority === data.priority &&
@@ -726,7 +793,18 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
           (ex.jobStatus ?? null) === (data.jobStatus ?? null) &&
           ex.tentative === data.tentative;
         if (same) { res.unchanged++; continue; }
-        if (apply) await prisma.task.update({ where: { id }, data });
+        // Stale-save protection (like the agreements workbook): a row exported
+        // before the job last changed in the app is a conflict — skipped, never
+        // overwrites. A blank version cell (older workbooks) = no check.
+        const conflict = `${SHEET.jobs} row ${line}: conflict — this job was changed in the app after the file was exported (file version ${version}, app version ${ex.version}); not imported. Export again and redo the change.`;
+        if (version !== null && version !== ex.version) { res.skipped++; res.errors.push(conflict); continue; }
+        if (apply) {
+          const w = await prisma.task.updateMany({
+            where: { id, kind: "FIELD_SERVICE", ...NOT_DELETED, ...scope.team(), ...versionGuard(version ?? undefined) },
+            data: { ...data, version: { increment: 1 } },
+          });
+          if (w.count === 0) { res.skipped++; res.errors.push(conflict); continue; }
+        }
         res.updated++;
       } else {
         if (apply) {
@@ -739,6 +817,7 @@ async function importJobs(scope: TenantScope, rows: Record<string, string>[], ap
         res.created++;
       }
     } catch (e) {
+      logError(`data-io import ${SHEET.jobs} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.jobs} row ${line}: ${e instanceof Error ? e.message : "could not save"}`);
     }
   }
@@ -772,11 +851,31 @@ async function importHolidays(scope: TenantScope, rows: Record<string, string>[]
           res.created++;
         }
       }
-    } catch {
+    } catch (e) {
+      logError(`data-io import ${SHEET.holidays} row ${line}`, e);
       res.skipped++; res.errors.push(`${SHEET.holidays} row ${line}: could not save`);
     }
   }
   return res;
+}
+
+/**
+ * Sanity cap on data rows per imported sheet. Real config workbooks are a few
+ * hundred rows; anything past this is a wrong or runaway file, and importing it
+ * row by row would tie the server up for a long time.
+ */
+export const MAX_IMPORT_ROWS_PER_SHEET = 20_000;
+
+/** sheetRows() with the row cap applied BEFORE the rows are read. */
+function cappedSheetRows(ws: ExcelJS.Worksheet): Record<string, string>[] {
+  // actualRowCount counts rows that hold values (header included).
+  if (ws.actualRowCount - 1 > MAX_IMPORT_ROWS_PER_SHEET) {
+    throw new ForbiddenError(
+      `The "${ws.name}" sheet has ${(ws.actualRowCount - 1).toLocaleString("en-US")} rows — ` +
+        `the import accepts at most ${MAX_IMPORT_ROWS_PER_SHEET.toLocaleString("en-US")} per sheet. Check you picked the right file.`,
+    );
+  }
+  return sheetRows(ws);
 }
 
 function summarize(results: SheetResult[]): ImportSummary {
@@ -810,6 +909,8 @@ export async function buildJobsWorkbook(scope: TenantScope): Promise<ExcelJS.Buf
     "Set the Technician by name (must match a technician exactly). Leave blank to unassign.",
     "Dates use YYYY-MM-DD. jobType/jobStatus/priority accept their labels. tentative is true/false.",
     "project is informational (export only) and ignored on import.",
+    "Leave 'version' as exported: a row whose job was changed in the app after this export is skipped as a conflict (blank = no check).",
+    "Deleted jobs are not exported; a row for a job deleted since the export is skipped (restore it from Recently deleted first).",
   ].forEach((t) => info.addRow({ t }));
 
   addSheet(wb, SHEET.jobs, [...JOBS_COLUMNS], await jobsExportRows(scope));
@@ -826,7 +927,7 @@ export async function runJobsImport(
   const ws = wb.getWorksheet(SHEET.jobs);
   const results: SheetResult[] = [];
   if (ws) {
-    results.push(await importJobs(scope, sheetRows(ws), apply));
+    results.push(await importJobs(scope, cappedSheetRows(ws), apply));
   } else {
     results.push({ sheet: SHEET.jobs, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: ["No 'Jobs' sheet found in the workbook."] });
   }
@@ -846,13 +947,21 @@ export async function runImport(
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(data);
 
+  // Read (and size-check) every importable sheet BEFORE anything is applied, so
+  // an oversized sheet late in the order can't leave a half-applied import.
+  const rowsBySheet = new Map<string, Record<string, string>[]>();
+  for (const name of [SHEET.teams, SHEET.people, SHEET.techTasks, SHEET.projects, SHEET.timeOff, SHEET.jobs, SHEET.holidays]) {
+    const ws = wb.getWorksheet(name);
+    if (ws) rowsBySheet.set(name, cappedSheetRows(ws));
+  }
+
   const results: SheetResult[] = [];
   const run = async (
     name: string,
     fn: (s: TenantScope, rows: Record<string, string>[], apply: boolean) => Promise<SheetResult>,
   ) => {
-    const ws = wb.getWorksheet(name);
-    if (ws) results.push(await fn(scope, sheetRows(ws), apply));
+    const rows = rowsBySheet.get(name);
+    if (rows) results.push(await fn(scope, rows, apply));
   };
 
   // Order matters: teams before people (department names), people before

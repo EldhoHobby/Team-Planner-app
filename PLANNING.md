@@ -219,7 +219,6 @@ services:
     build: .
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
-      SESSION_SECRET: ${SESSION_SECRET}
       SMTP_URL: ${SMTP_URL:-}          # optional; admin-issued reset links work without it
     volumes:
       - uploads:/app/uploads           # task attachments on a persistent host volume

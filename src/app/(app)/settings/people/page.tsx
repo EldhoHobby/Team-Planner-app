@@ -1,18 +1,20 @@
+import { HOME_PATH } from "@/lib/home";
 import { redirect } from "next/navigation";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
-import { listDepartments, listPeople } from "@/lib/services/people";
+import { listDepartments, listPeople, selfIdsOf } from "@/lib/services/people";
 import { listWorkGroups } from "@/lib/services/work-groups";
 import { listTechTimeOff } from "@/lib/services/technicians";
 import { recordPageView } from "@/lib/services/audit";
 import { PeopleClient } from "./people-client";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "People" };
 
 export default async function PeoplePage() {
   await requireAuth();
   const { scope } = await requireScope();
-  if (!scope.ctx.isOrgAdmin) redirect("/schedule");
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "People");
 
   const [departments, people, workGroups, timeOff] = await Promise.all([
@@ -32,5 +34,16 @@ export default async function PeoplePage() {
 
   const workGroupRows = workGroups.map((g) => ({ id: g.id, name: g.name, purpose: g.purpose as string }));
 
-  return <PeopleClient departments={departments} people={people} workGroups={workGroupRows} timeOff={timeOffRows} />;
+  // "You" for the self-guards in the UI ("view as": the viewed-as person AND the real owner).
+  const selfIds = selfIdsOf(scope.ctx);
+
+  return (
+    <PeopleClient
+      departments={departments}
+      people={people}
+      workGroups={workGroupRows}
+      timeOff={timeOffRows}
+      selfIds={selfIds}
+    />
+  );
 }

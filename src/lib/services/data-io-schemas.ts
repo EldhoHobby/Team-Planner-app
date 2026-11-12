@@ -77,6 +77,9 @@ export const JOBS_COLUMNS = [
   "id", "soNumber", "customer", "title", "scope", "jobType", "jobStatus",
   "hardware", "priority", "technician", "workGroup", "project", "startDate",
   "durationDays", "tentative",
+  // Optimistic lock (Task.version) — LAST so older workbooks without it still
+  // line up; a blank cell means "no check".
+  "version",
 ] as const;
 
 // ─────────────────────────── worksheet → rows ───────────────────────────
@@ -114,7 +117,7 @@ const boolField = (fallback: boolean) =>
   z.string().optional().transform((s) => parseBool(s ?? "", fallback));
 /** Date cell → Date | null (invalid/blank → null). */
 const dateField = z.string().optional().transform((s) => parseDate(s ?? ""));
-const nonEmpty = (msg: string) => (s: string) => s.length > 0;
+const nonEmpty = (_msg: string) => (s: string) => s.length > 0;
 
 // ─────────────────────────── per-sheet schemas ───────────────────────────
 
@@ -243,5 +246,10 @@ export const JobRowSchema = z.object({
     return s && n > 0 ? Math.floor(n) : null;
   }),
   tentative: boolField(false),
+  /** Exported Task.version; blank / not a positive whole number → null (no stale check). */
+  version: z.string().optional().transform((s) => {
+    const n = Number((s ?? "").trim());
+    return (s ?? "").trim() && Number.isInteger(n) && n >= 1 ? n : null;
+  }),
 });
 export type JobRow = z.infer<typeof JobRowSchema>;

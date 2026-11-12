@@ -1,18 +1,30 @@
-# OFFLINE stack for a host with NO internet. Uses locally-loaded images only —
-# `pull_policy: never` makes Docker fail loudly instead of trying to reach a
-# registry. Load the image bundle first (docker load -i ...), then:
+# PRODUCTION stack (10.210.6.233, C:\TeamPlanner) — and any host that runs
+# prebuilt, locally present images. `pull_policy: never` makes Docker fail
+# loudly instead of trying to reach a registry. Build (or `docker load`) the
+# images first, then:
 #
 #   docker compose -f docker-compose.offline.yml up -d
+#   docker compose -f docker-compose.offline.yml --profile ai up -d   # only with EMAIL_AI_ENABLED=true
 #
-# The four images below must already be present on the host (from the bundle):
-#   team-planner-app:latest            (your app, built on the dev PC)
-#   team-planner-app-migrator:latest   (schema sync, built on the dev PC)
-#   caddy:2-alpine                     (pulled on the dev PC, then saved)
-#   postgres:16-alpine                 (pulled on the dev PC, then saved)
+# These images must already be present on the host with exactly these tags:
+#   team-planner-app:latest            (the app; `docker build --target runner`)
+#   team-planner-app-migrator:latest   (migrations; `docker build --target migrator`)
+#   caddy:2.11.8-alpine                (proxy)
+#   postgres:16.15-alpine              (db + backup)
+#   ollama/ollama:0.40.14              (ONLY for the "ai" profile: local AI + model pull)
+#
+# Set LAN_IP=<this host's IP> in .env — the Caddyfile reads it (no local edit).
+
+# Log rotation for every service (Docker's default json-file log never shrinks).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   proxy:
-    image: caddy:2-alpine
+    image: caddy:2.11.8-alpine   # pinned; bump deliberately
     pull_policy: never
     restart: unless-stopped
     # Only HTTPS is published. Port 80 is intentionally NOT mapped to the host —
@@ -24,17 +36,21 @@ services:
     ports:
       - "${HTTPS_PORT:-8443}:443"
     environment:
-      APP_DOMAIN: ${APP_DOMAIN:-planner.localhost}
+      # The host's LAN IP — the Caddyfile reads it ({$LAN_IP}). Set it in .env.
+      LAN_IP: ${LAN_IP:-127.0.0.1}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - app
+      app:
+        condition: service_healthy   # no 502s while the app is still starting
     networks:
       - web
+    logging: *default-logging
 
-  # One-shot: syncs the DB schema, then exits. Runs before app starts.
+  # One-shot: applies the versioned migrations (prisma/migrate.sh), then exits.
+  # Runs before app starts.
   migrate:
     image: team-planner-app-migrator:latest
     pull_policy: never
@@ -46,6 +62,7 @@ services:
     networks:
       - internal
     restart: "no"
+    logging: *default-logging
 
   app:
     image: team-planner-app:latest
@@ -53,12 +70,8 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://planner:${DB_PASSWORD}@db:5432/planner
-      SESSION_SECRET: ${SESSION_SECRET}
       APP_URL: ${APP_URL:-https://planner.localhost}
-      SMTP_URL: ${SMTP_URL:-}
-      SMTP_FROM: ${SMTP_FROM:-no-reply@planner.local}
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
-      SEED_DEFAULT_TECHNICIANS: ${SEED_DEFAULT_TECHNICIANS:-false}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
       TIMESHEET_TEMPLATE_PATH: ${TIMESHEET_TEMPLATE_PATH:-/app/timesheet-template/Time_Sheet_Template.xlsm}
       # ── Email → task ingest (needs OUTBOUND internet to imap.gmail.com:993) ──
       EMAIL_INGEST_ENABLED: ${EMAIL_INGEST_ENABLED:-false}
@@ -67,7 +80,7 @@ services:
       IMAP_USER: ${IMAP_USER:-}
       IMAP_PASSWORD: ${IMAP_PASSWORD:-}
       EMAIL_POLL_SECONDS: ${EMAIL_POLL_SECONDS:-120}
-      # ── Local AI email summarizer (Ollama container below) ──
+      # ── Local AI email assist (Ollama, `--profile ai`; false = feature off) ──
       EMAIL_AI_ENABLED: ${EMAIL_AI_ENABLED:-false}
       EMAIL_AI_MODEL: ${EMAIL_AI_MODEL:-qwen2.5:3b-instruct}
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
@@ -80,12 +93,20 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # node:alpine ships BusyBox wget; /api/health answers 503 when the DB is down.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     networks:
       - web
       - internal
+    logging: *default-logging
 
   db:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine   # pinned; bump deliberately
     pull_policy: never
     restart: unless-stopped
     environment:
@@ -102,23 +123,28 @@ services:
       retries: 10
     networks:
       - internal
+    logging: *default-logging
 
-  # Local LLM runtime for the email→task summarizer. The IMAGE must be loaded
-  # from the USB bundle (pull_policy: never); the MODEL is downloaded once by
+  # Local LLM runtime for the email→task assist. Only started with the "ai"
+  # profile (`--profile ai`); the app does not depend on it. The IMAGE must be
+  # present locally (pull_policy: never); the MODEL is downloaded once by
   # ollama-init below, which needs outbound internet (registry.ollama.ai).
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:0.40.14   # pinned; bump deliberately
+    profiles: ["ai"]
     pull_policy: never
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
     networks:
       - internal
+    logging: *default-logging
 
-  # One-shot: downloads the summarizer model (only when the feature is on),
+  # One-shot ("ai" profile): downloads the model (only when the feature is on),
   # then exits. The app does NOT wait for it — AI is optional and lazy.
   ollama-init:
-    image: ollama/ollama
+    image: ollama/ollama:0.40.14   # pinned; bump deliberately
+    profiles: ["ai"]
     pull_policy: never
     environment:
       OLLAMA_HOST: http://ollama:11434
@@ -144,40 +170,77 @@ services:
     networks:
       - internal
     restart: "no"
+    logging: *default-logging
 
-  # Nightly Postgres backups → ./backups on the host (compressed pg_dump format).
-  # Dumps once at startup, then every 24 h; prunes dumps older than
-  # BACKUP_KEEP_DAYS. Restore (into the running db):
-  #   docker compose -f docker-compose.offline.yml exec db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
+  # Postgres backups → ./backups on the host (compressed pg_dump format).
+  # Dumps once at startup, then every 24 h (retries after 1 h if a dump fails):
+  #   planner-YYYYMMDD-HHMMSS.dump  daily dump, pruned after BACKUP_KEEP_DAYS (14);
+  #                                 the newest 3 are always kept
+  #   planner-monthly-YYYYMM.dump   copy of the month's FIRST good dump, pruned
+  #                                 after BACKUP_KEEP_MONTHLY_DAYS (400)
+  # Pruning runs only after a SUCCESSFUL dump, so a broken pg_dump never
+  # deletes the good ones.
+  #   last-backup.txt               time + file name of the last SUCCESSFUL dump
+  #   last-backup-error.txt         time of the last FAILED dump (deleted on success)
+  # Names and times are UTC (container clock). Other dumps in the folder
+  # (pre-update-*.dump, move.dump, ...) are never pruned. In-place restore (stop
+  # app + backup first; safer side-database restore: DEPLOY.md 2.5):
+  #   docker compose -f docker-compose.offline.yml exec -T db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/<file>.dump
   backup:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine   # pinned; bump deliberately
     pull_policy: never
     restart: unless-stopped
     environment:
       PGPASSWORD: ${DB_PASSWORD}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      BACKUP_KEEP_MONTHLY_DAYS: ${BACKUP_KEEP_MONTHLY_DAYS:-400}
     volumes:
       - ./backups:/backups
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         while true; do
-          ts=$$(date +%Y%m%d-%H%M%S)
-          if pg_dump -Fc -h db -U planner planner > "/backups/planner-$$ts.dump.part"; then
-            mv "/backups/planner-$$ts.dump.part" "/backups/planner-$$ts.dump"
-            echo "backup: wrote planner-$$ts.dump"
+          ts=$$(date -u +%Y%m%d-%H%M%S)
+          f="planner-$$ts.dump"
+          m="planner-monthly-$$(date -u +%Y%m).dump"
+          if pg_dump -Fc -h db -U planner -f "/backups/$$f.part" planner && mv "/backups/$$f.part" "/backups/$$f"; then
+            echo "backup: wrote $$f"
+            printf '%s %s\n' "$$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$$f" > /backups/last-backup.txt
+            rm -f /backups/last-backup-error.txt
+            if [ ! -f "/backups/$$m" ]; then
+              if cp "/backups/$$f" "/backups/$$m.part" && mv "/backups/$$m.part" "/backups/$$m"; then
+                echo "backup: kept $$m (monthly copy)"
+              else
+                rm -f "/backups/$$m.part"
+                echo "backup: could not write $$m (will retry next cycle)"
+              fi
+            fi
+            # Prune ONLY after a good dump (a pg_dump that keeps failing must
+            # never delete the last good ones), and never the newest 3 dailies.
+            keep=$$(ls -1 /backups/planner-[0-9]*.dump 2>/dev/null | sort | tail -n 3 | tr '\n' ' ')
+            find /backups -maxdepth 1 -name 'planner-[0-9]*.dump' -mtime +$${BACKUP_KEEP_DAYS} | while read -r old; do
+              case " $$keep " in
+                *" $$old "*) ;;
+                *) rm -f "$$old" && echo "backup: pruned $$old" ;;
+              esac
+            done
+            find /backups -maxdepth 1 -name 'planner-monthly-*.dump' -mtime +$${BACKUP_KEEP_MONTHLY_DAYS} -delete
+            pause_s=86400
           else
-            rm -f "/backups/planner-$$ts.dump.part"
-            echo "backup: pg_dump FAILED (will retry next cycle)"
+            rm -f "/backups/$$f.part"
+            printf '%s pg_dump FAILED - see: docker compose logs backup\n' "$$(date -u '+%Y-%m-%d %H:%M:%S UTC')" > /backups/last-backup-error.txt
+            echo "backup: pg_dump FAILED (will retry in 1 h; nothing is pruned until a dump succeeds)"
+            pause_s=3600
           fi
-          find /backups -name 'planner-*.dump' -mtime +$${BACKUP_KEEP_DAYS} -delete
-          sleep 86400
+          find /backups -maxdepth 1 -name 'planner-*.part' -mtime +1 -delete
+          sleep "$$pause_s"
         done
     depends_on:
       db:
         condition: service_healthy
     networks:
       - internal
+    logging: *default-logging
 
 volumes:
   db_data:

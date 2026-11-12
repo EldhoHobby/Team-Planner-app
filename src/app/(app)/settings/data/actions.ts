@@ -1,34 +1,52 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireScope, ForbiddenError } from "@/lib/auth/current-user";
+import { requireScope } from "@/lib/auth/current-user";
 import { runImport, resetOrgData } from "@/lib/services/data-io";
-import { restoreFullBackup } from "@/lib/services/full-backup";
+import { checkConfirmPassword, isOrgOwner } from "@/lib/services/full-backup";
 import { writeAudit } from "@/lib/services/audit";
-import { verifyPassword } from "@/lib/auth/password";
-import type { DataIoState, ResetState, RestoreState } from "./types";
+import { actionError } from "@/lib/log";
+import { importSizeError, type DataIoState, type ResetState } from "./types";
 
-async function fileBuffer(formData: FormData): Promise<ArrayBuffer | null> {
-  const f = formData.get("file");
-  if (f && typeof f === "object" && "arrayBuffer" in f && (f as File).size > 0) {
-    return (f as File).arrayBuffer();
+// NOTE: the full-backup RESTORE uploads are not server actions — they post to
+// the route handler POST /api/admin/restore (src/app/api/admin/restore), so
+// the server-action body limit can stay at 10 MB for every action.
+
+type Scope = Awaited<ReturnType<typeof requireScope>>["scope"];
+
+/** requireScope() as a value: an expired session becomes a message, not Next's error page. */
+async function scopeOrError(): Promise<{ scope: Scope } | { error: string }> {
+  try {
+    const { scope } = await requireScope();
+    return { scope };
+  } catch (e) {
+    // An ended session / missing permission becomes a message (not Next's error page).
+    return actionError("data.scope", e, "Could not check your sign-in — please try again.");
   }
-  return null;
+}
+
+/** The uploaded workbook, or an error message (missing / too big for the 10 MB action limit). */
+async function workbookBuffer(formData: FormData, missing: string): Promise<{ buf: ArrayBuffer } | { error: string }> {
+  const f = formData.get("file");
+  if (!f || typeof f === "string" || f.size === 0) return { error: missing };
+  const tooBig = importSizeError(f.size);
+  if (tooBig) return { error: tooBig };
+  return { buf: await f.arrayBuffer() };
 }
 
 export async function previewImportAction(
   _prev: DataIoState,
   formData: FormData,
 ): Promise<DataIoState> {
-  const { scope } = await requireScope();
-  const buf = await fileBuffer(formData);
-  if (!buf) return { error: "Choose an .xlsx file first." };
+  const s = await scopeOrError();
+  if ("error" in s) return { error: s.error };
+  const file = await workbookBuffer(formData, "Choose an .xlsx file first.");
+  if ("error" in file) return { error: file.error };
   try {
-    const summary = await runImport(scope, buf, false);
+    const summary = await runImport(s.scope, file.buf, false);
     return { phase: "preview", summary };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Could not read that file — is it the exported workbook?" };
+    return actionError("data.previewImport", e, "Could not read that file — is it the exported workbook?");
   }
 }
 
@@ -36,12 +54,13 @@ export async function applyImportAction(
   _prev: DataIoState,
   formData: FormData,
 ): Promise<DataIoState> {
-  const { scope } = await requireScope();
-  const buf = await fileBuffer(formData);
-  if (!buf) return { error: "Re-select the file to apply." };
+  const s = await scopeOrError();
+  if ("error" in s) return { error: s.error };
+  const file = await workbookBuffer(formData, "Re-select the file to apply.");
+  if ("error" in file) return { error: file.error };
   try {
-    const summary = await runImport(scope, buf, true);
-    await writeAudit(scope, {
+    const summary = await runImport(s.scope, file.buf, true);
+    await writeAudit(s.scope, {
       entity: "data",
       entityId: "admin-import",
       action: "imported",
@@ -49,70 +68,32 @@ export async function applyImportAction(
     });
     return { phase: "applied", summary };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Import failed." };
+    return actionError("data.applyImport", e, "The import failed — please try again.");
   }
 }
 
-// Danger zone: FULL-REPLACE restore from a full-backup JSON file. Wipes the
-// org's data and loads the snapshot (people incl. logins, jobs, everything).
-// Requires typing RESTORE + the admin's password.
-export async function restoreBackupAction(
-  _prev: RestoreState,
-  formData: FormData,
-): Promise<RestoreState> {
-  const { user, scope } = await requireScope();
-  if (!scope.ctx.isOrgAdmin) return { error: "Only admins can restore a backup." };
-
-  const confirm = String(formData.get("confirm") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-  if (confirm !== "RESTORE") return { error: "Type RESTORE (in capitals) to confirm." };
-  if (!password) return { error: "Enter your password to confirm." };
-  const ok = await verifyPassword(user.passwordHash, password);
-  if (!ok) return { error: "Incorrect password." };
-
-  const buf = await fileBuffer(formData);
-  if (!buf) return { error: "Choose the full-backup .json file first." };
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(buf).toString("utf8"));
-  } catch {
-    return { error: "That file isn't valid JSON — is it the full-backup file?" };
-  }
-
-  try {
-    const r = await restoreFullBackup(scope, parsed);
-    revalidatePath("/", "layout");
-    return {
-      done: true,
-      selfReplaced: r.selfReplaced,
-      message: `Restored ${r.people} people, ${r.jobsAndTasks} jobs & tasks, ${r.techTasks} dashboard items.`,
-    };
-  } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: e instanceof Error ? e.message : "Restore failed — nothing was changed." };
-  }
-}
-
-// Danger zone: wipe all planning data back to fresh. Requires the admin to type
-// RESET and re-enter their password — a destructive, irreversible action.
+// Danger zone: wipe all planning data back to fresh. OWNER only (effective or
+// real user); requires typing RESET and the REAL signed-in user's password
+// ("View as" → the owner's own), rate-limited — destructive and irreversible.
 export async function resetDatabaseAction(
   _prev: ResetState,
   formData: FormData,
 ): Promise<ResetState> {
-  const { user, scope } = await requireScope();
-  if (!scope.ctx.isOrgAdmin) return { error: "Only admins can reset the data." };
-
+  const s = await scopeOrError();
+  if ("error" in s) return { error: s.error };
+  const { scope } = s;
   const confirm = String(formData.get("confirm") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  if (confirm !== "RESET") return { error: 'Type RESET (in capitals) to confirm.' };
-  if (!password) return { error: "Enter your password to confirm." };
-
-  const ok = await verifyPassword(user.passwordHash, password);
-  if (!ok) return { error: "Incorrect password." };
 
   try {
+    if (!scope.ctx.isOrgAdmin || !(await isOrgOwner(scope))) {
+      return { error: "Only the Owner can reset all data." };
+    }
+    if (confirm !== "RESET") return { error: "Type RESET (in capitals) to confirm." };
+
+    const pw = await checkConfirmPassword(scope, password);
+    if (!pw.ok) return { error: pw.error };
+
     await resetOrgData(scope);
     await writeAudit(scope, {
       entity: "data",
@@ -123,7 +104,6 @@ export async function resetDatabaseAction(
     revalidatePath("/", "layout");
     return { done: true };
   } catch (e) {
-    if (e instanceof ForbiddenError) return { error: e.message };
-    return { error: "Reset failed — nothing was changed." };
+    return actionError("data.resetDatabase", e, "Reset failed — nothing was changed.");
   }
 }

@@ -44,10 +44,21 @@
     --accent-foreground: 210 40% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 40% 98%;
+    /* Destructive TEXT (form errors, delete icons). --destructive stays dark red
+       for button backgrounds, but as text on the near-black background it is
+       ~2:1 — this lighter red (Tailwind red-400) is ~7:1. */
+    --destructive-text: 0 91.1% 71.2%;
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
   }
+}
+
+/* Readable destructive text in dark mode (outside @layer so it follows — and,
+   being more specific, beats — the `text-destructive` utility). */
+.dark .text-destructive,
+.dark .hover\:text-destructive:hover {
+  color: hsl(var(--destructive-text));
 }
 
 @layer base {
@@ -68,17 +79,50 @@
   }
 }
 
+/* ── App shell height + phone padding (src/app/(app)/layout.tsx) ──
+   Screen only, so the shell's print:h-auto still lets printouts flow across
+   pages. 100dvh (where supported) follows the phone browser's toolbars, so the
+   bottom of the content isn't hidden behind them; 100vh is the fallback. */
+@media screen {
+  .app-shell {
+    height: 100vh;
+    height: 100dvh;
+  }
+}
+/* Phones: most screens wrap their content in a `p-6` box (24 px each side —
+   too much at 375 px). Trim it to 16 px for the page's top-level wrapper only;
+   md and up are unchanged. Screens that set their own responsive padding
+   (e.g. `p-4 md:p-6`) are not affected. */
+@media (max-width: 767.98px) {
+  #main-content > .p-6 {
+    padding: 1rem;
+  }
+}
+
 /* ── Printing: "print the view as shown" (schedule board/calendar) ──
    Chrome elements carry Tailwind's `print:hidden`; these globals set the page
    up: landscape, tight margins, and exact colors so technician bars keep
    their identity colors on paper. Paper is ALWAYS the light theme — even when
    the app is in dark mode — so printouts get a white background and dark text
    instead of a black page (the `.dark` override below wins in print). */
+
+/* Paper: US Letter, LANDSCAPE, for every print and "Save as PDF" (Chrome / Edge
+   then hide the Layout + paper choice and use this). Kept at the top level, not
+   nested in @media print, and with an explicit paper size: a bare
+   `size: landscape` takes the browser's default paper, and on A4 (194 mm usable
+   height) the 196 mm .sa-page proposal sheet spills onto a second page.
+   Service-agreement sheets also use the named page below, so they stay Letter
+   landscape even if this default ever changes. */
+@page {
+  size: letter landscape;
+  margin: 8mm;
+}
+@page sa-sheet {
+  size: letter landscape;
+  margin: 8mm;
+}
+
 @media print {
-  @page {
-    size: landscape;
-    margin: 8mm;
-  }
   /* Let content flow across pages — no viewport-height clipping to one page. */
   html,
   body {
@@ -104,8 +148,61 @@
     --accent-foreground: 222.2 47.4% 11.2%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
+    --destructive-text: 0 84.2% 60.2%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
+  }
+}
+
+/* ── Service agreements print: black and white, no shading (saves colour ink).
+   Borders and dark text only; one customer per page via .sa-page. ── */
+@media print {
+  .sa-print,
+  .sa-print * {
+    color: #000 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    print-color-adjust: economy !important;
+    -webkit-print-color-adjust: economy !important;
+  }
+  .sa-print table,
+  .sa-print th,
+  .sa-print td {
+    border-color: #000 !important;
+  }
+  .sa-print input,
+  .sa-print select {
+    border: none !important;
+    padding: 0 !important;
+    appearance: none;
+  }
+  .sa-page {
+    page: sa-sheet;
+    break-after: page;
+    /* one landscape page (Letter 215.9 mm − 2 × 8 mm margins), footer pinned to the bottom like Excel's */
+    height: 196mm;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sa-page > .sa-sheet {
+    flex: 1;
+  }
+  .sa-page > .sa-sheet > div {
+    height: 100%;
+  }
+  .sa-page .sa-footer {
+    margin-top: auto;
+  }
+  /* Excel fits the customer sheet (A:O ≈ 1100 pt at 10 pt Arial) to the page width — ≈ 68 %. */
+  .sa-sheet-body {
+    font-size: 6.8pt !important;
+  }
+  .sa-page:last-child {
+    break-after: auto;
+  }
+  .sa-print thead {
+    display: table-header-group; /* repeat header rows on each page */
   }
 }

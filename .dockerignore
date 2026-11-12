@@ -1,21 +1,50 @@
 # Keep the Docker build context small and prevent host artifacts from leaking
 # into the image. IMPORTANT: .git is intentionally NOT ignored — the builder
 # stage runs `git rev-parse --short HEAD` to stamp the version string.
+# The Dockerfile COPYs the whole context (`COPY . .`) and then uses src/,
+# prisma/, public/, timesheet-template/, package*.json and the config files —
+# never ignore those.
 
 node_modules
 .next
 out
 build
+coverage
 
-# secrets & local env
+# secrets & local env — at ANY depth (e.g. "USB Files/.../.env")
 .env
 .env*.local
+**/.env
+**/.env*.local
+*.pem
 
-# image bundles / notes / misc
+# machine-move bundles, DB dumps and backups — credentials + customer data
+USB Files
+backups
+uploads
+**/*.dump
+**/*.dump.part
+
+# image bundles / archives
 *.tar
 *.tar.gz
-backups
+*.tgz
+*.zip
+
+# docs, ops scripts, CI and tooling — not needed to build or run the app
+docs
+scripts
+.github
+.claude
+.vscode
+*.md
+docker-compose*.yml
+Caddyfile
+.dockerignore
+
+# scratch / logs
 process.txt
 npm-debug.log*
+*.log
 *.tsbuildinfo
 .DS_Store

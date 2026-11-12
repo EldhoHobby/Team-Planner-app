@@ -10,6 +10,7 @@ import {
   WINDOW_MS,
   RESET_IP_LIMIT,
 } from "@/lib/auth/rate-limit";
+import { actionError } from "@/lib/log";
 import type { ResetState } from "./types";
 
 const ResetSchema = z
@@ -30,7 +31,8 @@ export async function resetAction(
   const ipKey = `reset:ip:${await clientIp()}`;
   const limit = isRateLimited(ipKey, RESET_IP_LIMIT, WINDOW_MS);
   if (limit.limited) {
-    return { error: `Too many attempts. Try again in ${Math.ceil(limit.retryAfterSec / 60)} minute(s).` };
+    const m = Math.max(1, Math.ceil(limit.retryAfterSec / 60));
+    return { error: `Too many attempts. Try again in ${m} minute${m === 1 ? "" : "s"}.` };
   }
 
   const parsed = ResetSchema.safeParse({
@@ -47,9 +49,20 @@ export async function resetAction(
   } catch (e) {
     // Invalid/expired token — count it so token-guessing gets throttled.
     registerFailure(ipKey, WINDOW_MS);
-    return { error: e instanceof Error ? e.message : "Could not reset the password." };
+    const msg = e instanceof Error ? e.message : "";
+    // Only the service's own "link no longer valid" message is shown; anything
+    // else (e.g. a database error) is logged and replaced with a safe message.
+    if (msg === "This set-password link is no longer valid.") {
+      return { error: `${msg} Ask an admin for a new set-password link.` };
+    }
+    return actionError(
+      "reset.setPassword",
+      e,
+      "Could not save the password. Please try again, or ask an admin for a new set-password link.",
+    );
   }
 
-  // Force a fresh sign-in with the new password (all sessions were revoked).
-  redirect("/login");
+  // Force a fresh sign-in with the new password (all sessions were revoked);
+  // the login page shows a "Password saved" confirmation for ?reset=1.
+  redirect("/login?reset=1");
 }

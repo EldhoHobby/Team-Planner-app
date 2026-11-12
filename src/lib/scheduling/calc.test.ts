@@ -6,11 +6,8 @@ import {
   endFromDuration,
   inclusiveDayCount,
   rangesOverlap,
-  startOfMonth,
-  startOfWeekMonday,
   startOfWeekSunday,
   toUtcMidnight,
-  weeklyCapacity,
   workingDaysOfMonth,
   workingDaysOfWeek,
   type JobLite,
@@ -38,19 +35,9 @@ describe("toUtcMidnight / addDays", () => {
 });
 
 describe("week starts", () => {
-  it("startOfWeekMonday: mid-week, Monday itself, and Sunday roll back correctly", () => {
-    expect(startOfWeekMonday(utc(2026, 7, 1))).toEqual(utc(2026, 6, 29)); // Wed → Mon
-    expect(startOfWeekMonday(utc(2026, 6, 29))).toEqual(utc(2026, 6, 29)); // Mon → itself
-    expect(startOfWeekMonday(utc(2026, 7, 5))).toEqual(utc(2026, 6, 29)); // Sun → prev Mon
-  });
-
   it("startOfWeekSunday: Sunday-first display weeks", () => {
     expect(startOfWeekSunday(utc(2026, 7, 1))).toEqual(utc(2026, 6, 28)); // Wed → Sun
     expect(startOfWeekSunday(utc(2026, 6, 28))).toEqual(utc(2026, 6, 28)); // Sun → itself
-  });
-
-  it("startOfMonth", () => {
-    expect(startOfMonth(utc(2026, 7, 31))).toEqual(utc(2026, 7, 1));
   });
 });
 
@@ -149,23 +136,5 @@ describe("computeConflicts", () => {
       job("c", null, utc(2026, 7, 1), utc(2026, 7, 3)),
     ];
     expect(computeConflicts(jobs).size).toBe(0);
-  });
-});
-
-describe("weeklyCapacity", () => {
-  const monday = utc(2026, 6, 29);
-
-  it("counts DISTINCT booked working days (double-booking doesn't inflate)", () => {
-    const jobs = [
-      job("a", "t1", utc(2026, 6, 29), utc(2026, 7, 1)), // Mon–Wed
-      job("b", "t1", utc(2026, 6, 30), utc(2026, 7, 2)), // Tue–Thu (overlaps)
-    ];
-    expect(weeklyCapacity(jobs, monday).get("t1")).toBe(4); // Mon,Tue,Wed,Thu
-  });
-
-  it("weekend days of a spanning job don't count; custom workingDays respected", () => {
-    const jobs = [job("a", "t1", utc(2026, 7, 3), utc(2026, 7, 6))]; // Fri–Mon(next)
-    expect(weeklyCapacity(jobs, monday).get("t1")).toBe(1); // only Fri in this week
-    expect(weeklyCapacity(jobs, monday, 4).get("t1")).toBe(0); // Mon–Thu window
   });
 });

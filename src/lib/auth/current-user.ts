@@ -19,6 +19,16 @@ export class ForbiddenError extends Error {
   }
 }
 
+/**
+ * requireScope() for the admin-only pages (Tasks, Projects, Timesheet): anyone
+ * who is not an org OWNER/ADMIN is refused. `what` finishes "Only admins can use …".
+ */
+export async function requireAdminScope(what: string): Promise<{ user: User; scope: TenantScope }> {
+  const r = await requireScope();
+  if (!r.scope.ctx.isOrgAdmin) throw new ForbiddenError(`Only admins can use ${what}.`);
+  return r;
+}
+
 /** The current user, or null. Safe to call anywhere. */
 export function getCurrentUser(): Promise<User | null> {
   return getSessionUser();

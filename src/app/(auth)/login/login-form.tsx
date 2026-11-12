@@ -7,6 +7,7 @@ import type { LoginState } from "./types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FormMessage } from "@/components/ui/form-message";
 
 const initialState: LoginState = {};
 
@@ -25,21 +26,31 @@ export function LoginForm() {
   return (
     <form action={formAction} className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="identifier">Username or email</Label>
-        <Input id="identifier" name="identifier" type="text" placeholder="your.username" required autoComplete="username" />
+        <Label htmlFor="identifier">Username</Label>
+        <Input
+          id="identifier"
+          name="identifier"
+          type="text"
+          placeholder="your username"
+          required
+          autoComplete="username"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="password">Password</Label>
         <Input id="password" name="password" type="password" required autoComplete="current-password" />
       </div>
 
-      {state.error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {state.error}
-        </p>
-      ) : null}
+      <FormMessage>{state.error}</FormMessage>
 
       <SubmitButton />
+
+      <p className="text-center text-xs text-muted-foreground">
+        Forgot your username or password? Ask an admin for a new set-password link.
+      </p>
     </form>
   );
 }

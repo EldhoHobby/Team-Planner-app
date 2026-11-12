@@ -25,6 +25,8 @@ export type TaskRow = {
   isFieldTrip: boolean;
   location: string | null;
   createdAt: string;
+  /** Optimistic-lock version — the edit form sends it back. */
+  version: number;
 };
 
 export type ProjectOption = {

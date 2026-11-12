@@ -10,7 +10,7 @@ Read this alongside:
 | `README.md` | What the app is, setup, features |
 | `CLAUDE.md` | Quick technical brief + conventions + gotchas (Claude Code reads it automatically) |
 | `docs/PROJECT-HISTORY.md` | Release history, what's live where, open issues, WIP branches, ideas, working habits |
-| `DEPLOY.md` | Offline deployment to the SCADA host (USB / image bundles) |
+| `DEPLOY.md` | Production (PC `10.210.6.233`): update, roll back, keep running, backups/restore; legacy USB-bundle deploy at the end |
 | `HOW_IT_WORKS.md` | Plain-English tour of the app + the Excel round-trip |
 | `PLANNING.md`, `ARCHITECTURE-UPDATE.md` | Original architecture rationale (historical) |
 
@@ -29,7 +29,7 @@ share or OneDrive — NOT GitHub, the repo is public):
 
 | Item | Where on the old PC | Needed? |
 |---|---|---|
-| `.env` (passwords, session secret, IMAP app password) | project folder | **Yes** — or make a new one from `.env.example` |
+| `.env` (DB password, LAN IP, IMAP app password) | project folder | **Yes** — or make a new one from `.env.example` |
 | Database data | Docker volume `teamplannerapp_db_data` → export as a `.dump` (step 2) | **Yes**, to keep your dev data |
 | Nightly DB dumps | `backups\*.dump` | Optional (the newest one is enough) |
 | Uploaded attachments | Docker volume `teamplannerapp_uploads` | Currently empty on dev — skip unless that changes |
@@ -71,8 +71,19 @@ git push origin wip/sales-orders wip/excel-live-data
 
 **b. Take a fresh database dump** (the app keeps running):
 
+The dump is written INSIDE the container (never redirect a dump with
+PowerShell `>` — it corrupts the file), then copied out:
+
 ```powershell
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"; docker compose exec -T db sh -c "pg_dump -U planner -Fc planner > /tmp/move.dump"; docker compose cp db:/tmp/move.dump "backups\planner-move-$stamp.dump"; dir backups
+docker compose exec -T db sh -c "pg_dump -U planner -Fc -f /tmp/move.dump planner"
+```
+
+```powershell
+docker compose cp db:/tmp/move.dump "backups\planner-move-$(Get-Date -Format yyyyMMdd-HHmmss).dump"
+```
+
+```powershell
+dir backups
 ```
 
 (Alternative: Settings → Data → **Download full backup** gives a `.json` snapshot you
@@ -111,7 +122,9 @@ cd "C:\Users\eldho\Claude\Projects\Team Planner app"; git config user.name "Your
 To get the WIP branches locally later: `git checkout wip/sales-orders` (then back with `git checkout main`).
 
 **c. Put the `.env` file back** into the project folder (or `copy .env.example .env`
-and fill in `DB_PASSWORD` + `SESSION_SECRET` with long random strings).
+and fill in `DB_PASSWORD` with a long random string). Set `LAN_IP=` to the NEW
+PC's IP (`ipconfig`) — the Caddyfile reads it, so the Caddyfile itself needs no
+edit.
 
 **d. Create the backups folder and copy the dump into it** (the `db` container
 mounts `./backups` read-only at `/backups`):
@@ -129,23 +142,33 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Expect `proxy`, `app`, `db` (healthy), `backup` running and `migrate` exited (0).
-`ollama` only matters if `EMAIL_AI_ENABLED=true`.
+Expect `proxy`, `app` (healthy), `db` (healthy), `backup` running and `migrate`
+exited (0). The `ollama` containers only start with `--profile ai` (needed only
+when `EMAIL_AI_ENABLED=true`).
 
 **f. Load your data** (replaces the empty database the first start created):
 
 ```powershell
-docker compose stop app; docker compose exec -T db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/planner-move-YYYYMMDD-HHMMSS.dump; docker compose start app
+docker compose stop proxy app backup
+```
+
+```powershell
+docker compose exec -T db pg_restore -U planner -d planner --clean --if-exists --no-owner /backups/planner-move-YYYYMMDD-HHMMSS.dump
+```
+
+```powershell
+docker compose up -d
 ```
 
 (If you used the `.json` full backup instead: open the app, complete the first-run
-setup with a throwaway owner, then Settings → Data → Restore.)
+setup with a throwaway owner, then Settings → Data → Restore — full restore is
+Owner-only and asks for that owner's password.)
 
 **g. Check it**
 
 - Open https://planner.localhost — click through the self-signed certificate warning.
 - Sign in with your usual login (passwords come across with the data).
-- The sidebar footer should show **v0.0.10** and the current git hash.
+- The sidebar footer should show the `package.json` version and the current git hash.
 - Health check: https://planner.localhost/api/health
 
 If the browser says the certificate date is invalid: `docker compose restart proxy`.
@@ -171,12 +194,12 @@ Claude to refresh `docs/claude-memory/` and commit it.
 
 ## 5. Things that refer to the old PC
 
-- `Caddyfile` names the hostnames/LAN IP served. If the new PC has a different LAN
-  IP, update that line and `docker compose restart proxy`.
-- The **SCADA production host is not affected** by this move — it runs from loaded
-  Docker images. To deploy from the new PC, follow `DEPLOY.md` ("Updating the app
-  later").
-- Email ingest: only ONE machine should poll the inbox. Keep
-  `EMAIL_INGEST_ENABLED=false` on the dev PC once SCADA has internet.
+- The LAN IP served comes from `LAN_IP` in `.env` (step 3c). If it changes
+  later, edit `.env` and run `docker compose up -d proxy`.
+- **Production (`10.210.6.233`) is not affected** by a dev-PC move — it builds
+  its own images from its git clone. To deploy, follow `DEPLOY.md` section 1.1
+  ("Updating production").
+- Email ingest: only ONE machine may poll the inbox. Keep
+  `EMAIL_INGEST_ENABLED=false` on the dev PC if production polls it.
 - When done, you can wipe the old PC's Docker data with `docker compose down -v`
   (**deletes the volumes** — only after the new PC is verified).

@@ -5,7 +5,8 @@ import { ForbiddenError } from "./current-user";
 import { writeAudit, writeAuthAudit, resolveAuthOrgId } from "@/lib/services/audit";
 import type { TenantScope } from "@/lib/db/scope";
 
-const RESET_TTL_HOURS = 24;
+/** How long an admin-issued set-password link stays usable (shown in the People UI). */
+export const RESET_TTL_HOURS = 24;
 const RESET_TTL_MS = RESET_TTL_HOURS * 60 * 60 * 1000;
 
 /** Build the absolute reset URL for a raw token. */
@@ -22,9 +23,9 @@ export function resetLink(token: string): string {
 export async function createAdminResetLink(
   scope: TenantScope,
   targetUserId: string,
-): Promise<{ token: string; link: string }> {
+): Promise<{ token: string; link: string; username: string; expiresInHours: number }> {
   if (!scope.ctx.isOrgAdmin) {
-    throw new ForbiddenError("Only admins can issue password reset links");
+    throw new ForbiddenError("Only admins can issue set-password links.");
   }
 
   // The target must be a member of the admin's organization (tenancy guard).
@@ -32,7 +33,20 @@ export async function createAdminResetLink(
     where: { userId_orgId: { userId: targetUserId, orgId: scope.ctx.orgId } },
   });
   if (!membership) {
-    throw new ForbiddenError("User is not a member of your organization");
+    throw new ForbiddenError("That person is not in your organization.");
+  }
+
+  // Only the Owner may issue a link for the Owner (otherwise any admin could
+  // take over the Owner's login). "View as": the real session owner counts too.
+  if (membership.role === "OWNER") {
+    const callerIds = [scope.ctx.userId, scope.ctx.realUserId].filter((x): x is string => !!x);
+    const callerIsOwner = await prisma.membership.findFirst({
+      where: { orgId: scope.ctx.orgId, userId: { in: callerIds }, role: "OWNER" },
+      select: { id: true },
+    });
+    if (!callerIsOwner) {
+      throw new ForbiddenError("Only the Owner can issue a set-password link for the Owner.");
+    }
   }
 
   const token = generateToken();
@@ -53,10 +67,15 @@ export async function createAdminResetLink(
     entity: "auth",
     entityId: targetUserId,
     action: "reset-link-created",
-    summary: `Issued a password reset link for ${target?.name ?? target?.username ?? targetUserId}.`,
+    summary: `Issued a set-password link for ${target?.name ?? target?.username ?? targetUserId}.`,
   });
 
-  return { token, link: resetLink(token) };
+  return {
+    token,
+    link: resetLink(token),
+    username: target?.username ?? "",
+    expiresInHours: RESET_TTL_HOURS,
+  };
 }
 
 /**
@@ -74,7 +93,7 @@ export async function resetPassword(
   await prisma.$transaction(async (tx) => {
     const rec = await tx.passwordResetToken.findUnique({ where: { tokenHash } });
     if (!rec || rec.usedAt || rec.expiresAt < new Date()) {
-      throw new Error("This reset link is no longer valid.");
+      throw new Error("This set-password link is no longer valid.");
     }
 
     await tx.user.update({
@@ -98,16 +117,27 @@ export async function resetPassword(
         actorId: user.id,
         actorEmail: user.email ?? user.username,
         action: "reset-completed",
-        summary: `${user.name ?? user.username} set a new password via a reset link.`,
+        summary: `${user.name ?? user.username} set a new password via a set-password link.`,
       });
     }
   });
 }
 
-/** True if a reset token is currently usable (for rendering the reset page). */
-export async function isResetTokenValid(token: string): Promise<boolean> {
+/**
+ * The username a reset token belongs to, or null when the token is invalid,
+ * used, or expired (for rendering the reset page — never reveals anything for
+ * a token that isn't currently usable).
+ */
+export async function resetTokenUsername(token: string): Promise<string | null> {
   const rec = await prisma.passwordResetToken.findUnique({
     where: { tokenHash: hashToken(token) },
+    include: { user: { select: { username: true } } },
   });
-  return !!rec && !rec.usedAt && rec.expiresAt > new Date();
+  if (!rec || rec.usedAt || rec.expiresAt <= new Date()) return null;
+  return rec.user.username;
+}
+
+/** True if a reset token is currently usable. */
+export async function isResetTokenValid(token: string): Promise<boolean> {
+  return (await resetTokenUsername(token)) !== null;
 }

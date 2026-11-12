@@ -6,8 +6,12 @@ import { ScrollText, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 import { clearAuditLogAction } from "./actions";
 import { fmtEastern } from "@/lib/tz";
+import { useFlash } from "../use-flash";
 
 const REFRESH_MS = 10_000;
 
@@ -35,19 +39,22 @@ function fmt(iso: string): string {
 /** Colour the action badge by what kind of event it is. */
 function actionCls(action: string): string {
   if (action === "login-failed") return "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300";
-  if (["deleted", "revoked", "reset", "archived"].includes(action))
+  if (["deleted", "revoked", "reset", "archived", "cleared"].includes(action))
     return "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300";
-  if (["created", "imported", "invite-accepted"].includes(action))
+  // Whole-dataset operations (backup restore, Excel import/export).
+  if (["restored", "imported", "exported"].includes(action))
+    return "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300";
+  if (["created", "invite-accepted"].includes(action))
     return "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300";
-  if (["login", "logout", "password-changed", "reset-link-created", "reset-completed", "view-as-started", "view-as-stopped"].includes(action))
+  if (["login", "logout", "password-changed", "reset-link-created", "reset-completed", "view-as-started", "view-as-stopped", "check-now"].includes(action))
     return "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300";
-  if (["updated", "rescheduled", "status"].includes(action))
+  if (["updated", "rescheduled", "status", "commented"].includes(action))
     return "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300";
   return "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
 }
 
 const selectCls =
-  "h-9 rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring";
+  "h-9 max-w-full rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring";
 
 export function AuditClient({
   retentionDays,
@@ -72,6 +79,7 @@ export function AuditClient({
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, startClearing] = useTransition();
   const [clearError, setClearError] = useState<string | null>(null);
+  const [cleared, showCleared, hideCleared] = useFlash();
 
   // Live view: re-run the server query every few seconds while the tab is
   // visible, so new events appear without a manual reload. Filters are in the
@@ -91,8 +99,10 @@ export function AuditClient({
   const clearLog = () =>
     startClearing(async () => {
       setClearError(null);
+      hideCleared();
       const res = await clearAuditLogAction();
       if (res.error) setClearError(res.error);
+      else showCleared(`Audit log cleared (${res.cleared ?? 0} ${res.cleared === 1 ? "entry" : "entries"} deleted).`);
       setConfirmClear(false);
       router.refresh();
     });
@@ -115,46 +125,44 @@ export function AuditClient({
   const hasFilters = Object.values(filters).some(Boolean);
 
   return (
-    <main className="mx-auto max-w-5xl space-y-6 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-semibold">
-            <ScrollText className="h-6 w-6 text-muted-foreground" /> Audit trail
+    <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
+      <PageHeader
+        className="mb-0"
+        icon={<ScrollText className="h-5 w-5 text-muted-foreground" />}
+        title={
+          <>
+            Audit
             <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:bg-green-900/50 dark:text-green-300">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" /> Live
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" aria-hidden /> Live
             </span>
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Everything done in the app over the last {retentionDays} days — sign-ins, changes, imports and exports.
-            Updates automatically; older entries are deleted after {retentionDays} days.
-          </p>
-        </div>
-        {confirmClear ? (
-          <div className="flex items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 dark:border-red-800 dark:bg-red-950">
-            <span className="text-sm text-red-800 dark:text-red-200">Delete the entire history?</span>
-            <Button variant="destructive" size="sm" onClick={clearLog} disabled={clearing}>
-              {clearing ? "Clearing…" : "Yes, clear it"}
+          </>
+        }
+        description={`Everything done in the app over the last ${retentionDays} days — sign-ins, changes, imports and exports. Updates automatically; older entries are deleted after ${retentionDays} days.`}
+        actions={
+          confirmClear ? (
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-1.5 dark:border-red-800 dark:bg-red-950">
+              <span className="text-sm text-red-800 dark:text-red-200">Delete the entire history?</span>
+              <Button variant="destructive" size="sm" onClick={clearLog} disabled={clearing}>
+                {clearing ? "Clearing…" : "Yes, clear it"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmClear(false)} disabled={clearing}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => setConfirmClear(true)}>
+              <Trash2 className="mr-1.5 h-4 w-4" /> Clear log
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmClear(false)} disabled={clearing}>
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <Button variant="outline" size="sm" onClick={() => setConfirmClear(true)}>
-            <Trash2 className="mr-1.5 h-4 w-4" /> Clear log
-          </Button>
-        )}
-      </div>
+          )
+        }
+      />
 
-      {clearError ? (
-        <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
-          {clearError}
-        </p>
-      ) : null}
+      <FormMessage>{clearError}</FormMessage>
+      <FormMessage tone="success">{cleared}</FormMessage>
 
-      {/* 30-day statistics */}
+      {/* Statistics over the retention window */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Events (30 days)" value={stats.total} />
+        <Stat label={`Events (${retentionDays} days)`} value={stats.total} />
         <Stat label="Sign-ins" value={stats.signIns} />
         <Stat label="Data changes" value={stats.changes} />
         <Stat label="Failed sign-ins" value={stats.failed} tone={stats.failed ? "bad" : undefined} />
@@ -195,24 +203,27 @@ export function AuditClient({
             <option key={x} value={x}>{x}</option>
           ))}
         </select>
-        <Input
-          type="date"
-          className="h-9 w-auto"
-          value={filters.from}
-          onChange={(e) => apply({ from: e.target.value })}
-          aria-label="From date"
-        />
+        <div className="w-40">
+          <DatePicker
+            aria-label="From date"
+            placeholder="From date"
+            value={filters.from}
+            onChange={(v) => apply({ from: v })}
+          />
+        </div>
         <span className="text-xs text-muted-foreground">to</span>
-        <Input
-          type="date"
-          className="h-9 w-auto"
-          value={filters.to}
-          onChange={(e) => apply({ to: e.target.value })}
-          aria-label="To date"
-        />
+        <div className="w-40">
+          <DatePicker
+            aria-label="To date"
+            placeholder="To date"
+            value={filters.to}
+            onChange={(v) => apply({ to: v })}
+          />
+        </div>
         <Input
           placeholder="Search descriptions…"
-          className="h-9 w-52"
+          aria-label="Search descriptions"
+          className="h-9 w-full sm:w-52"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -261,7 +272,7 @@ export function AuditClient({
                         </span>
                       </td>
                       <td className="whitespace-nowrap px-2 py-1.5 text-xs text-muted-foreground">{r.entity}</td>
-                      <td className="px-2 py-1.5 text-xs" title={r.summary}>{r.summary}</td>
+                      <td className="min-w-[14rem] px-2 py-1.5 text-xs" title={r.summary}>{r.summary}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -270,7 +281,7 @@ export function AuditClient({
           )}
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }
 

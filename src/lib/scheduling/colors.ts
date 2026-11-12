@@ -109,12 +109,3 @@ export function nextIdentityColor(used: Iterable<string>): string {
     if (!taken.has(hex)) return hex;
   }
 }
-
-// Seeded on first load so the board is immediately usable with the named crew.
-export const DEFAULT_TECHNICIANS: { name: string; color: string }[] = [
-  { name: "Charles", color: "#3b82f6" },
-  { name: "Simplice", color: "#f59e0b" },
-  { name: "Aaron", color: "#a855f7" },
-  { name: "Joseph", color: "#ef4444" },
-  { name: "Malik", color: "#f97316" },
-];

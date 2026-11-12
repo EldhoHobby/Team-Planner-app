@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
+import { logError } from "@/lib/log";
 
 // Lightweight change-history trail. Captures what / when / who for each mutation.
 // Best-effort: an audit failure must never break the underlying operation.
@@ -66,8 +67,9 @@ export async function writeAudit(
         summary,
       },
     });
-  } catch {
-    /* never let logging break the mutation */
+  } catch (e) {
+    /* never let logging break the mutation — but leave a trace */
+    logError("writeAudit", e);
   }
 }
 
@@ -111,8 +113,9 @@ export async function writeAuthAudit(
         summary: entry.summary.slice(0, 500),
       },
     });
-  } catch {
-    /* never let logging break auth */
+  } catch (e) {
+    /* never let logging break auth — but leave a trace */
+    logError("writeAuthAudit", e);
   }
 }
 
@@ -129,7 +132,8 @@ export async function resolveAuthOrgId(userId?: string | null): Promise<string |
     }
     const org = await prisma.organization.findFirst({ select: { id: true } });
     return org?.id ?? null;
-  } catch {
+  } catch (e) {
+    logError("resolveAuthOrgId", e);
     return null;
   }
 }
@@ -146,14 +150,37 @@ export function recordPageView(scope: TenantScope, section: string): Promise<voi
   );
 }
 
-export const AUDIT_RETENTION_DAYS = 30;
+export const DEFAULT_AUDIT_RETENTION_DAYS = 30;
+const MAX_AUDIT_RETENTION_DAYS = 36500; // ~100 years ≈ "keep forever"
 
-/** Delete audit entries older than the retention window (all orgs). Best-effort. */
+/**
+ * Parse AUDIT_RETENTION_DAYS (pure; exported for tests). Whole days, 1..36500;
+ * blank or invalid → the 30-day default. Set a large value (e.g. 3650) to keep
+ * the activity log longer. Permanent field-level history does NOT depend on
+ * this: it lives in ChangeHistory (src/lib/services/change-history.ts), which
+ * is never pruned.
+ */
+export function parseRetentionDays(raw: string | undefined): number {
+  const v = raw?.trim();
+  if (!v || !/^\d+$/.test(v)) return DEFAULT_AUDIT_RETENTION_DAYS;
+  const n = Number(v);
+  if (n < 1) return DEFAULT_AUDIT_RETENTION_DAYS;
+  return Math.min(n, MAX_AUDIT_RETENTION_DAYS);
+}
+
+/** Audit-log (AuditLog) retention window in days, from AUDIT_RETENTION_DAYS. */
+export const AUDIT_RETENTION_DAYS = parseRetentionDays(process.env.AUDIT_RETENTION_DAYS);
+
+/**
+ * Delete AuditLog entries older than the retention window (all orgs).
+ * Best-effort. Does NOT touch ChangeHistory (permanent by design).
+ */
 export async function pruneAuditLog(): Promise<void> {
   try {
     const cutoff = new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
     await prisma.auditLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
-  } catch {
-    /* ignore — next run retries */
+  } catch (e) {
+    // Never throws — the next run retries — but leave a trace for the admin.
+    logError("pruneAuditLog", e);
   }
 }

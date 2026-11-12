@@ -1,8 +1,14 @@
+import { ymdEastern } from "@/lib/tz";
 import { prisma } from "@/lib/db/client";
 import type { TenantScope } from "@/lib/db/scope";
 import { ForbiddenError } from "@/lib/auth/current-user";
 import { writeAudit } from "@/lib/services/audit";
-import type { TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
+import { recordFieldChanges, diffFields } from "@/lib/services/change-history";
+import { assertFreshWrite, versionGuard, StaleSaveError } from "@/lib/db/optimistic";
+import { NOT_DELETED, recentlyDeleted, type DeletedItemRow } from "@/lib/db/soft-delete";
+import { logError } from "@/lib/log";
+import { computeConflicts, toUtcMidnight, type JobLite } from "@/lib/scheduling/calc";
+import type { Prisma, TechTaskState, TaskOrigin, JobType, JobStatus, NoteKind } from "@prisma/client";
 
 export type { TechTaskState, TaskOrigin, NoteKind };
 
@@ -24,6 +30,8 @@ export interface TechTaskRow {
   completedAt: string | null;
   createdAt: string;
   commentCount: number;
+  /** Optimistic-lock version — send back as expectedVersion when saving. */
+  version: number;
 }
 
 /** One entry in a task's ticket thread: a user COMMENT or a system CHANGE note. */
@@ -49,6 +57,13 @@ export interface JobRow {
   technicianId: string | null;
   technicianName: string | null;
   bucket: "SCHEDULED" | "TENTATIVE" | "UNSCHEDULED";
+  /** Double-booked: overlaps another open job of the same person. */
+  conflict: boolean;
+}
+/** A task the viewer assigned to someone who is not otherwise on their dashboard. */
+export interface AssignedTaskRow {
+  task: TechTaskRow;
+  ownerName: string;
 }
 export interface WeekGroup {
   weekStart: string; // ISO date of the Sunday
@@ -67,12 +82,55 @@ export interface DashboardData {
   owners: OwnerLite[];
   /** EVERY active person in the org — the reassign dropdown (cross-department). */
   people: OwnerLite[];
+  /**
+   * Tasks (open + DONE within the completed window) the viewer assigned to
+   * people who are NOT in `groups` — otherwise they'd vanish from the viewer's
+   * dashboard. Server order: priority → target date.
+   */
+  assignedByMe: AssignedTaskRow[];
+  /** How many days back completed tasks are loaded (multiple of COMPLETED_WINDOW_DAYS). */
+  completedDays: number;
+  /** True when DONE tasks older than the window exist ("Load older completed tasks"). */
+  hasOlderCompleted: boolean;
+}
+
+/** Completed tasks load in windows of this many days (default: the last 90). */
+export const COMPLETED_WINDOW_DAYS = 90;
+/** Upper bound for ?done= so a hand-edited URL can't ask for centuries. */
+export const MAX_COMPLETED_DAYS = 90 * 40;
+
+/** Parse the dashboard's `?done=` days param into a whole number of windows. */
+export function parseCompletedDays(raw: string | number | undefined | null): number {
+  const n = typeof raw === "number" ? Math.floor(raw) : Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= COMPLETED_WINDOW_DAYS) return COMPLETED_WINDOW_DAYS;
+  const windows = Math.ceil(n / COMPLETED_WINDOW_DAYS);
+  return Math.min(windows * COMPLETED_WINDOW_DAYS, MAX_COMPLETED_DAYS);
+}
+
+/**
+ * Ids of jobs that double-book a person: two dated jobs for the same person
+ * whose day ranges overlap (a null end date means a one-day job). Unassigned
+ * and unscheduled jobs never conflict. Pure — see tech-tasks.dashboard.test.ts.
+ */
+export function jobConflictIds(
+  jobs: { id: string; technicianId: string | null; startDate: Date | null; endDate: Date | null }[],
+): Set<string> {
+  const lite: JobLite[] = [];
+  for (const j of jobs) {
+    if (!j.technicianId || !j.startDate) continue;
+    const start = toUtcMidnight(j.startDate);
+    const endRaw = j.endDate ? toUtcMidnight(j.endDate) : start;
+    // A bad end-before-start row is treated as a one-day job.
+    const end = endRaw.getTime() < start.getTime() ? start : endRaw;
+    lite.push({ id: j.id, technicianId: j.technicianId, start, end });
+  }
+  return computeConflicts(lite);
 }
 
 function serialize(t: {
   id: string; ownerId: string; title: string; notes: string | null; priority: number;
   targetDate: Date | null; state: TechTaskState; origin: TaskOrigin; location: string | null;
-  completedAt: Date | null; createdAt: Date;
+  completedAt: Date | null; createdAt: Date; version: number;
 }, commentCount = 0): TechTaskRow {
   return {
     id: t.id, ownerId: t.ownerId, title: t.title, notes: t.notes, priority: t.priority,
@@ -81,6 +139,7 @@ function serialize(t: {
     completedAt: t.completedAt ? t.completedAt.toISOString() : null,
     createdAt: t.createdAt.toISOString(),
     commentCount,
+    version: t.version,
   };
 }
 
@@ -91,7 +150,7 @@ function weekStartOf(d: Date): Date {
   return s;
 }
 function weekLabel(weekStart: Date): string {
-  return `Week of ${weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })}`;
+  return `Week of ${weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
 }
 
 /**
@@ -168,12 +227,39 @@ export async function assignableOwners(scope: TenantScope): Promise<OwnerLite[]>
   return me ? [me, ...managed] : managed;
 }
 
+/** Owner themselves, anyone who manages them, or an org admin. */
 async function assertCanManageOwner(scope: TenantScope, ownerId: string): Promise<void> {
   if (ownerId === scope.ctx.userId) return;
+  if (scope.ctx.isOrgAdmin) return;
   const managedIds = await managedMemberIds(scope);
   if (!managedIds.includes(ownerId)) {
     throw new ForbiddenError("You can only manage your own tasks or those of people you manage.");
   }
+}
+
+/**
+ * Who may open / edit / comment on / delete an existing task: the owner, their
+ * managers, org admins — and the person who assigned it to the owner.
+ */
+async function assertCanEditTask(
+  scope: TenantScope,
+  task: { ownerId: string; assignedById?: string | null },
+): Promise<void> {
+  if (task.assignedById && task.assignedById === scope.ctx.userId) return;
+  await assertCanManageOwner(scope, task.ownerId);
+}
+
+/** An active member of the caller's org (task owner / reassign target), or null. */
+async function findActiveOrgPerson(scope: TenantScope, userId: string) {
+  return prisma.user.findFirst({
+    where: {
+      id: userId,
+      archived: false,
+      isActive: true,
+      memberships: { some: { orgId: scope.ctx.orgId } },
+    },
+    select: { id: true, name: true, username: true },
+  });
 }
 
 function jobBucket(t: { startDate: Date | null; tentative: boolean }): JobRow["bucket"] {
@@ -185,7 +271,7 @@ function serializeJob(t: {
   jobType: JobType | null; jobStatus: JobStatus | null; startDate: Date | null; endDate: Date | null;
   tentative: boolean; technicianId: string | null;
   technician: { name: string | null; email: string | null; username?: string } | null;
-}): JobRow {
+}, conflict = false): JobRow {
   return {
     id: t.id, title: t.title, soNumber: t.soNumber, customerName: t.customerName,
     jobType: t.jobType, jobStatus: t.jobStatus,
@@ -195,6 +281,27 @@ function serializeJob(t: {
     technicianId: t.technicianId,
     technicianName: t.technician ? t.technician.name ?? t.technician.email ?? t.technician.username ?? null : null,
     bucket: jobBucket(t),
+    conflict,
+  };
+}
+
+/** Prisma filter: open tasks, plus DONE tasks completed on/after `since`. */
+function openOrCompletedSince(since: Date): Prisma.TechTaskWhereInput {
+  return {
+    OR: [
+      { state: { not: "DONE" } },
+      { completedAt: { gte: since } },
+      // Legacy DONE rows without a completion stamp: fall back to createdAt
+      // (the same fallback the week grouping uses).
+      { completedAt: null, createdAt: { gte: since } },
+    ],
+  };
+}
+/** Prisma filter: DONE tasks completed before `since` (the "older" ones). */
+function completedBefore(since: Date): Prisma.TechTaskWhereInput {
+  return {
+    state: "DONE",
+    OR: [{ completedAt: { lt: since } }, { completedAt: null, createdAt: { lt: since } }],
   };
 }
 
@@ -203,50 +310,94 @@ function serializeJob(t: {
  * Also pulls each person's field-service jobs (via their linked technician) and a
  * shared pool of unscheduled / unassigned jobs, so everyone sees what's remaining.
  */
-export async function listDashboard(scope: TenantScope): Promise<DashboardData> {
+export async function listDashboard(
+  scope: TenantScope,
+  opts: { completedDays?: number } = {},
+): Promise<DashboardData> {
+  const orgId = scope.ctx.orgId;
   const owners = await assignableOwners(scope);
   const ownerIds = owners.map((o) => o.id);
+  const ownerIdSet = new Set(ownerIds);
 
+  // Completed tasks load in 90-day windows (the newest by default) — loading
+  // every DONE task ever would grow without bound.
+  const completedDays = parseCompletedDays(opts.completedDays);
+  const completedSince = new Date(Date.now() - completedDays * 24 * 60 * 60 * 1000);
+
+  // Priority takes precedence over target date; nulls sort last for ASC in Postgres.
+  const taskOrder: Prisma.TechTaskOrderByWithRelationInput[] = [
+    { priority: "asc" }, { targetDate: "asc" }, { createdAt: "asc" },
+  ];
   const tasks = await prisma.techTask.findMany({
-    where: { orgId: scope.ctx.orgId, ownerId: { in: ownerIds } },
-    // Priority takes precedence over target date; nulls sort last for ASC in Postgres.
-    orderBy: [{ priority: "asc" }, { targetDate: "asc" }, { createdAt: "asc" }],
+    where: { orgId, ownerId: { in: ownerIds }, ...NOT_DELETED, ...openOrCompletedSince(completedSince) },
+    orderBy: taskOrder,
+  });
+
+  // "Assigned by me": tasks the viewer handed to someone who isn't on this
+  // dashboard (anyone may assign to anyone, so they'd otherwise disappear).
+  const assigned = await prisma.techTask.findMany({
+    where: {
+      orgId,
+      assignedById: scope.ctx.userId,
+      ownerId: { notIn: ownerIds },
+      ...NOT_DELETED,
+      ...openOrCompletedSince(completedSince),
+    },
+    include: { owner: { select: { name: true, username: true, email: true } } },
+    orderBy: taskOrder,
+  });
+
+  // Is there anything older than the window ("Load older completed tasks")?
+  const older = await prisma.techTask.findFirst({
+    where: {
+      orgId,
+      ...NOT_DELETED,
+      AND: [
+        { OR: [{ ownerId: { in: ownerIds } }, { assignedById: scope.ctx.userId }] },
+        completedBefore(completedSince),
+      ],
+    },
+    select: { id: true },
   });
 
   // 💬 badge counts: user comments only (system CHANGE notes don't count).
   const commentAgg = await prisma.techTaskNote.groupBy({
     by: ["taskId"],
-    where: { taskId: { in: tasks.map((t) => t.id) }, kind: "COMMENT" },
+    where: { orgId, taskId: { in: [...tasks, ...assigned].map((t) => t.id) }, kind: "COMMENT" },
     _count: { _all: true },
   });
   const commentsByTask = new Map(commentAgg.map((c) => [c.taskId, c._count._all]));
 
-  // Field-service jobs that aren't finished. `technicianId` IS a person's user id
-  // now, so a job maps straight to its owner.
+  // Field-service jobs that aren't finished (a NULL status counts as open — a
+  // plain `not: "COMPLETED"` would drop those rows). `technicianId` IS a
+  // person's user id now, so a job maps straight to its owner.
   const jobs = await prisma.task.findMany({
     where: {
-      orgId: scope.ctx.orgId,
+      orgId,
       kind: "FIELD_SERVICE",
-      jobStatus: { not: "COMPLETED" },
+      ...NOT_DELETED,
+      OR: [{ jobStatus: null }, { jobStatus: { not: "COMPLETED" } }],
     },
     include: { technician: { select: { name: true, email: true, username: true } } },
     orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
   });
+  // Double-booking across ALL open jobs, so a clash with a job outside the
+  // viewer's people still flags their person's job.
+  const conflicts = jobConflictIds(jobs);
 
-  const ownerIdSet = new Set(ownerIds);
   const jobsByOwner = new Map<string, JobRow[]>();
   const pool: JobRow[] = [];
   for (const j of jobs) {
     const ownerUserId = j.technicianId;
-    const assignedToKnownPerson = ownerUserId != null && ownerIdSet.has(ownerUserId);
+    const row = serializeJob(j, conflicts.has(j.id));
     // ASSIGNED to one of our people → that person's list (dated or not — an
     // unscheduled-but-assigned job is still theirs); everything else → shared pool.
-    if (assignedToKnownPerson) {
+    if (ownerUserId != null && ownerIdSet.has(ownerUserId)) {
       const arr = jobsByOwner.get(ownerUserId) ?? [];
-      arr.push(serializeJob(j));
+      arr.push(row);
       jobsByOwner.set(ownerUserId, arr);
     } else {
-      pool.push(serializeJob(j));
+      pool.push(row);
     }
   }
   // Per person: dated jobs first (soonest first), then their unscheduled ones.
@@ -264,7 +415,8 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
     const byWeek = new Map<string, TechTaskRow[]>();
     for (const t of done) {
       const when = t.completedAt ?? t.createdAt;
-      const ws = weekStartOf(new Date(when));
+      // Eastern calendar day of completion (the UTC day is tomorrow after 7–8 pm ET).
+      const ws = weekStartOf(new Date(`${ymdEastern(when)}T00:00:00Z`));
       const key = ws.toISOString().slice(0, 10);
       const arr = byWeek.get(key) ?? [];
       arr.push(t);
@@ -288,7 +440,20 @@ export async function listDashboard(scope: TenantScope): Promise<DashboardData> 
 
   const people = await listOrgPeople(scope);
 
-  return { groups, pool, owners, people };
+  const assignedByMe: AssignedTaskRow[] = assigned.map((t) => ({
+    task: serialize(t, commentsByTask.get(t.id) ?? 0),
+    ownerName: t.owner.name ?? t.owner.username ?? t.owner.email ?? "someone",
+  }));
+
+  return {
+    groups,
+    pool,
+    owners,
+    people,
+    assignedByMe,
+    completedDays,
+    hasOlderCompleted: older !== null,
+  };
 }
 
 /** Everyone active in the org — reassign targets, any department. */
@@ -317,6 +482,7 @@ export async function listTargetedTasks(scope: TenantScope): Promise<TargetedTas
   const rows = await prisma.techTask.findMany({
     where: {
       orgId: scope.ctx.orgId,
+      ...NOT_DELETED,
       state: { not: "DONE" },
       targetDate: { not: null },
       owner: { archived: false, isActive: true },
@@ -334,7 +500,7 @@ export async function listTargetedTasks(scope: TenantScope): Promise<TargetedTas
   return rows.map((r) => ({
     task: serialize(r, countMap.get(r.id) ?? 0),
     ownerName: r.owner.name ?? r.owner.username ?? r.owner.email ?? "someone",
-    editable: scope.ctx.isOrgAdmin || manageable.has(r.ownerId),
+    editable: scope.ctx.isOrgAdmin || manageable.has(r.ownerId) || r.assignedById === scope.ctx.userId,
   }));
 }
 
@@ -356,7 +522,20 @@ export interface UpdateTechTaskInput {
   location?: string;
   /** Reassign to another person (any active org member, any department). */
   ownerId?: string;
+  /**
+   * Optimistic lock: the `version` the caller loaded. When given and the row
+   * has moved on, the save is rejected with StaleSaveError (nothing written).
+   * The dashboard list, Kanban board and ticket always send it. Omitting it
+   * (last-write-wins) is left for callers without a loaded version, e.g.
+   * setTechTaskState; those writes still bump the version.
+   */
+  expectedVersion?: number;
 }
+
+/** Fields tracked in the permanent ChangeHistory table. */
+export const TECH_TASK_HISTORY_FIELDS = [
+  "title", "notes", "priority", "targetDate", "state", "location", "ownerId",
+] as const;
 
 // ─── Ticket thread (comments + change history) ───
 
@@ -364,7 +543,7 @@ const NOTE_STATE_LABELS: Record<TechTaskState, string> = {
   NEW: "New", TODO: "To Do", IN_PROGRESS: "In Progress", HOLD: "Hold", DONE: "Done",
 };
 function noteDate(d: Date | null): string {
-  return d ? d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "—";
+  return d ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }) : "—";
 }
 
 /** The EFFECTIVE user writing to a thread (id + display-name snapshot). */
@@ -390,8 +569,8 @@ async function recordChange(scope: TenantScope, taskId: string, body: string) {
         body: body.slice(0, 500),
       },
     });
-  } catch {
-    /* history must never break the mutation */
+  } catch (e) {
+    logError("tech-tasks recordChange", e); // history must never break the mutation
   }
 }
 
@@ -408,9 +587,9 @@ function serializeNote(n: {
 
 /** The full thread for a task, oldest first. Permission = task visibility. */
 export async function getTaskThread(scope: TenantScope, taskId: string): Promise<NoteRow[]> {
-  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
+  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!task) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, task.ownerId);
+  await assertCanEditTask(scope, task);
   const notes = await prisma.techTaskNote.findMany({
     where: { taskId },
     orderBy: { createdAt: "asc" },
@@ -421,9 +600,9 @@ export async function getTaskThread(scope: TenantScope, taskId: string): Promise
 export async function addTaskComment(scope: TenantScope, taskId: string, body: string): Promise<NoteRow> {
   const text = body.trim();
   if (!text) throw new ForbiddenError("Write a comment first.");
-  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId } });
+  const task = await prisma.techTask.findFirst({ where: { id: taskId, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!task) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, task.ownerId);
+  await assertCanEditTask(scope, task);
   const author = await noteAuthor(scope);
   const note = await prisma.techTaskNote.create({
     data: {
@@ -443,7 +622,7 @@ export async function editTaskComment(scope: TenantScope, noteId: string, body: 
   const text = body.trim();
   if (!text) throw new ForbiddenError("A comment can't be empty — delete it instead.");
   const note = await prisma.techTaskNote.findFirst({
-    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT" },
+    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT", task: NOT_DELETED },
   });
   if (!note) throw new ForbiddenError("Comment not found");
   if (note.authorId !== scope.ctx.userId) {
@@ -459,7 +638,7 @@ export async function editTaskComment(scope: TenantScope, noteId: string, body: 
 /** Delete own comment; org admins may delete anyone's. */
 export async function deleteTaskComment(scope: TenantScope, noteId: string): Promise<void> {
   const note = await prisma.techTaskNote.findFirst({
-    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT" },
+    where: { id: noteId, orgId: scope.ctx.orgId, kind: "COMMENT", task: NOT_DELETED },
   });
   if (!note) throw new ForbiddenError("Comment not found");
   if (note.authorId !== scope.ctx.userId && !scope.ctx.isOrgAdmin) {
@@ -469,8 +648,14 @@ export async function deleteTaskComment(scope: TenantScope, noteId: string): Pro
 }
 
 export async function createTechTask(scope: TenantScope, input: CreateTechTaskInput) {
-  await assertCanManageOwner(scope, input.ownerId);
+  const title = input.title?.trim() ?? "";
+  if (!title) throw new ForbiddenError("Title is required.");
+  // Anyone in the organisation may create a task for any active person in it.
+  // A task for someone else is recorded as assigned (origin MANAGER).
   const isSelf = input.ownerId === scope.ctx.userId;
+  if (!isSelf && !(await findActiveOrgPerson(scope, input.ownerId))) {
+    throw new ForbiddenError("That person isn't an active member of your organization.");
+  }
   const state = input.state ?? "NEW";
   const task = await prisma.techTask.create({
     data: {
@@ -479,7 +664,7 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
       createdById: scope.ctx.userId,
       assignedById: isSelf ? null : scope.ctx.userId,
       origin: isSelf ? "SELF" : "MANAGER",
-      title: input.title.trim(),
+      title,
       notes: input.notes?.trim() || null,
       priority: input.priority && input.priority > 0 ? Math.floor(input.priority) : 3,
       targetDate: input.targetDate ?? null,
@@ -503,25 +688,24 @@ export async function createTechTask(scope: TenantScope, input: CreateTechTaskIn
 }
 
 export async function updateTechTask(scope: TenantScope, id: string, input: UpdateTechTaskInput) {
-  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
+  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!existing) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, existing.ownerId);
+  await assertCanEditTask(scope, existing);
+  if (input.title !== undefined && !input.title.trim()) {
+    throw new ForbiddenError("Title can't be blank.");
+  }
+  // Cheap early reject; the guarded updateMany below is the real (race-safe) check.
+  if (input.expectedVersion !== undefined && input.expectedVersion !== existing.version) {
+    throw new StaleSaveError("task");
+  }
 
   // Reassignment: allowed by whoever can edit the task (owner / their managers /
-  // admins); the TARGET may be anyone active in the org — any department.
+  // admins / its assigner); the TARGET may be anyone active in the org.
   const reassigning = input.ownerId !== undefined && input.ownerId !== existing.ownerId;
   let newOwner: { id: string; name: string | null; username: string } | null = null;
   let oldOwnerName = "";
   if (reassigning) {
-    newOwner = await prisma.user.findFirst({
-      where: {
-        id: input.ownerId!,
-        archived: false,
-        isActive: true,
-        memberships: { some: { orgId: scope.ctx.orgId } },
-      },
-      select: { id: true, name: true, username: true },
-    });
+    newOwner = await findActiveOrgPerson(scope, input.ownerId!);
     if (!newOwner) throw new ForbiddenError("That person isn't an active member of your organization.");
     const old = await prisma.user.findUnique({
       where: { id: existing.ownerId },
@@ -538,28 +722,40 @@ export async function updateTechTask(scope: TenantScope, id: string, input: Upda
     else if (existing.state === "DONE") completedAt = null;
   }
 
-  const task = await prisma.techTask.update({
-    where: { id },
-    data: {
-      ...(input.title !== undefined ? { title: input.title.trim() } : {}),
-      ...(input.notes !== undefined ? { notes: input.notes?.trim() || null } : {}),
-      ...(input.priority !== undefined ? { priority: input.priority > 0 ? Math.floor(input.priority) : 3 } : {}),
-      ...(input.targetDate !== undefined ? { targetDate: input.targetDate } : {}),
-      ...(input.state !== undefined ? { state: input.state } : {}),
-      ...(completedAt !== undefined ? { completedAt } : {}),
-      ...(input.location !== undefined ? { location: input.location?.trim() || null } : {}),
-      // Reassign: hand the task to the new person; the reassigner becomes the
-      // "assigned by" and the origin flips to MANAGER (it was handed over).
-      ...(reassigning
-        ? {
-            ownerId: newOwner!.id,
-            assignedById: scope.ctx.userId,
-            ...(newOwner!.id !== scope.ctx.userId ? { origin: "MANAGER" as TaskOrigin } : {}),
-          }
-        : {}),
-      // Flag synced tasks whose state changed so a future Outlook sync pushes it back.
-      ...(stateChanged && existing.externalId ? { syncDirty: true } : {}),
-    },
+  // Guarded write + permanent field history in ONE transaction: if the
+  // version moved on, nothing is written and StaleSaveError reaches the caller.
+  const task = await prisma.$transaction(async (tx) => {
+    const res = await tx.techTask.updateMany({
+      where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED, ...versionGuard(input.expectedVersion) },
+      data: {
+        version: { increment: 1 },
+        ...(input.title !== undefined ? { title: input.title.trim() } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes?.trim() || null } : {}),
+        ...(input.priority !== undefined ? { priority: input.priority > 0 ? Math.floor(input.priority) : 3 } : {}),
+        ...(input.targetDate !== undefined ? { targetDate: input.targetDate } : {}),
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...(completedAt !== undefined ? { completedAt } : {}),
+        ...(input.location !== undefined ? { location: input.location?.trim() || null } : {}),
+        // Reassign: hand the task to the new person; the reassigner becomes the
+        // "assigned by" and the origin flips to MANAGER (it was handed over).
+        ...(reassigning
+          ? {
+              ownerId: newOwner!.id,
+              assignedById: scope.ctx.userId,
+              ...(newOwner!.id !== scope.ctx.userId ? { origin: "MANAGER" as TaskOrigin } : {}),
+            }
+          : {}),
+        // Flag synced tasks whose state changed so a future Outlook sync pushes it back.
+        ...(stateChanged && existing.externalId ? { syncDirty: true } : {}),
+      },
+    });
+    assertFreshWrite(res.count, "task");
+    const updated = await tx.techTask.findUniqueOrThrow({ where: { id } });
+    await recordFieldChanges(
+      tx, scope, "techtask", id,
+      diffFields(existing, updated, TECH_TASK_HISTORY_FIELDS),
+    );
+    return updated;
   });
   // Inline cells auto-save on blur — coalesce rapid edits into one entry, but
   // call out state changes explicitly (they matter for the trail).
@@ -609,17 +805,92 @@ export async function setTechTaskState(scope: TenantScope, id: string, state: Te
   return updateTechTask(scope, id, { state });
 }
 
+/**
+ * SOFT delete: the task (and its comment thread) stays in the database, hidden
+ * everywhere, and can be restored from "Recently deleted" for
+ * DELETED_KEEP_DAYS. Same permission as editing it (assertCanEditTask).
+ */
 export async function deleteTechTask(scope: TenantScope, id: string): Promise<void> {
-  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId } });
+  const existing = await prisma.techTask.findFirst({ where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED } });
   if (!existing) throw new ForbiddenError("Task not found");
-  await assertCanManageOwner(scope, existing.ownerId);
-  await prisma.techTask.delete({ where: { id } });
+  await assertCanEditTask(scope, existing);
+  const res = await prisma.techTask.updateMany({
+    where: { id, orgId: scope.ctx.orgId, ...NOT_DELETED },
+    data: { deletedAt: new Date(), deletedById: scope.ctx.userId, version: { increment: 1 } },
+  });
+  if (res.count === 0) throw new ForbiddenError("Task not found");
   await writeAudit(scope, {
     entity: "techtask",
     entityId: id,
     action: "deleted",
     summary: `Deleted dashboard task "${existing.title}"`,
   });
+  await recordChange(scope, id, "deleted this task");
+}
+
+/**
+ * Dashboard tasks deleted in the last DELETED_KEEP_DAYS that this caller may
+ * restore: org admins see all; everyone else sees tasks they own, tasks of the
+ * people they manage, tasks they assigned and tasks they deleted themselves.
+ */
+export async function listDeletedTechTasks(scope: TenantScope): Promise<DeletedItemRow[]> {
+  const me = scope.ctx.userId;
+  const visibility: Prisma.TechTaskWhereInput = scope.ctx.isOrgAdmin
+    ? {}
+    : {
+        OR: [
+          { ownerId: { in: [me, ...(await managedMemberIds(scope))] } },
+          { assignedById: me },
+          { deletedById: me },
+        ],
+      };
+  const rows = await prisma.techTask.findMany({
+    where: { orgId: scope.ctx.orgId, ...recentlyDeleted(), ...visibility },
+    include: { owner: { select: { name: true, username: true, email: true } } },
+    orderBy: { deletedAt: "desc" },
+    take: 200,
+  });
+  const deleterIds = [...new Set(rows.map((r) => r.deletedById).filter((x): x is string => !!x))];
+  const deleters = deleterIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: deleterIds } },
+        select: { id: true, name: true, username: true, email: true },
+      })
+    : [];
+  const nameOf = new Map(deleters.map((u) => [u.id, u.name ?? u.username ?? u.email ?? "someone"]));
+  return rows.map((r) => ({
+    id: r.id,
+    label: r.title,
+    detail: r.owner.name ?? r.owner.username ?? r.owner.email ?? null,
+    deletedAt: r.deletedAt!.toISOString(),
+    deletedByName: r.deletedById ? (nameOf.get(r.deletedById) ?? null) : null,
+  }));
+}
+
+/**
+ * Bring a soft-deleted dashboard task back (Undo / "Recently deleted"). Same
+ * permission as deleting it (assertCanEditTask) — the person who deleted it may
+ * always undo their own delete. Adds a permanent "restored this task" note.
+ */
+export async function restoreTechTask(scope: TenantScope, id: string) {
+  const existing = await prisma.techTask.findFirst({
+    where: { id, orgId: scope.ctx.orgId, ...recentlyDeleted() },
+  });
+  if (!existing) throw new ForbiddenError("That task is no longer in Recently deleted.");
+  if (existing.deletedById !== scope.ctx.userId) await assertCanEditTask(scope, existing);
+  const res = await prisma.techTask.updateMany({
+    where: { id, orgId: scope.ctx.orgId, deletedAt: { not: null } },
+    data: { deletedAt: null, deletedById: null, version: { increment: 1 } },
+  });
+  if (res.count === 0) throw new ForbiddenError("That task is no longer in Recently deleted.");
+  await writeAudit(scope, {
+    entity: "techtask",
+    entityId: id,
+    action: "restored",
+    summary: `Restored dashboard task "${existing.title}"`,
+  });
+  await recordChange(scope, id, "restored this task");
+  return prisma.techTask.findUniqueOrThrow({ where: { id } });
 }
 
 // Reporting lines now live in People settings (department managers + ManagerLink

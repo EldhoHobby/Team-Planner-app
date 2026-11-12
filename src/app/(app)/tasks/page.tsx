@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { HOME_PATH } from "@/lib/home";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { listTasks } from "@/lib/services/tasks";
@@ -8,15 +10,20 @@ import { TasksClient } from "./tasks-client";
 import type { TaskRow, ProjectOption, TeamMember } from "./types";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Tasks" };
 
-export default async function TasksPage() {
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ project?: string | string[] }>;
+}) {
   const user = await requireAuth();
   const { scope } = await requireScope();
+  // Admins only (hidden from the sidebar for everyone else).
+  if (!scope.ctx.isOrgAdmin) redirect(HOME_PATH);
   await recordPageView(scope, "Tasks");
-
-  const teamWhere = scope.ctx.isOrgAdmin
-    ? { orgId: scope.ctx.orgId }
-    : { id: { in: scope.ctx.teamIds } };
+  const params = await searchParams;
+  const projectParam = Array.isArray(params.project) ? params.project[0] : params.project;
 
   const [tasks, projects, teamMemberships] = await Promise.all([
     listTasks(scope),
@@ -28,13 +35,6 @@ export default async function TasksPage() {
       include: { user: { select: { id: true, name: true, email: true, username: true } } },
     }),
   ]);
-
-  // Also fetch teams for the filter bar label
-  const teams = await prisma.team.findMany({
-    where: teamWhere,
-    orderBy: { name: "asc" },
-    select: { id: true, name: true },
-  });
 
   const taskRows: TaskRow[] = tasks.map((t) => ({
     id: t.id,
@@ -56,6 +56,7 @@ export default async function TasksPage() {
     isFieldTrip: t.isFieldTrip,
     location: t.location,
     createdAt: t.createdAt.toISOString(),
+    version: t.version,
   }));
 
   const projectOptions: ProjectOption[] = projects.map((p) => ({
@@ -72,13 +73,18 @@ export default async function TasksPage() {
     email: tm.user.email ?? tm.user.username,
   }));
 
+  // Deep link from the Projects page (/tasks?project=<id>); an id that is not
+  // one of the caller's projects is ignored.
+  const initialProjectId =
+    projectParam && projectOptions.some((p) => p.id === projectParam) ? projectParam : "";
+
   return (
     <TasksClient
       tasks={taskRows}
       projects={projectOptions}
-      teams={teams}
       teamMembers={members}
       currentUserId={user.id}
+      initialProjectId={initialProjectId}
     />
   );
 }

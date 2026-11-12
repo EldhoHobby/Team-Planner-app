@@ -11,19 +11,6 @@ export function addDays(d: Date, n: number): Date {
   return new Date(d.getTime() + n * MS_PER_DAY);
 }
 
-/** First day of the month containing `d` (UTC midnight). */
-export function startOfMonth(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
-
-/** Monday of the week containing `d` (UTC midnight). Used for Mon–Fri capacity. */
-export function startOfWeekMonday(d: Date): Date {
-  const m = toUtcMidnight(d);
-  const day = m.getUTCDay(); // 0 = Sun … 6 = Sat
-  const diff = day === 0 ? -6 : 1 - day;
-  return addDays(m, diff);
-}
-
 /** Sunday of the week containing `d` (UTC midnight). Default display week start. */
 export function startOfWeekSunday(d: Date): Date {
   const m = toUtcMidnight(d);
@@ -119,35 +106,4 @@ export function computeConflicts(jobs: JobLite[]): Set<string> {
     }
   }
   return conflicting;
-}
-
-/**
- * Distinct working days (Mon–Fri) a technician is booked within the given week.
- * Returns a map of technicianId → booked day count (0–`workingDays`).
- */
-export function weeklyCapacity(
-  jobs: JobLite[],
-  weekStartMonday: Date,
-  workingDays = 5,
-): Map<string, number> {
-  const result = new Map<string, number>();
-  const days = Array.from({ length: workingDays }, (_, i) => addDays(weekStartMonday, i));
-
-  const byTech = new Map<string, JobLite[]>();
-  for (const j of jobs) {
-    if (!j.technicianId) continue;
-    (byTech.get(j.technicianId) ?? byTech.set(j.technicianId, []).get(j.technicianId)!).push(j);
-  }
-
-  for (const [techId, list] of byTech) {
-    let booked = 0;
-    for (const day of days) {
-      const covered = list.some(
-        (j) => j.start.getTime() <= day.getTime() && day.getTime() <= j.end.getTime(),
-      );
-      if (covered) booked++;
-    }
-    result.set(techId, booked);
-  }
-  return result;
 }

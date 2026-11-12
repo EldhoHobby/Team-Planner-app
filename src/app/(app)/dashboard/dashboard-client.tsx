@@ -1,159 +1,27 @@
 "use client";
 
-import { useEffect, useState, useTransition, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { Plus, X, Trash2, ChevronDown, ChevronRight, CalendarClock, AlertTriangle, List, LayoutGrid, MessageSquare } from "lucide-react";
+import { Plus, Trash2, CalendarX, List, LayoutGrid } from "lucide-react";
 import { KanbanBoard } from "./kanban-board";
 import { TaskTicket } from "./task-ticket";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { DatePicker } from "@/components/ui/date-picker";
-import { todayUtcMs } from "@/lib/tz";
-import {
-  createTechTaskAction,
-  updateTechTaskAction,
-  setTechTaskStateAction,
-  deleteTechTaskAction,
-} from "./actions";
-import type {
-  DashboardData,
-  JobRow,
-  OwnerGroup,
-  OwnerLite,
-  TechTaskRow,
-  TechTaskState,
-  TaskOrigin,
-} from "@/lib/services/tech-tasks";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import { PageHeader } from "@/components/ui/page-header";
+import { restoreTechTaskAction, listDeletedTechTasksAction } from "./actions";
+import { DELETED_KEEP_DAYS } from "@/lib/db/soft-delete";
+import { UndoNotice, type UndoNoticeState } from "@/components/ui/undo-notice";
+import { RecentlyDeletedDialog } from "@/components/ui/recently-deleted-dialog";
+import type { DashboardData, TechTaskRow } from "@/lib/services/tech-tasks";
+import { dueStatus, type AttentionFilter, type DueFilter, type JobFilter } from "./task-rules";
+import { AttentionStrip } from "./attention-strip";
+import { AssignedByMeSection } from "./assigned-by-me";
+import { OwnerSection } from "./owner-section";
+import { JobItem, JobPoolSection } from "./job-lists";
+import { CreateModal } from "./create-task-modal";
 
-export const STATES: TechTaskState[] = ["NEW", "TODO", "IN_PROGRESS", "HOLD", "DONE"];
-export const STATE_LABELS: Record<TechTaskState, string> = {
-  NEW: "New",
-  TODO: "To Do",
-  IN_PROGRESS: "In Progress",
-  HOLD: "Hold",
-  DONE: "Done",
-};
-export const STATE_COLORS: Record<TechTaskState, string> = {
-  NEW: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-  TODO: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
-  IN_PROGRESS: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300",
-  HOLD: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
-  DONE: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-};
-// Subtle full-row tints so state reads at a glance (NEW/TODO stay neutral).
-const STATE_ROW_TINT: Record<TechTaskState, string> = {
-  NEW: "",
-  TODO: "",
-  IN_PROGRESS: "bg-indigo-50/60 dark:bg-indigo-950/30",
-  HOLD: "bg-amber-50/70 dark:bg-amber-950/30",
-  DONE: "bg-green-50/60 dark:bg-green-950/30",
-};
-
-export const ORIGIN_LABELS: Record<TaskOrigin, string> = {
-  SELF: "Self",
-  MANAGER: "Assigned",
-  OUTLOOK: "Outlook",
-};
-const JOB_TYPE_LABELS: Record<string, string> = {
-  COMMISSIONING: "Commissioning",
-  TRAINING: "Training",
-  ANNUAL_MAINTENANCE: "Annual Maint.",
-  EMERGENCY_SUPPORT: "Emergency",
-};
-
-const SELECT_CLASS =
-  "flex h-9 w-full items-center rounded-md border border-input bg-transparent px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-const CELL_INPUT =
-  "w-full rounded border border-transparent bg-transparent px-1.5 py-1 text-sm hover:border-input focus:border-input focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-export type DueStatus = "overdue" | "soon" | "none";
-/** Compare calendar days: overdue if target < today, "soon" if within 2 days.
- *  "Today" is the Eastern date, so the server and browser renders agree. */
-export function dueStatus(targetIso: string | null, state: TechTaskState): DueStatus {
-  if (!targetIso || state === "DONE") return "none";
-  const todayUTC = todayUtcMs();
-  const t = new Date(targetIso);
-  const targetUTC = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
-  const diffDays = Math.round((targetUTC - todayUTC) / 86_400_000);
-  if (diffDays < 0) return "overdue";
-  if (diffDays <= 2) return "soon";
-  return "none";
-}
-
-// ── Column sorting (per person section) ──
-type SortKey = "priority" | "title" | "target" | "state";
-type SortSpec = { key: SortKey | null; dir: 1 | -1 };
-
-function sortTasks(tasks: TechTaskRow[], sort: SortSpec): TechTaskRow[] {
-  if (!sort.key) return tasks; // server default: priority → target date
-  const val = (t: TechTaskRow): string | number => {
-    switch (sort.key) {
-      case "priority": return t.priority;
-      case "title": return t.title.toLowerCase();
-      case "target": return t.targetDate ?? "9999-12-31";
-      case "state": return STATES.indexOf(t.state);
-      default: return 0;
-    }
-  };
-  return [...tasks].sort((a, b) => {
-    const av = val(a); const bv = val(b);
-    return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
-  });
-}
-
-function SortHeader({
-  label,
-  k,
-  sort,
-  onSort,
-  className = "",
-}: {
-  label: string;
-  k: SortKey;
-  sort: SortSpec;
-  onSort: (s: SortSpec) => void;
-  className?: string;
-}) {
-  const active = sort.key === k;
-  const next = () =>
-    onSort(active ? (sort.dir === 1 ? { key: k, dir: -1 } : { key: null, dir: 1 }) : { key: k, dir: 1 });
-  return (
-    <th className={`px-2 py-1.5 text-left ${className}`}>
-      <button
-        onClick={next}
-        className={`inline-flex items-center gap-0.5 hover:text-foreground ${active ? "font-semibold text-foreground" : ""}`}
-        title="Sort (click again to reverse; third click resets)"
-      >
-        {label}
-        {active ? (sort.dir === 1 ? "▲" : "▼") : null}
-      </button>
-    </th>
-  );
-}
-
-/** Enter commits (blur), Escape reverts to the original value then blurs. */
-function editKeys(reset: () => void) {
-  return (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") e.currentTarget.blur();
-    else if (e.key === "Escape") {
-      reset();
-      // Blur AFTER the state reset so the blur-commit sees the original value.
-      requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
-    }
-  };
-}
+/** Completed tasks load in windows of this many days — matches COMPLETED_WINDOW_DAYS in tech-tasks.ts. */
+const COMPLETED_STEP_DAYS = 90;
 
 export function DashboardClient({
   data,
@@ -165,7 +33,10 @@ export function DashboardClient({
   isAdmin: boolean;
 }) {
   const router = useRouter();
-  const [showDone, setShowDone] = useState(false);
+  const confirm = useConfirm();
+  // Opened with a wider completed window (?done=…, "Load older completed
+  // tasks") → the viewer is looking at completed work, so start with it shown.
+  const [showDone, setShowDone] = useState(data.completedDays > COMPLETED_STEP_DAYS);
   const [createOpen, setCreateOpen] = useState(false);
   const [createOwner, setCreateOwner] = useState(currentUserId);
 
@@ -183,6 +54,15 @@ export function DashboardClient({
   };
 
   const refresh = () => router.refresh();
+  // "Deleted … — Undo" right after a delete, and the "Recently deleted" dialog.
+  const [deletedNotice, setDeletedNotice] = useState<UndoNoticeState | null>(null);
+  const [binOpen, setBinOpen] = useState(false);
+  const onTaskDeleted = (t: { id: string; title: string }) =>
+    setDeletedNotice({
+      id: Date.now(),
+      text: `Deleted “${t.title}”`,
+      undo: () => restoreTechTaskAction({ id: t.id }),
+    });
   const openNew = (ownerId: string) => {
     setCreateOwner(ownerId);
     setCreateOpen(true);
@@ -204,67 +84,156 @@ export function DashboardClient({
         break;
       }
     }
+    if (!ticketTask) {
+      const a = data.assignedByMe.find((x) => x.task.id === ticketId);
+      if (a) {
+        ticketTask = a.task;
+        ticketOwner = a.ownerName;
+      }
+    }
   }
+
+  // Reassigning from the ticket to someone outside this dashboard makes the
+  // task vanish from `data`. Keep showing the last copy while we say where it
+  // went ("Reassigned to <name>"), then close — never close silently.
+  const [heldTicketId, setHeldTicketId] = useState<string | null>(null);
+  const ticketSnapshot = useRef<{ task: TechTaskRow; owner: string } | null>(null);
+  if (ticketTask) ticketSnapshot.current = { task: ticketTask, owner: ticketOwner };
+  const shownTicket = ticketTask
+    ? { task: ticketTask, owner: ticketOwner }
+    : ticketId && heldTicketId === ticketId && ticketSnapshot.current?.task.id === ticketId
+      ? ticketSnapshot.current
+      : null;
+  // Gone for any other reason (deleted / moved elsewhere): just close it.
+  const ticketVisible = shownTicket !== null;
+  useEffect(() => {
+    if (ticketId && !ticketVisible) setTicketId(null);
+  }, [ticketId, ticketVisible]);
+
+  const visibleOwnerIds = new Set(data.groups.map((g) => g.owner.id));
+  const handleReassign = async (newOwnerId: string, newOwnerName: string, save: () => Promise<boolean>) => {
+    const id = ticketId;
+    setHeldTicketId(id);
+    try {
+      const ok = await save();
+      if (ok && !visibleOwnerIds.has(newOwnerId)) {
+        // The reassigner becomes the task's "assigned by", so it stays reachable.
+        await confirm({
+          title: `Reassigned to ${newOwnerName}`,
+          message: `${newOwnerName} has this task now. You'll find it under "Assigned by me" on your dashboard.`,
+          alert: true,
+        });
+        setTicketId((cur) => (cur === id ? null : cur));
+      }
+    } finally {
+      setHeldTicketId(null);
+    }
+  };
 
   const hasTeam = data.groups.length > 1;
 
-  // Due summary across everyone's open items.
-  const allOpen = data.groups.flatMap((g) => g.open);
+  // "Needs attention" counts — everything here is limited to what this viewer's
+  // dashboard shows (themselves + the people they manage), plus the tasks they
+  // assigned to others. The strip's chips set ONE page filter.
+  const assignedOpen = data.assignedByMe.filter((a) => a.task.state !== "DONE");
+  const allOpen = [...data.groups.flatMap((g) => g.open), ...assignedOpen.map((a) => a.task)];
   const overdueCount = allOpen.filter((t) => dueStatus(t.targetDate, t.state) === "overdue").length;
   const soonCount = allOpen.filter((t) => dueStatus(t.targetDate, t.state) === "soon").length;
-  const scrollToDue = (kind: "overdue" | "soon") => {
-    document.querySelector(`[data-due="${kind}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  };
+  // Only jobs with NO person (the pool also holds jobs of people outside this
+  // view). Counted for admins and managers — the people who hand out work; a
+  // plain member's strip only counts their own items (the pool stays visible).
+  const unassignedJobs = data.pool.filter((j) => !j.technicianId);
+  const countUnassigned = isAdmin || hasTeam;
+  const conflictJobs = data.groups.flatMap((g) => g.jobs.filter((j) => j.conflict));
+  const [attention, setAttention] = useState<AttentionFilter>(null);
+  const toggleAttention = (kind: Exclude<AttentionFilter, null>) => setAttention((f) => (f === kind ? null : kind));
+  const dueFilter: DueFilter = attention === "overdue" || attention === "soon" ? attention : null;
+  const jobFilter: JobFilter = attention === "unassigned" || attention === "conflict" ? attention : null;
+
+  // Bring the unassigned-jobs pool into view when that chip is turned on.
+  const poolRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (attention === "unassigned") poolRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [attention]);
+
+  // Polite auto-refresh (same rules as the Schedule): every 60 s while the tab
+  // is visible, and on returning to the tab — but never while a dialog is open,
+  // a field has focus or a card is being dragged, so it can't disturb editing.
+  const draggingRef = useRef(false);
+  const busyRef = useRef(false);
+  busyRef.current = createOpen || ticketId !== null || binOpen;
+  useEffect(() => {
+    const onDragStart = () => { draggingRef.current = true; };
+    const onDragEnd = () => { draggingRef.current = false; };
+    const idle = () => {
+      if (draggingRef.current || busyRef.current) return false;
+      if (document.visibilityState !== "visible") return false;
+      if (document.querySelector("dialog[open]")) return false;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))) return false;
+      return true;
+    };
+    const tick = () => {
+      if (idle()) router.refresh();
+    };
+    const id = setInterval(tick, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    document.addEventListener("dragstart", onDragStart);
+    document.addEventListener("dragend", onDragEnd);
+    document.addEventListener("drop", onDragEnd);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("dragstart", onDragStart);
+      document.removeEventListener("dragend", onDragEnd);
+      document.removeEventListener("drop", onDragEnd);
+    };
+  }, [router]);
+
+  const loadOlderCompleted = () =>
+    router.push(`/dashboard?done=${data.completedDays + COMPLETED_STEP_DAYS}`, { scroll: false });
 
   return (
-    <main className="mx-auto max-w-5xl space-y-6 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            Open items{hasTeam ? " for you and your team" : ""} — edit any cell inline.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
+    <div className="mx-auto max-w-5xl space-y-6 p-4">
+      <PageHeader
+        className="mb-0"
+        title="Dashboard"
+        description={
+          <>
+            Open tasks{hasTeam ? " for you and the people you manage" : ""} — change priority, target date and
+            state right in the list; click a task to edit its details and discuss it.
+          </>
+        }
+        actions={
+          <>
           {/* List | Board toggle */}
-          <div className="flex overflow-hidden rounded-md border">
+          <div className="flex overflow-hidden rounded-md border" role="group" aria-label="View">
             <button
+              type="button"
+              aria-pressed={view === "list"}
               onClick={() => switchView("list")}
               className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${
                 view === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
               }`}
               title="List view"
             >
-              <List className="h-3.5 w-3.5" /> List
+              <List className="h-3.5 w-3.5" aria-hidden /> List
             </button>
             <button
+              type="button"
+              aria-pressed={view === "board"}
               onClick={() => switchView("board")}
               className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${
                 view === "board" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
               }`}
               title="Board view"
             >
-              <LayoutGrid className="h-3.5 w-3.5" /> Board
+              <LayoutGrid className="h-3.5 w-3.5" aria-hidden /> Board
             </button>
           </div>
-          {overdueCount > 0 ? (
-            <button
-              onClick={() => scrollToDue("overdue")}
-              className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300"
-              title="Jump to the first overdue item"
-            >
-              <AlertTriangle className="h-3.5 w-3.5" /> {overdueCount} overdue
-            </button>
-          ) : null}
-          {soonCount > 0 ? (
-            <button
-              onClick={() => scrollToDue("soon")}
-              className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300"
-              title="Jump to the first item due soon"
-            >
-              <CalendarClock className="h-3.5 w-3.5" /> {soonCount} due soon
-            </button>
-          ) : null}
           {view === "list" ? (
             <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
               <input
@@ -276,29 +245,120 @@ export function DashboardClient({
               Show completed
             </label>
           ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            title={`Tasks deleted in the last ${DELETED_KEEP_DAYS} days — restore one`}
+            onClick={() => setBinOpen(true)}
+          >
+            <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />
+            Recently deleted
+          </Button>
           <Button size="sm" onClick={() => openNew(currentUserId)}>
             <Plus className="mr-1.5 h-4 w-4" />
-            New item
+            New task
           </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      {view === "board" ? (
-        <KanbanBoard groups={data.groups} onOpenTask={setTicketId} />
+      <AttentionStrip
+        overdue={overdueCount}
+        soon={soonCount}
+        unassigned={countUnassigned ? unassignedJobs.length : 0}
+        conflicts={conflictJobs.length}
+        active={attention}
+        onToggle={toggleAttention}
+        onClear={() => setAttention(null)}
+      />
+
+      {attention ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          {attention === "overdue"
+            ? "Showing only tasks that are overdue."
+            : attention === "soon"
+              ? "Showing only tasks due in the next 2 days."
+              : attention === "unassigned"
+                ? "Showing only jobs that nobody is assigned to."
+                : "Showing only double-booked jobs — open one to fix it on the Schedule board."}{" "}
+          <button type="button" onClick={() => setAttention(null)} className="font-medium text-foreground underline">
+            Show everything
+          </button>
+        </p>
+      ) : null}
+
+      {jobFilter === "conflict" ? (
+        <section className="overflow-hidden rounded-md border">
+          <h2 className="flex items-center gap-1.5 border-b bg-muted/40 px-4 py-2 text-sm font-semibold">
+            <CalendarX className="h-4 w-4 text-orange-600 dark:text-orange-400" aria-hidden />
+            Double-booked jobs
+            <span className="text-xs font-normal text-muted-foreground">{conflictJobs.length}</span>
+          </h2>
+          {conflictJobs.length === 0 ? (
+            <p className="px-4 py-4 text-center text-sm text-muted-foreground">No double-booked jobs.</p>
+          ) : (
+            <ul className="divide-y px-4">
+              {conflictJobs.map((j) => (
+                <JobItem key={j.id} job={j} />
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : jobFilter === "unassigned" ? null : view === "board" ? (
+        <KanbanBoard groups={data.groups} onOpenTask={setTicketId} dueFilter={dueFilter} />
       ) : (
-        data.groups.map((g) => (
-          <OwnerSection key={g.owner.id} group={g} showDone={showDone} onAdd={openNew} refresh={refresh} onOpenTask={setTicketId} />
-        ))
+        <>
+          {data.groups.map((g) => (
+            <OwnerSection
+              key={g.owner.id}
+              group={g}
+              showDone={showDone}
+              dueFilter={dueFilter}
+              onAdd={openNew}
+              refresh={refresh}
+              onOpenTask={setTicketId}
+              onDeleted={onTaskDeleted}
+            />
+          ))}
+        </>
       )}
 
+      {jobFilter ? null : (
+        <AssignedByMeSection
+          rows={data.assignedByMe}
+          showDone={showDone && view === "list"}
+          dueFilter={dueFilter}
+          onOpenTask={setTicketId}
+        />
+      )}
+
+      {showDone && view === "list" && !attention ? (
+        <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
+          <span>Showing tasks completed in the last {data.completedDays} days.</span>
+          {data.hasOlderCompleted ? (
+            <Button variant="outline" size="sm" onClick={loadOlderCompleted}>
+              Load older completed tasks
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Extra breathing room so the shared pool reads as separate from people. */}
-      <div className="pt-6">
-        <JobPoolSection pool={data.pool} />
-      </div>
+      {jobFilter === "conflict" ? null : (
+        <div ref={poolRef} className={jobFilter === "unassigned" ? "scroll-mt-4" : "pt-6"}>
+          <JobPoolSection
+            pool={jobFilter === "unassigned" ? unassignedJobs : data.pool}
+            onlyUnassigned={jobFilter === "unassigned"}
+          />
+        </div>
+      )}
 
       {createOpen ? (
+        // Mounted only while open, so every "New task" starts empty.
         <CreateModal
-          owners={data.owners}
+          // Anyone may create a task for any active person in the org.
+          owners={data.people}
+          currentUserId={currentUserId}
           defaultOwner={createOwner}
           onClose={() => setCreateOpen(false)}
           onSaved={() => {
@@ -308,519 +368,36 @@ export function DashboardClient({
         />
       ) : null}
 
-      {ticketTask ? (
+      {shownTicket ? (
         <TaskTicket
-          task={ticketTask}
-          ownerName={ticketOwner}
+          task={shownTicket.task}
+          ownerName={shownTicket.owner}
           people={data.people}
           currentUserId={currentUserId}
           isAdmin={isAdmin}
           onClose={() => setTicketId(null)}
+          onReassign={handleReassign}
+          onDeleted={onTaskDeleted}
         />
       ) : null}
-    </main>
-  );
-}
 
-function OwnerSection({
-  group,
-  showDone,
-  onAdd,
-  refresh,
-  onOpenTask,
-}: {
-  group: OwnerGroup;
-  showDone: boolean;
-  onAdd: (ownerId: string) => void;
-  refresh: () => void;
-  onOpenTask: (taskId: string) => void;
-}) {
-  const g = group;
-
-  // Collapsible per person, remembered per browser. Own section starts open.
-  const storageKey = `dashboard.collapsed.${g.owner.id}`;
-  const [collapsed, setCollapsed] = useState(false);
-  useEffect(() => {
-    try {
-      if (localStorage.getItem(storageKey) === "1") setCollapsed(true);
-    } catch { /* ignore */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const toggle = () =>
-    setCollapsed((c) => {
-      const next = !c;
-      try {
-        if (next) localStorage.setItem(storageKey, "1");
-        else localStorage.removeItem(storageKey);
-      } catch { /* ignore */ }
-      return next;
-    });
-
-  // Sortable columns (default: server order = priority → target date).
-  const [sort, setSort] = useState<SortSpec>({ key: null, dir: 1 });
-  const sortedOpen = sortTasks(g.open, sort);
-
-  // Per-person health chips — a manager can scan team state without expanding.
-  const overdue = g.open.filter((t) => dueStatus(t.targetDate, t.state) === "overdue").length;
-  const soon = g.open.filter((t) => dueStatus(t.targetDate, t.state) === "soon").length;
-  const inProgress = g.open.filter((t) => t.state === "IN_PROGRESS").length;
-  const hold = g.open.filter((t) => t.state === "HOLD").length;
-
-  return (
-    <section className="overflow-hidden rounded-md border">
-      <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-4 py-2">
-        <button onClick={toggle} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={!collapsed}>
-          {collapsed ? (
-            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-          )}
-          <h2 className="truncate text-sm font-semibold">
-            {g.owner.isSelf ? "My tasks" : g.owner.name ?? g.owner.email}
-            <span className="ml-2 text-xs font-normal text-muted-foreground">
-              {g.open.length} open{g.jobs.length ? ` · ${g.jobs.length} job${g.jobs.length === 1 ? "" : "s"}` : ""}
-            </span>
-          </h2>
-          <span className="ml-1 flex shrink-0 flex-wrap items-center gap-1">
-            {overdue > 0 ? (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/50 dark:text-red-300">
-                <AlertTriangle className="h-2.5 w-2.5" /> {overdue} overdue
-              </span>
-            ) : null}
-            {soon > 0 ? (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
-                <CalendarClock className="h-2.5 w-2.5" /> {soon} due soon
-              </span>
-            ) : null}
-            {inProgress > 0 ? (
-              <span className="inline-flex items-center rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300">
-                {inProgress} in progress
-              </span>
-            ) : null}
-            {hold > 0 ? (
-              <span className="inline-flex items-center rounded-full bg-amber-100/70 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-                {hold} on hold
-              </span>
-            ) : null}
-          </span>
-        </button>
-        <Button variant="ghost" size="sm" onClick={() => onAdd(g.owner.id)}>
-          <Plus className="mr-1 h-3.5 w-3.5" />
-          Add
-        </Button>
-      </div>
-
-      {collapsed ? null : (
-        <>
-          {g.open.length === 0 ? (
-            <p className="px-4 py-4 text-center text-sm text-muted-foreground">Nothing open.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b bg-muted/20 text-xs text-muted-foreground">
-                    <SortHeader label="Pri" k="priority" sort={sort} onSort={setSort} className="w-16 text-center" />
-                    <SortHeader label="Task" k="title" sort={sort} onSort={setSort} />
-                    <SortHeader label="Target" k="target" sort={sort} onSort={setSort} className="w-40" />
-                    <SortHeader label="State" k="state" sort={sort} onSort={setSort} className="w-32" />
-                    <th className="w-9 px-1 py-1.5"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedOpen.map((t) => (
-                    <EditableRow key={t.id} task={t} refresh={refresh} onOpen={() => onOpenTask(t.id)} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {g.jobs.length > 0 ? <JobList title="Scheduled jobs" jobs={g.jobs} /> : null}
-
-          {showDone && g.completedWeeks.length > 0 ? (
-            <CompletedWeeks weeks={g.completedWeeks} refresh={refresh} />
-          ) : null}
-        </>
-      )}
-    </section>
-  );
-}
-
-function EditableRow({ task, refresh, onOpen }: { task: TechTaskRow; refresh: () => void; onOpen: () => void }) {
-  const [pending, startTransition] = useTransition();
-  const [priority, setPriority] = useState(String(task.priority));
-  const [target, setTarget] = useState(task.targetDate ? task.targetDate.slice(0, 10) : "");
-
-  const save = (patch: Parameters<typeof updateTechTaskAction>[0]) =>
-    startTransition(async () => {
-      await updateTechTaskAction(patch);
-      refresh();
-    });
-
-  const commitPriority = () => {
-    const n = Number(priority) || task.priority;
-    if (n !== task.priority) save({ id: task.id, priority: n });
-  };
-  const commitTarget = (v: string) => {
-    setTarget(v);
-    save({ id: task.id, targetDate: v || null });
-  };
-  const changeState = (state: TechTaskState) =>
-    startTransition(async () => {
-      await setTechTaskStateAction({ id: task.id, state });
-      refresh();
-    });
-  const remove = () =>
-    startTransition(async () => {
-      if (!confirm(`Delete "${task.title}"?`)) return;
-      await deleteTechTaskAction({ id: task.id });
-      refresh();
-    });
-
-  const due = dueStatus(task.targetDate, task.state);
-  const barClass =
-    due === "overdue" ? "border-l-2 border-l-red-500" : due === "soon" ? "border-l-2 border-l-amber-500" : "";
-
-  return (
-    <tr
-      data-due={due !== "none" ? due : undefined}
-      className={`group border-b align-top last:border-0 hover:bg-muted/20 ${STATE_ROW_TINT[task.state]} ${pending ? "opacity-60" : ""}`}
-    >
-      <td className={`px-1 py-1.5 ${barClass}`}>
-        <input
-          type="number"
-          min={1}
-          value={priority}
-          onChange={(e) => setPriority(e.target.value)}
-          onBlur={commitPriority}
-          onKeyDown={editKeys(() => setPriority(String(task.priority)))}
-          // Spinner arrows hidden so up to 3 digits stay fully visible.
-          className={`${CELL_INPUT} min-w-14 text-center tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
-          aria-label="Priority"
+      {binOpen ? (
+        <RecentlyDeletedDialog
+          noun="task"
+          load={listDeletedTechTasksAction}
+          restore={(id) => restoreTechTaskAction({ id })}
+          onRestored={refresh}
+          onClose={() => setBinOpen(false)}
         />
-      </td>
-      <td className="px-1 py-1.5">
-        <button
-          type="button"
-          onClick={onOpen}
-          title="Open ticket — details, comments & history"
-          className="w-full rounded px-1.5 py-1 text-left text-sm font-medium hover:bg-muted/40 hover:underline"
-        >
-          {task.title}
-        </button>
-        <div className="flex items-center gap-1.5 px-1.5">
-          <span className="inline-flex rounded-full bg-slate-100 px-1.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-            {ORIGIN_LABELS[task.origin]}
-          </span>
-          {task.commentCount > 0 ? (
-            <button
-              type="button"
-              onClick={onOpen}
-              title={`${task.commentCount} comment(s) — open the discussion`}
-              className="inline-flex items-center gap-0.5 rounded-full bg-blue-100 px-1.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-200 dark:bg-blue-900/50 dark:text-blue-300"
-            >
-              <MessageSquare className="h-2.5 w-2.5" /> {task.commentCount}
-            </button>
-          ) : null}
-        </div>
-        {task.notes ? (
-          <p className="whitespace-pre-wrap break-words px-1.5 pt-0.5 text-xs text-muted-foreground">
-            {task.notes}
-          </p>
-        ) : null}
-      </td>
-      <td className="px-1 py-1.5">
-        <DatePicker value={target} onChange={commitTarget} placeholder="Set date" className="h-8 text-xs" />
-        {due === "overdue" ? (
-          <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/50 dark:text-red-300">
-            <AlertTriangle className="h-3 w-3" /> Overdue
-          </span>
-        ) : due === "soon" ? (
-          <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
-            <CalendarClock className="h-3 w-3" /> Due soon
-          </span>
-        ) : null}
-      </td>
-      <td className="px-2 py-1.5">
-        {/* Inline state dropdown — no popup. Coloured like the old pill. */}
-        <select
-          value={task.state}
-          onChange={(e) => changeState(e.target.value as TechTaskState)}
-          className={`h-7 w-full cursor-pointer rounded-full border-0 px-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${STATE_COLORS[task.state]}`}
-          aria-label="State"
-        >
-          {STATES.map((s) => (
-            <option key={s} value={s}>
-              {STATE_LABELS[s]}
-            </option>
-          ))}
-        </select>
-      </td>
-      <td className="px-1 py-1.5 text-center">
-        <button
-          onClick={remove}
-          className="rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100"
-          title="Delete item"
-          aria-label="Delete item"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
-      </td>
-    </tr>
-  );
-}
-
-function CompletedWeeks({ weeks, refresh }: { weeks: OwnerGroup["completedWeeks"]; refresh: () => void }) {
-  const [collapsed, setCollapsed] = useState(false);
-  return (
-    <div className="border-t bg-muted/10">
-      <button
-        onClick={() => setCollapsed((c) => !c)}
-        className="flex w-full items-center gap-1 px-4 py-2 text-xs font-medium text-muted-foreground hover:text-foreground"
-      >
-        {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-        Completed ({weeks.reduce((n, w) => n + w.tasks.length, 0)})
-      </button>
-      {!collapsed
-        ? weeks.map((w) => (
-            <div key={w.weekStart} className="px-4 pb-2">
-              <p className="py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                {w.label}
-              </p>
-              <ul className="divide-y">
-                {w.tasks.map((t) => (
-                  <li key={t.id} className="flex items-center gap-2 py-1.5 text-sm">
-                    <input
-                      type="checkbox"
-                      checked
-                      onChange={() => startReopen(t.id, refresh)}
-                      className="h-4 w-4 accent-primary"
-                      title="Reopen"
-                    />
-                    <span className="tabular-nums text-xs text-muted-foreground">#{t.priority}</span>
-                    <span className="flex-1 text-muted-foreground line-through">{t.title}</span>
-                    {t.completedAt ? (
-                      <span className="text-xs text-muted-foreground">{fmtDate(t.completedAt)}</span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))
-        : null}
-    </div>
-  );
-}
-
-// Reopen a completed item (checkbox in the completed list). Kept outside the
-// component so it can be called from the map without a per-row transition hook.
-function startReopen(id: string, refresh: () => void) {
-  void setTechTaskStateAction({ id, state: "TODO" }).then(refresh);
-}
-
-function JobList({ title, jobs }: { title: string; jobs: JobRow[] }) {
-  return (
-    <div className="border-t bg-muted/10 px-4 py-2">
-      <p className="py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
-      <ul className="divide-y">
-        {jobs.map((j) => (
-          <JobItem key={j.id} job={j} />
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function JobItem({ job }: { job: JobRow }) {
-  const badge =
-    job.bucket === "TENTATIVE"
-      ? "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
-      : job.bucket === "UNSCHEDULED"
-        ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-        : "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300";
-  const bucketLabel = job.bucket === "TENTATIVE" ? "Tentative" : job.bucket === "UNSCHEDULED" ? "Unscheduled" : "Scheduled";
-
-  // Deep-link to the Schedule board: filter to this tech, jump to the job's week.
-  const params = new URLSearchParams();
-  if (job.technicianId) params.set("tech", job.technicianId);
-  if (job.startDate) params.set("date", job.startDate.slice(0, 10));
-  const href = `/schedule${params.size ? `?${params.toString()}` : ""}`;
-
-  return (
-    <li>
-      <Link
-        href={href}
-        title="Open on the Schedule board"
-        className="flex flex-wrap items-center gap-2 rounded px-1 py-1.5 text-sm hover:bg-muted/40"
-      >
-        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge}`}>{bucketLabel}</span>
-        <span className="w-24 text-xs text-muted-foreground">{fmtDate(job.startDate)}</span>
-        <span className="font-medium">{job.title}</span>
-        {job.customerName ? <span className="text-xs text-muted-foreground">· {job.customerName}</span> : null}
-        {job.soNumber ? <span className="text-xs text-muted-foreground">· SO {job.soNumber}</span> : null}
-        {job.jobType ? (
-          <span className="text-xs text-muted-foreground">· {JOB_TYPE_LABELS[job.jobType] ?? job.jobType}</span>
-        ) : null}
-        {job.technicianName ? <span className="ml-auto text-xs text-muted-foreground">{job.technicianName}</span> : null}
-      </Link>
-    </li>
-  );
-}
-
-function JobPoolSection({ pool }: { pool: JobRow[] }) {
-  // Collapsed on launch (remembered per browser) — it's reference info, not the
-  // viewer's own work. The header count keeps it glanceable while closed.
-  const [collapsed, setCollapsed] = useState(true);
-  useEffect(() => {
-    try {
-      if (localStorage.getItem("dashboard.pool.open") === "1") setCollapsed(false);
-    } catch { /* ignore */ }
-  }, []);
-  const toggle = () =>
-    setCollapsed((c) => {
-      const next = !c;
-      try {
-        if (next) localStorage.removeItem("dashboard.pool.open");
-        else localStorage.setItem("dashboard.pool.open", "1");
-      } catch { /* ignore */ }
-      return next;
-    });
-
-  if (pool.length === 0) return null;
-  return (
-    <section className="overflow-hidden rounded-md border">
-      <button onClick={toggle} className="w-full border-b bg-muted/40 px-4 py-2 text-left" aria-expanded={!collapsed}>
-        <h2 className="flex items-center gap-1.5 text-sm font-semibold">
-          {collapsed ? (
-            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-          )}
-          Other jobs — unassigned or other technicians
-          <span className="text-xs font-normal text-muted-foreground">{pool.length}</span>
-        </h2>
-        <p className="pl-5 text-xs text-muted-foreground">
-          Scheduled, tentative and unscheduled work that isn&apos;t assigned to anyone in your view. Manage on the Schedule board.
-        </p>
-      </button>
-      {collapsed ? null : (
-        <ul className="divide-y px-4">
-          {pool.map((j) => (
-            <JobItem key={j.id} job={j} />
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function CreateModal({
-  owners,
-  defaultOwner,
-  onClose,
-  onSaved,
-}: {
-  owners: OwnerLite[];
-  defaultOwner: string;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [pending, startTransition] = useTransition();
-  const [ownerId, setOwnerId] = useState(defaultOwner);
-  const [title, setTitle] = useState("");
-  const [priority, setPriority] = useState(3);
-  const [state, setState] = useState<TechTaskState>("NEW");
-  const [targetDate, setTargetDate] = useState("");
-  const [location, setLocation] = useState("");
-  const [notes, setNotes] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const save = () =>
-    startTransition(async () => {
-      setError(null);
-      const res = await createTechTaskAction({
-        ownerId,
-        title,
-        notes,
-        priority,
-        targetDate: targetDate || null,
-        state,
-        location,
-      });
-      if (res.error) setError(res.error);
-      else onSaved();
-    });
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
-      <div className="w-full max-w-lg rounded-xl border bg-background shadow-lg" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b px-5 py-3">
-          <h2 className="text-base font-semibold">New item</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="space-y-4 p-5">
-          <div className="space-y-2">
-            <Label>For</Label>
-            <select className={SELECT_CLASS} value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
-              {owners.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.id === defaultOwner ? `${o.name ?? o.email} (me)` : o.name ?? o.email}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-2">
-            <Label>Task</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing?" autoFocus />
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-2">
-              <Label>Priority</Label>
-              <Input type="number" min={1} value={priority} onChange={(e) => setPriority(Number(e.target.value) || 1)} />
-            </div>
-            <div className="space-y-2">
-              <Label>State</Label>
-              <select className={SELECT_CLASS} value={state} onChange={(e) => setState(e.target.value as TechTaskState)}>
-                {STATES.map((s) => (
-                  <option key={s} value={s}>
-                    {STATE_LABELS[s]}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-2">
-              <Label>Target</Label>
-              <DatePicker value={targetDate} onChange={setTargetDate} placeholder="Optional" />
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label>
-              Contact / other details <span className="font-normal text-muted-foreground">(optional)</span>
-            </Label>
-            <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Site contact, phone, PO number…" />
-          </div>
-          <div className="space-y-2">
-            <Label>Notes</Label>
-            <textarea
-              rows={3}
-              className="w-full rounded-md border border-input bg-transparent p-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-            />
-          </div>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
-          <div className="flex items-center gap-2">
-            <Button onClick={save} disabled={pending || !title.trim()} className="flex-1">
-              {pending ? "Saving…" : "Create"}
-            </Button>
-            <Button variant="outline" onClick={onClose} type="button">
-              Cancel
-            </Button>
-          </div>
-        </div>
-      </div>
+      ) : null}
+      {deletedNotice ? (
+        <UndoNotice
+          key={deletedNotice.id}
+          notice={deletedNotice}
+          onClose={() => setDeletedNotice(null)}
+          onUndone={refresh}
+        />
+      ) : null}
     </div>
   );
 }

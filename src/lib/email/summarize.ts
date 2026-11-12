@@ -11,6 +11,9 @@
 //
 // Config (env): EMAIL_AI_ENABLED, EMAIL_AI_MODEL, OLLAMA_URL.
 
+import { fmtEastern, todayYmd } from "@/lib/tz";
+import { logError } from "@/lib/log";
+
 const DEFAULT_MODEL = "qwen2.5:3b-instruct";
 const DEFAULT_URL = "http://ollama:11434";
 // First request after idle loads the model from disk — on CPU that alone can
@@ -55,8 +58,9 @@ const RESPONSE_SCHEMA = {
 } as const;
 
 function systemPrompt(today: Date): string {
-  const iso = today.toISOString().slice(0, 10);
-  const weekday = today.toLocaleDateString("en-US", { weekday: "long" });
+  // Eastern date + weekday (the UTC day is already tomorrow after 7–8 pm ET).
+  const iso = todayYmd(today);
+  const weekday = fmtEastern(today, { weekday: "long" });
   return [
     "You turn a work email into a task for a field-service team planner.",
     "Write a short, action-oriented title (imperative, under 12 words) and a",
@@ -73,7 +77,7 @@ function systemPrompt(today: Date): string {
 /** Parse "YYYY-MM-DD" defensively; reject nonsense and far-out dates. */
 function parseTargetDate(raw: unknown, today: Date): Date | undefined {
   if (typeof raw !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return undefined;
-  const d = new Date(`${raw}T00:00:00`);
+  const d = new Date(`${raw}T00:00:00Z`); // stored dates are UTC midnight
   if (Number.isNaN(d.getTime())) return undefined;
   const yearAhead = new Date(today.getTime() + 366 * 24 * 60 * 60 * 1000);
   const monthAgo = new Date(today.getTime() - 31 * 24 * 60 * 60 * 1000);
@@ -135,8 +139,11 @@ export async function summarizeEmail(input: {
       targetDate: parseTargetDate(out.target_date, today),
       priority: priorityNum >= 1 && priorityNum <= 5 ? priorityNum : undefined,
     };
-  } catch {
-    return null; // down/slow/garbled model — caller falls back to the raw email
+  } catch (e) {
+    // Down / slow / garbled model — the caller falls back (null contract).
+    // A timeout is an expected outcome on a cold CPU model; log anything else.
+    if (!(e instanceof Error && e.name === "AbortError")) logError("email-ai summarize", e);
+    return null;
   } finally {
     clearTimeout(timer);
   }

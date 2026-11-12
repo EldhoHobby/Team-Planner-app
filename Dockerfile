@@ -1,18 +1,22 @@
 # ─── Multi-stage build: slim Next.js standalone app + a migrator image ───
+# Base image pinned to a Node 22 minor (node:22.23-alpine) in EVERY stage —
+# keep them identical (the native argon2 build in `deps` must match the
+# runtime); bump deliberately.
 
 # 1. Install dependencies (full tree, incl. Prisma CLI + its deps)
-FROM node:22-alpine AS deps
+FROM node:22.23-alpine AS deps
 WORKDIR /app
 # libc6-compat/openssl for Prisma engines; toolchain for native modules (argon2).
 RUN apk add --no-cache libc6-compat openssl python3 make g++
-COPY package.json package-lock.json* ./
-# npm install (not ci): new deps are added by editing package.json directly on
-# this machine, which has no npm to regenerate the lockfile. install updates the
-# lock inside the build instead of failing on the mismatch.
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+# npm ci: installs EXACTLY what package-lock.json pins (reproducible builds; the
+# ^ ranges in package.json are ignored) and FAILS if the lock is out of sync.
+# After changing package.json, regenerate the lock with Docker (no host npm):
+#   docker run --rm -v "${PWD}:/app" -w /app node:22.23-alpine npm install --package-lock-only --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 
 # 2. Build the app (also generates the Prisma client)
-FROM node:22-alpine AS builder
+FROM node:22.23-alpine AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN apk add --no-cache libc6-compat openssl git tzdata
@@ -22,6 +26,10 @@ RUN npx prisma generate
 # Unit tests gate the build: a failing test fails `docker compose build`.
 # (The dev host has no npm — this is where tests run.)
 RUN npm run test
+# Lint gates the build too: an ESLint ERROR fails it, warnings are only printed
+# (no --max-warnings). next.config.mjs sets eslint.ignoreDuringBuilds so
+# `next build` below does not lint a second time.
+RUN npm run lint
 # Stamp the version, build date (MM/DD/YYYY, US Eastern — matches the user's
 # calendar; UTC rolls past midnight too early), and Git hash into the bundle.
 # Next.js inlines NEXT_PUBLIC_* at build, so the values are frozen.
@@ -34,7 +42,7 @@ RUN NEXT_PUBLIC_BUILD_DATE="$(TZ=America/New_York date +%m/%d/%Y)" \
 #    its transitive deps) work. Used by the one-shot `migrate` compose service to
 #    apply versioned migrations before the app starts. Kept separate so the app
 #    image stays slim.
-FROM node:22-alpine AS migrator
+FROM node:22.23-alpine AS migrator
 WORKDIR /app
 RUN apk add --no-cache libc6-compat openssl
 COPY --from=builder /app/node_modules ./node_modules
@@ -48,7 +56,7 @@ CMD ["sh", "prisma/migrate.sh"]
 # 4. Runtime image — slim standalone server. No Prisma CLI here; the migrator
 #    service owns schema sync. Only the generated client + query engine are
 #    needed at runtime.
-FROM node:22-alpine AS runner
+FROM node:22.23-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

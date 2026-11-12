@@ -1,8 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { History, Search } from "lucide-react";
-import { fmtEastern } from "@/lib/tz";
+import { fmtDateOnly, fmtEastern, todayYmd, ymdEastern } from "@/lib/tz";
+import { PageHeader } from "@/components/ui/page-header";
 
 type Row = {
   id: string;
@@ -17,10 +19,10 @@ type Row = {
 const ENTITY_LABELS: Record<string, string> = {
   job: "Job",
   task: "Task",
+  techtask: "Dashboard task",
   project: "Project",
-  technician: "Person",
-  membership: "People",
-  person: "Person",
+  member: "Person",
+  invitation: "Invitation", // older entries from the removed invite flow
   timeoff: "Time off",
   data: "Data",
   email: "Email",
@@ -29,6 +31,11 @@ const ENTITY_LABELS: Record<string, string> = {
   timesheet: "Timesheet",
   workgroup: "Work group",
   team: "Department",
+  page: "Page view",
+  agreement: "Agreement",
+  sa_customer: "Customer",
+  sa_settings: "Agreement settings",
+  audit: "Audit log",
 };
 function entityLabel(e: string): string {
   return ENTITY_LABELS[e] ?? e.charAt(0).toUpperCase() + e.slice(1);
@@ -37,7 +44,38 @@ function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-export function ActivityClient({ retentionDays, rows }: { retentionDays: number; rows: Row[] }) {
+/** Previous calendar day of "YYYY-MM-DD" (pure date maths, no time zone). */
+function prevYmd(ymd: string): string {
+  const d = new Date(`${ymd}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Day heading for an Eastern calendar day: "Today", "Yesterday", "Mon, Nov 9" (year added when not this year). */
+function dayLabel(ymd: string, today: string): string {
+  if (ymd === today) return "Today";
+  if (ymd === prevYmd(today)) return "Yesterday";
+  const opts: Intl.DateTimeFormatOptions = { weekday: "short", month: "short", day: "numeric" };
+  if (ymd.slice(0, 4) !== today.slice(0, 4)) opts.year = "numeric";
+  return fmtDateOnly(ymd, opts);
+}
+
+export function ActivityClient({
+  retentionDays,
+  rows,
+  showPages,
+  limit,
+  olderHref,
+}: {
+  retentionDays: number;
+  rows: Row[];
+  /** Page-view rows are hidden unless ?pages=1 (they'd crowd out real actions). */
+  showPages: boolean;
+  /** How many entries were asked for (rows.length === limit when the list is cut off). */
+  limit: number;
+  /** Link that loads more entries, or null when nothing older exists. */
+  olderHref: string | null;
+}) {
   const [q, setQ] = useState("");
 
   const filtered = useMemo(() => {
@@ -51,34 +89,39 @@ export function ActivityClient({ retentionDays, rows }: { retentionDays: number;
     );
   }, [q, rows]);
 
-  // Group by calendar day (rows already newest-first).
+  // Group by Eastern calendar day (rows already newest-first).
   const groups = useMemo(() => {
+    const today = todayYmd();
     const map = new Map<string, Row[]>();
     for (const r of filtered) {
-      const key = fmtEastern(r.when, {
-        weekday: "long",
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      });
+      const key = ymdEastern(r.when);
       const list = map.get(key) ?? [];
       list.push(r);
       map.set(key, list);
     }
-    return [...map.entries()];
+    return [...map.entries()].map(([ymd, list]) => [dayLabel(ymd, today), list, ymd] as const);
   }, [filtered]);
 
   const time = (iso: string) => fmtEastern(iso, { hour: "numeric", minute: "2-digit" });
 
   return (
-    <div className="mx-auto w-full max-w-3xl p-5">
-      <div className="mb-1 flex items-center gap-2">
-        <History className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">My activity</h1>
-      </div>
-      <p className="mb-4 text-sm text-muted-foreground">
-        Everything you&apos;ve done in the last {retentionDays} days (most recent first).
-      </p>
+    <div className="mx-auto w-full max-w-3xl p-4 md:p-5">
+      <PageHeader
+        icon={<History className="h-5 w-5 text-muted-foreground" />}
+        title="Activity"
+        description={
+          <>
+            Everything you&apos;ve done in the last {retentionDays} days (most recent first).{" "}
+            {showPages ? "Including the pages you opened." : "Page views are hidden."}{" "}
+            <Link
+              href={showPages ? "/activity" : "/activity?pages=1"}
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              {showPages ? "Hide page views" : "Show page views"}
+            </Link>
+          </>
+        }
+      />
 
       <div className="relative mb-4">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -98,8 +141,8 @@ export function ActivityClient({ retentionDays, rows }: { retentionDays: number;
         </p>
       ) : (
         <div className="space-y-5">
-          {groups.map(([day, list]) => (
-            <div key={day}>
+          {groups.map(([day, list, ymd]) => (
+            <div key={ymd}>
               <h2 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{day}</h2>
               <ul className="space-y-1">
                 {list.map((r) => (
@@ -120,8 +163,21 @@ export function ActivityClient({ retentionDays, rows }: { retentionDays: number;
         </div>
       )}
 
-      {rows.length >= 200 ? (
-        <p className="mt-4 text-center text-xs text-muted-foreground">Showing the most recent 200 actions.</p>
+      {rows.length >= limit || olderHref ? (
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
+          <span>Showing the latest {rows.length} entries.</span>
+          {olderHref ? (
+            <Link
+              href={olderHref}
+              scroll={false}
+              className="rounded-md border px-2.5 py-1 font-medium text-foreground hover:bg-muted"
+            >
+              Show older
+            </Link>
+          ) : (
+            <span>That&apos;s everything from the last {retentionDays} days.</span>
+          )}
+        </div>
       ) : null}
     </div>
   );

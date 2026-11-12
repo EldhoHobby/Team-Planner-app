@@ -1,44 +1,50 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
-  ChevronLeft,
-  ChevronRight,
-  ChevronDown,
-  Plus,
-  AlertTriangle,
-  Upload,
-  Download,
-  CalendarDays,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Plane,
-  Printer,
-  Search,
-  X,
-} from "lucide-react";
-import {
-  startOfWeekMonday,
   startOfWeekSunday,
   addDays,
   toUtcMidnight,
   computeConflicts,
-  countBookedDays,
   workingDaysOfWeek,
   workingDaysOfMonth,
   endFromDuration,
-  MS_PER_DAY,
   type JobLite,
 } from "@/lib/scheduling/calc";
-import { barStyle, dotStyle, softStyle, hatchStyle } from "@/lib/scheduling/colors";
-import { rescheduleJobAction, setJobStatusAction, duplicateJobAction, addJobCommentAction } from "../tasks/actions";
-import { jobLabel } from "./format";
+import {
+  capacityByPerson,
+  dayIndexAt,
+  dropStartMs,
+  grabOffsetDays,
+  groupJobs,
+} from "@/lib/scheduling/board";
+import { barStyle, dotStyle, hatchStyle } from "@/lib/scheduling/colors";
+import {
+  rescheduleJobAction,
+  setJobStatusAction,
+  duplicateJobAction,
+  addJobCommentAction,
+  restoreJobAction,
+  listDeletedJobsAction,
+} from "../tasks/actions";
+import { useJobSaveQueue } from "./job-save-queue";
+import { UndoNotice, type UndoNoticeState } from "@/components/ui/undo-notice";
+import { RecentlyDeletedDialog } from "@/components/ui/recently-deleted-dialog";
+import { restoreTechTaskAction } from "../dashboard/actions";
+import { fmtDay, fmtDayRange, jobLabel } from "./format";
 import {
   ContextMenu,
   ConflictPopover,
   UndoToast,
-  ResizeHandle,
   conflictDetails,
   snapshotOf,
   type MenuState,
@@ -46,69 +52,42 @@ import {
   type UndoState,
   type JobSnapshot,
 } from "./schedule-overlays";
+import { JobBar } from "./job-bar";
 import type { JobRow, TechnicianOption, TechTimeOff, HolidayLite } from "./types";
 import type { OwnerLite, TargetedTask } from "@/lib/services/tech-tasks";
 import { TaskTicket } from "../dashboard/task-ticket";
-import { Modal } from "@/components/ui/modal";
 import { PrintSheet } from "./print-sheet";
 import { NewJobDialog } from "./new-job-dialog";
 import { JobEditor } from "./job-editor";
 import { ImportDialog } from "./import-dialog";
 import { MonthCalendar } from "./month-calendar";
-import { todayYmd } from "@/lib/tz";
-import { Button } from "@/components/ui/button";
+import { fmtDateOnly } from "@/lib/tz";
+import {
+  buildLanes,
+  buildPrintNote,
+  dayIndex,
+  localTodayYmd,
+  packLanes,
+  parseYmd,
+  ymd,
+} from "./schedule-helpers";
+import {
+  useBoardNotice,
+  usePersistedView,
+  usePoliteAutoRefresh,
+  useSidebarOpen,
+  useTechFilterSelection,
+} from "./schedule-hooks";
+import { ScheduleToolbar } from "./schedule-toolbar";
+import { BoardMessages, CapacityStrip, JobFilters, JobStats } from "./schedule-filters";
+import { JobsPanel } from "./jobs-panel";
+import { QueueCard } from "./jobs-panel-parts";
+import { LaneDayCells, WeekHeader } from "./week-timeline";
+import { DayTasksModal } from "./day-tasks-modal";
 
-const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const JOB_TYPE_LABELS: Record<string, string> = {
-  COMMISSIONING: "Commissioning",
-  TRAINING: "Training",
-  ANNUAL_MAINTENANCE: "Annual Maintenance",
-  EMERGENCY_SUPPORT: "Emergency Support",
-};
-const STATUS_LABELS: Record<string, string> = {
-  UNCONFIRMED: "Unconfirmed",
-  SCHEDULED: "Scheduled",
-  IN_PROGRESS: "In Progress",
-  COMPLETED: "Completed",
-};
-const selectClass =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-function ymd(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-/**
- * Today's date in US Eastern time (not UTC, and not the rendering machine's
- * zone). The board's dates are UTC midnights; the server renders in UTC and the
- * browser in local time, so the zone must be fixed or the evening renders
- * disagree on which day is "today".
- */
-const localTodayYmd = todayYmd;
-function parseYmd(s: string): Date {
-  return new Date(`${s}T00:00:00.000Z`);
-}
-function dayIndex(date: Date, weekStart: Date): number {
-  return Math.round((toUtcMidnight(date).getTime() - weekStart.getTime()) / MS_PER_DAY);
-}
-
-function packLanes(jobs: JobRow[]): { job: JobRow; lane: number }[] {
-  const sorted = [...jobs].sort((a, b) => (a.startDate! < b.startDate! ? -1 : 1));
-  const laneEnds: number[] = [];
-  const out: { job: JobRow; lane: number }[] = [];
-  for (const job of sorted) {
-    const start = parseYmd(job.startDate!).getTime();
-    const end = parseYmd(job.endDate ?? job.startDate!).getTime();
-    let lane = laneEnds.findIndex((e) => e < start);
-    if (lane === -1) {
-      lane = laneEnds.length;
-      laneEnds.push(end);
-    } else {
-      laneEnds[lane] = end;
-    }
-    out.push({ job, lane });
-  }
-  return out;
-}
+/** After a drag or an edge-resize ends, clicks are ignored for this long so the
+ *  release can never also "click" a bar open. */
+const CLICK_GUARD_MS = 250;
 
 export function ScheduleClient({
   jobs: propJobs,
@@ -121,8 +100,13 @@ export function ScheduleClient({
   people,
   currentUserId,
   isAdmin,
+  historyDays,
+  showingOldCompleted,
+  hasOlderCompleted,
 }: {
   jobs: JobRow[];
+  /** Schedulable people (active) + non-schedulable ones, plus archived people
+   *  who still hold jobs (archived: true). */
   technicians: TechnicianOption[];
   timeOff: TechTimeOff[];
   holidays: HolidayLite[];
@@ -135,6 +119,12 @@ export function ScheduleClient({
   people: OwnerLite[];
   currentUserId: string;
   isAdmin: boolean;
+  /** Days of change history the activity log keeps (job editor label). */
+  historyDays: number;
+  /** True when completed jobs older than 12 months are loaded (?completed=all). */
+  showingOldCompleted: boolean;
+  /** Whether any completed jobs older than 12 months exist (offer the toggle). */
+  hasOlderCompleted: boolean;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -142,36 +132,48 @@ export function ScheduleClient({
   // Local mirror of server data so drags apply instantly (optimistic).
   const [jobs, setJobs] = useState<JobRow[]>(propJobs);
   useEffect(() => setJobs(propJobs), [propJobs]);
+  // Serial, version-checked job saves (board + editor share it): consecutive
+  // moves of one job wait for each other and carry the latest version.
+  const runJobSave = useJobSaveQueue(propJobs);
+  // Put a job's board fields back after a refused save (stale / error).
+  const revertLocal = (jobId: string, snap: JobSnapshot) =>
+    setJobs((js) => js.map((j) => (j.id === jobId ? { ...j, ...snap } : j)));
+  // "Deleted … — Undo" (jobs from the editor, tasks from the ticket) and the
+  // "Recently deleted" dialog.
+  const [deletedNotice, setDeletedNotice] = useState<UndoNoticeState | null>(null);
+  const [binOpen, setBinOpen] = useState(false);
 
   // Persisted view — restored after mount (avoids SSR hydration mismatch).
-  const [view, setView] = useState<"timeline" | "calendar">("timeline");
-  const restored = useRef(false);
-  useEffect(() => {
-    const v = localStorage.getItem("schedule.view");
-    if (v === "calendar" || v === "timeline") setView(v);
-    restored.current = true;
-  }, []);
-  useEffect(() => {
-    if (!restored.current) return;
-    try {
-      localStorage.setItem("schedule.view", view);
-    } catch {
-      /* ignore */
-    }
-  }, [view]);
+  const [view, setView] = usePersistedView();
   const [anchor, setAnchor] = useState<Date>(() => parseYmd(initialDate || localTodayYmd()));
   const [newOpen, setNewOpen] = useState(false);
+  // Pre-fill for the New job dialog (double-click / Enter on an empty day).
+  const [newInit, setNewInit] = useState<{ date?: string; techId?: string | null } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [selected, setSelected] = useState<JobRow | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
+  // Board messages: a server error (red) stays until dismissed or the next
+  // successful change; a "Heads up" note (amber) dismisses itself after ~8 s.
+  const [error, setError] = useState<string | null>(null);
+  const { notice, setNotice, showNotice } = useBoardNotice();
+  // Every server-confirmed board change clears a stale error.
+  const settled = (res: { error?: string } | undefined): boolean => {
+    if (res?.error) {
+      setError(res.error);
+      return false;
+    }
+    setError(null);
+    return true;
+  };
+  const [exporting, setExporting] = useState(false);
 
-  // Board overlays: undo toast, right-click menu, conflict popover, quick search,
+  // Board overlays: undo toast, actions menu, conflict popover, quick search,
   // and the id of a job currently being edge-resized (drag is disabled on it).
   const [undo, setUndo] = useState<UndoState | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoSeq = useRef(0);
   const showUndo = (label: string, run: () => void, jobId?: string) => {
     if (undoTimer.current) clearTimeout(undoTimer.current);
+    setDeletedNotice(null); // one bottom toast at a time
     setUndo({ id: ++undoSeq.current, label, run, jobId });
     undoTimer.current = setTimeout(() => setUndo(null), 8000);
   };
@@ -213,24 +215,9 @@ export function ScheduleClient({
     }
   }, [pendingSelectId, propJobs]);
 
-  // Filters. Technician filter is a checkbox multi-select: null = everyone;
-  // otherwise a set of technician ids (plus "UNASSIGNED"). Initialised to the
-  // viewer's personal scope (self for members, team for managers) — changeable.
-  const [fTechSel, setFTechSel] = useState<Set<string> | null>(() =>
-    defaultTechIds ? new Set(defaultTechIds) : null,
-  );
-  // When the personal default CHANGES (e.g. "View as" switched to another person,
-  // whose scope the server recomputes), re-apply it. Manual filter changes are
-  // left alone otherwise — we only react to a different default arriving.
-  const defaultKey = defaultTechIds ? [...defaultTechIds].sort().join(",") : "__ALL__";
-  const lastDefaultKey = useRef(defaultKey);
-  useEffect(() => {
-    if (lastDefaultKey.current !== defaultKey) {
-      lastDefaultKey.current = defaultKey;
-      setFTechSel(defaultTechIds ? new Set(defaultTechIds) : null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultKey]);
+  // Filters. The people filter (null = everyone) starts at the viewer's personal
+  // scope and re-applies it when that default changes (see the hook).
+  const [fTechSel, setFTechSel] = useTechFilterSelection(defaultTechIds);
   const [fType, setFType] = useState<string>("ALL");
   const [fSo, setFSo] = useState<string>("ALL");
   const [fStatus, setFStatus] = useState<string>("ALL");
@@ -240,7 +227,8 @@ export function ScheduleClient({
   const [panelStatus, setPanelStatus] = useState<string>("ALL");
   // "Completed" starts collapsed — it's a historical pile, not active work.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["Completed"]));
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // On a phone the Jobs panel starts hidden (decided after mount).
+  const [sidebarOpen, setSidebarOpen] = useSidebarOpen();
 
   const weekStart = useMemo(() => startOfWeekSunday(anchor), [anchor]);
   const weekMonday = useMemo(() => addDays(weekStart, 1), [weekStart]);
@@ -248,29 +236,21 @@ export function ScheduleClient({
   // Real-time-ish sync: refetch every 60s so other users' changes appear without
   // churning the board. Paused while dragging, a dialog is open, or the tab is
   // in the background, so it never interrupts active work or forces focus.
-  const draggingRef = useRef(false);
-  const busyRef = useRef(false);
-  busyRef.current = newOpen || importOpen || selected !== null;
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (!draggingRef.current && !busyRef.current && document.visibilityState === "visible") {
-        router.refresh();
-      }
-    }, 60000);
+  const draggingRef = usePoliteAutoRefresh(
+    router,
+    newOpen || importOpen || selected !== null || binOpen,
+  );
 
-    // Refresh immediately when returning to the tab (if not busy).
-    const onVisible = () => {
-      if (document.visibilityState === "visible" && !draggingRef.current && !busyRef.current) {
-        router.refresh();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-
-    return () => {
-      clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [router]);
+  // ── Click vs drag ──
+  // A bar drag records where in the job it was grabbed (in days) so a drop moves
+  // the job by the distance dragged. Clicks right after a drag / resize are
+  // ignored so a release never also opens the editor.
+  const grabRef = useRef<{ jobId: string; offset: number } | null>(null);
+  const clickGuardUntil = useRef(0);
+  const endDrag = () => {
+    draggingRef.current = false;
+    clickGuardUntil.current = Date.now() + CLICK_GUARD_MS;
+  };
 
   const go = (dir: number) =>
     setAnchor((a) => {
@@ -324,6 +304,9 @@ export function ScheduleClient({
     return (offByTech.get(techId) ?? []).some((r) => r.s <= b && a <= r.e);
   };
 
+  const techById = useMemo(() => new Map(technicians.map((t) => [t.id, t])), [technicians]);
+  const activeTechs = useMemo(() => technicians.filter((t) => t.active), [technicians]);
+
   // Unique SO numbers from all jobs for the filter dropdown.
   const soNumbers = useMemo(() => {
     const set = new Set<string>();
@@ -362,16 +345,23 @@ export function ScheduleClient({
     [conflicts, ptoClashIds],
   );
 
-  // Capacity reflects the period in view: the visible week (/5) on the timeline,
-  // the visible month (/N working days) on the calendar.
+  // Capacity reflects the period in view: the visible week (Mon–Fri) on the
+  // timeline, the visible month's working days on the calendar. Time off and
+  // holidays leave the denominator ("2/3 · 2 off"); see capacityByPerson.
   const capacityDays = useMemo(
     () => (view === "calendar" ? workingDaysOfMonth(anchor) : workingDaysOfWeek(weekMonday)),
     [view, anchor, weekMonday],
   );
-  const capacityDenom = capacityDays.length;
   const capacity = useMemo(
-    () => countBookedDays(jobLites, capacityDays),
-    [jobLites, capacityDays],
+    () =>
+      capacityByPerson(
+        jobLites,
+        capacityDays,
+        activeTechs.map((t) => t.id),
+        (id, day) => isOffOnDay(id, day) || !!holidayOn(day),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [jobLites, capacityDays, activeTechs, offByTech, holidayMap],
   );
 
   // Apply filters for display.
@@ -390,9 +380,10 @@ export function ScheduleClient({
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const visible = useMemo(() => jobs.filter(matches), [jobs, fTechSel, fType, fSo, fStatus]);
-  const scheduled = visible.filter((j) => j.startDate);
-  const unscheduled = visible.filter((j) => !j.startDate);
-  const tentativeCount = visible.filter((j) => j.tentative).length;
+  // Dated visible jobs (any status) — what the timeline lanes draw.
+  const dated = visible.filter((j) => j.startDate);
+  // Header chips use EXACTLY the side panel's grouping (mutually exclusive).
+  const groups = useMemo(() => groupJobs(visible), [visible]);
 
   // Quick search: matches SO / customer / title (label). Filters the side panel;
   // highlights matching bars on the board (without hiding the rest).
@@ -409,11 +400,8 @@ export function ScheduleClient({
     [jobs, q],
   );
 
-  // Side-panel groups: partition the visible jobs into Scheduled / Tentative /
-  // Unscheduled, then apply the panel's own type filter + sort. "Tentative"
-  // means a pencilled-in DATE, so it only applies to dated jobs — an undated
-  // job belongs in the backlog whatever its tentative flag says (otherwise it
-  // hides from Unscheduled entirely). Matches how the printout counts them.
+  // Side-panel groups: the shared grouping (groupJobs) applied to the visible
+  // jobs after the panel's own status filter + search, then sorted.
   const panelGroups = useMemo(() => {
     const base = visible.filter((j) => matchesStatus(j, panelStatus) && queryMatch(j));
     const cmp = (a: JobRow, b: JobRow) => {
@@ -424,26 +412,27 @@ export function ScheduleClient({
       const r = (a.startDate ?? "9999-99-99").localeCompare(b.startDate ?? "9999-99-99");
       return r || jobLabel(a).localeCompare(jobLabel(b));
     };
-    // Completed jobs split into their own section regardless of date/tentative,
-    // so finished work leaves "Scheduled". In-progress stays as active work.
-    const done = (j: JobRow) => j.jobStatus === "COMPLETED";
+    const g = groupJobs(base);
     return {
-      scheduled: base.filter((j) => j.startDate && !j.tentative && !done(j)).sort(cmp),
-      tentative: base.filter((j) => j.startDate && j.tentative && !done(j)).sort(cmp),
-      unscheduled: base.filter((j) => !j.startDate && !done(j)).sort(cmp),
-      completed: base.filter(done).sort(cmp),
+      scheduled: g.scheduled.sort(cmp),
+      tentative: g.tentative.sort(cmp),
+      unscheduled: g.unscheduled.sort(cmp),
+      completed: g.completed.sort(cmp),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, panelStatus, panelSort, q]);
 
   // Technicians currently in view (respects the checkbox filter).
-  const visibleTechs = technicians.filter(
-    (t) => t.active && (fTechSel === null || fTechSel.has(t.id)),
-  );
+  const visibleTechs = activeTechs.filter((t) => fTechSel === null || fTechSel.has(t.id));
 
-  const overbooked = visibleTechs.filter(
-    (t) => (capacity.get(t.id) ?? 0) > capacityDenom,
-  ).length;
+  // "Showing N of M people" chip while a people filter is active.
+  const activeTechCount = activeTechs.length;
+
+  // One capacity rule everywhere (board.ts): amber exactly full, red over.
+  const overCapacity = visibleTechs.filter((t) => capacity.get(t.id)?.level === "over").length;
+  // Same warnings as the ⚠ (double-booked OR during time off), counted over
+  // the jobs actually shown (the filters, incl. the people filter, apply).
+  const warnedCount = visible.filter((j) => warnings.has(j.id)).length;
 
   const inWeek = (j: JobRow) => {
     const s = parseYmd(j.startDate!);
@@ -451,18 +440,10 @@ export function ScheduleClient({
     return s.getTime() <= weekEnd.getTime() && e.getTime() >= weekStart.getTime();
   };
 
-  type Lane = { id: string | null; name: string; color: string; droppable: boolean; inactive?: boolean };
-  let rows: Lane[] = [
-    ...technicians.filter((t) => t.active).map((t) => ({ id: t.id, name: t.name, color: t.color, droppable: true })),
-    // Inactive technicians that still have jobs in view: shown greyed, no new drops.
-    ...technicians
-      .filter((t) => !t.active && scheduled.some((j) => j.technicianId === t.id))
-      .map((t) => ({ id: t.id, name: `${t.name} (inactive)`, color: t.color, droppable: false, inactive: true })),
-    { id: null, name: "Unassigned", color: "slate", droppable: true },
-  ];
-  if (fTechSel !== null) {
-    rows = rows.filter((r) => (r.id === null ? fTechSel.has("UNASSIGNED") : fTechSel.has(r.id)));
-  }
+  // Lanes: active people, then greyed lanes for anyone else who holds visible
+  // dated jobs (not schedulable, archived, or not found at all) so their work
+  // never vanishes from the board, then Unassigned.
+  const rows = buildLanes(activeTechs, technicians, techById, dated, fTechSel);
 
   // ── Optimistic move ──
   const doMove = (
@@ -478,7 +459,11 @@ export function ScheduleClient({
     if (opts.startDate === null) {
       patch.startDate = null;
       patch.endDate = null;
-      patch.jobStatus = "UNCONFIRMED";
+      // In Progress / Completed survive a trip to the backlog (server does the same).
+      patch.jobStatus =
+        job.jobStatus === "IN_PROGRESS" || job.jobStatus === "COMPLETED"
+          ? job.jobStatus
+          : "UNCONFIRMED";
     } else if (opts.startDate) {
       const s = toUtcMidnight(opts.startDate);
       patch.startDate = ymd(s);
@@ -503,13 +488,13 @@ export function ScheduleClient({
       const e = endFromDuration(s, dur);
       if (effTech && isOffInRange(effTech, s, e)) {
         const t = technicians.find((x) => x.id === effTech);
-        setWarning(`Heads up: ${t?.name ?? "that technician"} has time off during ${ymd(s)}–${ymd(e)}.`);
+        showNotice(`Heads up: ${t?.name ?? "that person"} has time off during ${fmtDayRange(ymd(s), ymd(e))}.`);
       } else {
         // Any holiday within the job's span?
         for (let d = s; d.getTime() <= e.getTime(); d = addDays(d, 1)) {
           const h = holidayOn(d);
           if (h) {
-            setWarning(`Heads up: ${ymd(d)} is a holiday (${h}).`);
+            showNotice(`Heads up: ${fmtDay(ymd(d))} is a holiday (${h}).`);
             break;
           }
         }
@@ -518,43 +503,51 @@ export function ScheduleClient({
 
     const label =
       opts.startDate === null
-        ? `Unscheduled “${jobLabel(job)}”`
+        ? `Moved “${jobLabel(job)}” to the backlog`
         : opts.startDate === undefined
           ? `Reassigned “${jobLabel(job)}”`
           : `Moved “${jobLabel(job)}”`;
 
     startTransition(async () => {
-      const res = await rescheduleJobAction({
-        jobId,
-        ...(opts.technicianId !== undefined ? { technicianId: opts.technicianId } : {}),
-        ...(opts.startDate !== undefined
-          ? { startDate: opts.startDate ? ymd(toUtcMidnight(opts.startDate)) : null }
-          : {}),
-      });
+      const res = await runJobSave(jobId, (expectedVersion) =>
+        rescheduleJobAction({
+          jobId,
+          ...(opts.technicianId !== undefined ? { technicianId: opts.technicianId } : {}),
+          ...(opts.startDate !== undefined
+            ? { startDate: opts.startDate ? ymd(toUtcMidnight(opts.startDate)) : null }
+            : {}),
+          expectedVersion,
+        }),
+      );
       // Only offer Undo once the server accepted the change — otherwise Undo
       // would write the old values back for a change that never happened.
-      if (res?.error) setWarning(res.error);
-      else showUndo(label, () => revertTo(jobId, before), jobId);
+      if (settled(res)) showUndo(label, () => revertTo(jobId, before), jobId);
+      else revertLocal(jobId, before); // refused (stale / error): put it back
       router.refresh(); // reconcile with server truth
     });
   };
 
-  const move = (jobId: string, technicianId: string | null, date: Date | null) =>
-    doMove(jobId, { technicianId, startDate: date });
   const moveDate = (jobId: string, date: Date | null) => doMove(jobId, { startDate: date });
 
   // Restore a job to a prior snapshot (used by the Undo toast). Optimistic +
-  // persisted; rescheduleJob re-derives end/status from start + duration + tech.
+  // persisted; rescheduleJob re-derives the end date from start + duration and
+  // stores the snapshot's status as-is (so Undo brings back e.g. Completed).
   const revertTo = (jobId: string, snap: JobSnapshot) => {
-    setJobs((js) => js.map((j) => (j.id === jobId ? { ...j, ...snap } : j)));
+    const current = jobs.find((j) => j.id === jobId);
+    const after = current ? snapshotOf(current) : null;
+    revertLocal(jobId, snap);
     startTransition(async () => {
-      const res = await rescheduleJobAction({
-        jobId,
-        startDate: snap.startDate,
-        technicianId: snap.technicianId,
-        durationDays: snap.durationDays ?? undefined,
-      });
-      if (res?.error) setWarning(res.error);
+      const res = await runJobSave(jobId, (expectedVersion) =>
+        rescheduleJobAction({
+          jobId,
+          startDate: snap.startDate,
+          technicianId: snap.technicianId,
+          durationDays: snap.durationDays ?? undefined,
+          jobStatus: snap.jobStatus,
+          expectedVersion,
+        }),
+      );
+      if (!settled(res) && after) revertLocal(jobId, after);
       router.refresh();
     });
   };
@@ -572,277 +565,329 @@ export function ScheduleClient({
   const commitResize = (jobId: string, durationDays: number, before: JobSnapshot) => {
     const job = jobs.find((j) => j.id === jobId);
     startTransition(async () => {
-      const res = await rescheduleJobAction({ jobId, durationDays });
-      if (res?.error) setWarning(res.error);
-      else
+      const res = await runJobSave(jobId, (expectedVersion) =>
+        rescheduleJobAction({ jobId, durationDays, expectedVersion }),
+      );
+      if (settled(res))
         showUndo(
           `Resized “${job ? jobLabel(job) : "job"}” to ${durationDays} day${durationDays === 1 ? "" : "s"}`,
           () => revertTo(jobId, before),
           jobId,
         );
+      else revertLocal(jobId, before);
       router.refresh();
     });
   };
-
-  // ── Right-click menu + conflict popover ──
-  const openMenu = (e: ReactMouseEvent, job: JobRow) => {
-    e.preventDefault();
-    setConflictPop(null);
-    setMenu({ x: e.clientX, y: e.clientY, job });
+  // Resize start/end. Ending a resize also arms the click guard.
+  const onResizeActive = (id: string | null) => {
+    setResizingId(id);
+    if (!id) clickGuardUntil.current = Date.now() + CLICK_GUARD_MS;
   };
-  const openConflict = (e: ReactMouseEvent, job: JobRow) => {
-    e.stopPropagation();
+
+  // ── Opening a job, the actions menu and the conflict popover ──
+  const openJob = (job: JobRow) => {
+    // Only the timestamp guard (not draggingRef): if a dragged element is
+    // unmounted mid-drag its dragend never arrives, and clicks must not stay
+    // blocked — the guard expires on its own.
+    if (Date.now() < clickGuardUntil.current) return;
     setMenu(null);
-    setConflictPop({ x: e.clientX, y: e.clientY, reasons: conflictDetails(job, jobs, timeOff) });
+    setConflictPop(null);
+    setSelected(job);
+  };
+  const openMenu = (job: JobRow, x: number, y: number, trigger: HTMLElement | null) => {
+    setConflictPop(null);
+    setMenu({ x, y, job, returnFocus: trigger });
+  };
+  const openConflict = (job: JobRow, x: number, y: number, trigger: HTMLElement | null) => {
+    setMenu(null);
+    setConflictPop({ x, y, reasons: conflictDetails(job, jobs, timeOff), returnFocus: trigger });
   };
   const markComplete = (job: JobRow) => {
     const before = snapshotOf(job);
     setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: "COMPLETED" } : j)));
     startTransition(async () => {
-      const res = await setJobStatusAction({ jobId: job.id, jobStatus: "COMPLETED" });
-      if (res?.error) setWarning(res.error);
-      else
+      const res = await runJobSave(job.id, (expectedVersion) =>
+        setJobStatusAction({ jobId: job.id, jobStatus: "COMPLETED", expectedVersion }),
+      );
+      if (settled(res))
         showUndo(`Completed “${jobLabel(job)}”`, () => {
           setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: before.jobStatus } : j)));
           startTransition(async () => {
-            const undoRes = await setJobStatusAction({ jobId: job.id, jobStatus: before.jobStatus });
-            if (undoRes?.error) setWarning(undoRes.error);
+            const undoRes = await runJobSave(job.id, (expectedVersion) =>
+              setJobStatusAction({ jobId: job.id, jobStatus: before.jobStatus, expectedVersion }),
+            );
+            if (!settled(undoRes)) {
+              setJobs((js) => js.map((j) => (j.id === job.id ? { ...j, jobStatus: "COMPLETED" } : j)));
+            }
             router.refresh();
           });
         }, job.id);
+      else revertLocal(job.id, before);
       router.refresh();
+    });
+  };
+  // A job deleted from the editor: offer Undo right away (it is in Recently deleted).
+  const onJobDeleted = (job: JobRow) => {
+    setUndo(null); // one bottom toast at a time
+    setDeletedNotice({
+      id: Date.now(),
+      text: `Deleted “${jobLabel(job)}”`,
+      undo: () => restoreJobAction({ jobId: job.id }),
     });
   };
   const duplicateFromMenu = (job: JobRow) => {
     startTransition(async () => {
       const res = await duplicateJobAction({ jobId: job.id });
-      if (res?.error) setWarning(res.error);
-      else if (res?.jobId) setPendingSelectId(res.jobId);
+      if (settled(res) && res?.jobId) setPendingSelectId(res.jobId);
       router.refresh();
     });
   };
 
-  // Double-clicking a list job navigates the current view to its date (timeline →
-  // that week, calendar → that month). No-op for unscheduled jobs.
+  // "Show on the board" (side-panel card): navigate the current view to the
+  // job's date (timeline → that week, calendar → that month).
   const jumpToJob = (job: JobRow) => {
     if (job.startDate) setAnchor(parseYmd(job.startDate));
   };
 
-  const onDropCell = (e: DragEvent, techId: string | null, date: Date) => {
+  // New job, optionally pre-filled with a day and a person (empty-cell double-click).
+  const openNewJob = (init: { date?: string; techId?: string | null } | null) => {
+    setNewInit(init);
+    setNewOpen(true);
+  };
+
+  // ── Drag-and-drop ──
+  // Bars: remember the grab offset (days into the job) for the drop maths.
+  const onBarDragStart = (e: DragEvent<HTMLElement>, job: JobRow, pointerX: number) => {
+    e.dataTransfer.setData("text/plain", job.id);
+    e.dataTransfer.effectAllowed = "move";
+    draggingRef.current = true;
+    clickGuardUntil.current = Date.now() + 4000; // re-armed short on drop / dragend
+    grabRef.current = null;
+    const container = e.currentTarget.closest<HTMLElement>("[data-weekcontainer]");
+    const weekStartMs = Number(container?.dataset.weekstart);
+    if (container && job.startDate && Number.isFinite(weekStartMs)) {
+      const r = container.getBoundingClientRect();
+      grabRef.current = {
+        jobId: job.id,
+        offset: grabOffsetDays(job.startDate, weekStartMs, dayIndexAt(pointerX, r.left, r.width)),
+      };
+    }
+  };
+  // Side-panel cards: no grab offset (the job starts on the day it is dropped on).
+  const onCardDragStart = (e: DragEvent<HTMLElement>, job: JobRow) => {
+    e.dataTransfer.setData("text/plain", job.id);
+    e.dataTransfer.effectAllowed = "move";
+    draggingRef.current = true;
+    clickGuardUntil.current = Date.now() + 4000;
+    grabRef.current = null;
+  };
+  const takeGrabOffset = (jobId: string): number => {
+    const g = grabRef.current;
+    grabRef.current = null;
+    return g && g.jobId === jobId ? g.offset : 0;
+  };
+
+  /**
+   * Drop on a whole week strip (a person's lane on the timeline, a week row on
+   * the calendar). The day comes from the pointer X; the grab offset is
+   * subtracted so the job moves by the distance dragged. `techId` undefined =
+   * keep the person (calendar). Every drop clears the drag flag itself: after an
+   * optimistic move the dragged element is usually unmounted, so its dragend
+   * never reaches the root and the 60-second auto-refresh would stay paused.
+   */
+  const dropOnWeek = (e: DragEvent<HTMLElement>, weekStartMs: number, techId?: string | null) => {
     e.preventDefault();
+    endDrag();
     const jobId = e.dataTransfer.getData("text/plain");
-    if (jobId) move(jobId, techId, date);
+    if (!jobId) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const idx = dayIndexAt(e.clientX, r.left, r.width);
+    const start = new Date(dropStartMs(weekStartMs, idx, takeGrabOffset(jobId)));
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) return;
+    const sameDay = job.startDate === ymd(start);
+    if (techId === undefined) {
+      if (!sameDay) moveDate(jobId, start);
+    } else if (!(sameDay && (job.technicianId ?? null) === techId)) {
+      doMove(jobId, { technicianId: techId, startDate: start });
+    }
   };
   const onDropBacklog = (e: DragEvent) => {
     e.preventDefault();
+    endDrag();
+    grabRef.current = null;
     const jobId = e.dataTransfer.getData("text/plain");
-    if (jobId) moveDate(jobId, null); // unschedule, keep technician + duration
+    const job = jobs.find((j) => j.id === jobId);
+    // unschedule, keep technician + duration (an undated job is already there)
+    if (job?.startDate) moveDate(job.id, null);
+  };
+
+  // Empty timeline cells: double-click → New job for that person + day.
+  // Keyboard: one tab stop per lane (roving), ←/→ move between days, Enter or
+  // Space opens New job pre-filled.
+  const onCellKey = (e: ReactKeyboardEvent<HTMLDivElement>, date: string, techId: string | null) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openNewJob({ date, techId });
+    } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      const sib = (e.key === "ArrowRight"
+        ? e.currentTarget.nextElementSibling
+        : e.currentTarget.previousElementSibling) as HTMLElement | null;
+      sib?.focus();
+    }
+  };
+
+  // Excel export: fetch → blob, so a failure shows inline in the warning bar
+  // instead of navigating the whole window to a bare error page.
+  const exportXlsx = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch("/api/schedule/export");
+      if (!res.ok) {
+        const msg = (await res.text().catch(() => "")).trim().slice(0, 200);
+        setError(`Export failed: ${msg || `server returned ${res.status}`}`);
+        return;
+      }
+      const blob = await res.blob();
+      const name =
+        /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "schedule.xlsx";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setError("Export failed — check your connection and try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // "Show older completed jobs" (performance guard: by default the server sends
+  // completed jobs from the last 12 months only). Toggles ?completed=all.
+  const toggleOldCompleted = () => {
+    const sp = new URLSearchParams(window.location.search);
+    if (showingOldCompleted) sp.delete("completed");
+    else sp.set("completed", "all");
+    const qs = sp.toString();
+    router.replace(`/schedule${qs ? `?${qs}` : ""}`, { scroll: false });
   };
 
   // Shown in the header AND on the print-only title line.
   const rangeLabel =
     view === "calendar"
       ? // Label the month that DOMINATES the (wheel-scrollable) 6-week grid.
-        addDays(startOfWeekSunday(anchor), 17).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" })
-      : `${weekDays[0].toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })} – ${weekEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`;
+        // (fixed en-US + UTC, so the server and browser renders agree)
+        fmtDateOnly(addDays(startOfWeekSunday(anchor), 17), { month: "long", year: "numeric" })
+      : `${fmtDateOnly(weekDays[0], { month: "short", day: "numeric" })} – ${fmtDateOnly(weekEnd)}`;
+
+  // Printout note: what the header filters narrow down + that Completed is left out.
+  const printNote = buildPrintNote(fTechSel, techById, fType, fSo, fStatus, groups.completed.length > 0);
+
+  // Holders of jobs who are not active — selectable in the people filter so
+  // their (archived / inactive) lanes can be included in a narrowed view.
+  const otherHolders = technicians.filter((t) => !t.active && jobs.some((j) => j.technicianId === t.id));
 
   return (
     <div
-      className="flex h-full flex-col print:h-auto"
+      // Phone: the page scrolls (header + filters wrap tall); md+: fills the window.
+      className="flex flex-col md:h-full print:h-auto"
       onDragStart={() => { draggingRef.current = true; }}
-      onDragEnd={() => { draggingRef.current = false; }}
+      onDragEnd={() => { endDrag(); grabRef.current = null; }}
+      onDrop={() => { draggingRef.current = false; }}
     >
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 print:hidden">
-        <div className="flex items-center gap-2">
-          <CalendarDays className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Field Service Schedule</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center rounded-md border text-xs">
-            <button
-              type="button"
-              aria-pressed={view === "timeline"}
-              onClick={() => setView("timeline")}
-              className={`px-2.5 py-1 font-medium ${view === "timeline" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
-            >
-              Timeline
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === "calendar"}
-              onClick={() => setView("calendar")}
-              className={`px-2.5 py-1 font-medium ${view === "calendar" ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
-            >
-              Calendar
-            </button>
-          </div>
-          {/* Standalone Today */}
-          <Button variant="outline" size="sm" onClick={() => setAnchor(parseYmd(localTodayYmd()))}>
-            Today
-          </Button>
-          {/* Arrows framing the date label: [ < ]  Month Year  [ > ] */}
-          <div className="flex items-center gap-1">
-            <button type="button" aria-label={view === "calendar" ? "Previous month" : "Previous week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(-1)}>
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="min-w-[10rem] text-center text-sm font-medium">{rangeLabel}</span>
-            <button type="button" aria-label={view === "calendar" ? "Next month" : "Next week"} className="rounded-md border p-1.5 hover:bg-muted" onClick={() => go(1)}>
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-          {/* Jump to a specific date (moves the view to that week/month). */}
-          <input
-            type="date"
-            aria-label="Jump to date"
-            title="Jump to date"
-            value={ymd(anchor)}
-            onChange={(e) => { if (e.target.value) setAnchor(parseYmd(e.target.value)); }}
-            className={selectClass}
-          />
-          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-            <Upload className="mr-1.5 h-4 w-4" /> Import
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => { window.location.href = "/api/schedule/export"; }}>
-            <Download className="mr-1.5 h-4 w-4" /> Export
-          </Button>
-          <Button variant="outline" size="sm" title="Print the current view (landscape)" onClick={() => window.print()}>
-            <Printer className="mr-1.5 h-4 w-4" /> Print
-          </Button>
-          <Button size="sm" onClick={() => setNewOpen(true)}>
-            <Plus className="mr-1.5 h-4 w-4" /> New job
-          </Button>
-        </div>
-      </header>
+      <ScheduleToolbar
+        view={view}
+        setView={setView}
+        anchor={anchor}
+        setAnchor={setAnchor}
+        go={go}
+        rangeLabel={rangeLabel}
+        exporting={exporting}
+        exportXlsx={exportXlsx}
+        setImportOpen={setImportOpen}
+        setBinOpen={setBinOpen}
+        openNewJob={openNewJob}
+      />
 
-      {/* Insights + filters */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-5 py-2 text-xs print:hidden">
-        <div className="flex flex-wrap items-center gap-2">
-          <Stat label="jobs" value={visible.length} />
-          <Stat label="scheduled" value={scheduled.length} />
-          <Stat label="tentative" value={tentativeCount} tone={tentativeCount ? "warn" : undefined} />
-          <Stat label="unscheduled" value={unscheduled.length} tone={unscheduled.length ? "warn" : undefined} />
-          <Stat label="overbooked" value={overbooked} tone={overbooked ? "bad" : undefined} />
-          <Stat label="conflicts" value={conflicts.size} tone={conflicts.size ? "bad" : undefined} />
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search SO / customer / title"
-              aria-label="Search jobs"
-              className={`${selectClass} w-52 pl-7`}
-            />
-          </div>
-          <TechFilter technicians={technicians} selected={fTechSel} onChange={setFTechSel} />
-          <select className={selectClass} value={fType} onChange={(e) => setFType(e.target.value)} aria-label="Filter job type">
-            <option value="ALL">All types</option>
-            {Object.entries(JOB_TYPE_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>{v}</option>
-            ))}
-          </select>
-          <select className={selectClass} value={fSo} onChange={(e) => setFSo(e.target.value)} aria-label="Filter Sales Order">
-            <option value="ALL">All Sales Orders</option>
-            {soNumbers.map((so) => (
-              <option key={so} value={so}>{so}</option>
-            ))}
-          </select>
-          <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)} aria-label="Filter status">
-            <option value="ALL">All statuses</option>
-            {Object.entries(STATUS_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>{v}</option>
-            ))}
-            <option value="TENTATIVE">Tentative</option>
-          </select>
-        </div>
+      {/* Insights + filters. The job chips are the side panel's groups
+          (mutually exclusive, they add up to "jobs"). */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-muted/30 px-3 py-2 md:px-5 text-xs print:hidden">
+        <JobStats
+          visibleCount={visible.length}
+          groups={groups}
+          showingOldCompleted={showingOldCompleted}
+          overCapacity={overCapacity}
+          warnedCount={warnedCount}
+          view={view}
+        />
+        <JobFilters
+          query={query}
+          setQuery={setQuery}
+          fTechSel={fTechSel}
+          setFTechSel={setFTechSel}
+          visibleTechCount={visibleTechs.length}
+          activeTechCount={activeTechCount}
+          technicians={technicians}
+          otherHolders={otherHolders}
+          fType={fType}
+          setFType={setFType}
+          fSo={fSo}
+          setFSo={setFSo}
+          soNumbers={soNumbers}
+          fStatus={fStatus}
+          setFStatus={setFStatus}
+        />
       </div>
 
-      {/* Capacity / overbooking summary.
-          Thresholds per technician for the period in view (week=5 working days,
-          month=N): booked >= denom → "full" (red); booked === denom-1 → "heavy"
-          (amber). This is a VISUAL indicator only — it does NOT block assignment;
-          you can still drop more jobs onto a full technician (conflicts/PTO show
-          their own warning icons). `overbooked` above counts full technicians. */}
-      <div className="flex flex-wrap items-center gap-2 border-b px-5 py-2 print:hidden">
-        <span className="text-xs font-medium text-muted-foreground">
-          {view === "calendar" ? "This month:" : "This week:"}
-        </span>
-        {visibleTechs.map((t) => {
-          const booked = capacity.get(t.id) ?? 0;
-          const full = booked >= capacityDenom;
-          const heavy = booked === capacityDenom - 1;
-          return (
-            <span key={t.id} className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs" title={`${t.name}: ${booked} of ${capacityDenom} working days booked`}>
-              <span className="h-2 w-2 rounded-full" style={dotStyle(t.color)} />
-              {t.name}: <span className={full ? "font-semibold text-red-600" : heavy ? "font-semibold text-amber-600" : ""}>{booked}/{capacityDenom}</span>
-            </span>
-          );
-        })}
-      </div>
+      {/* Capacity per person for the period in view (see CapacityStrip). */}
+      <CapacityStrip view={view} visibleTechs={visibleTechs} capacity={capacity} capacityDays={capacityDays} />
 
-      {warning ? (
-        <div className="flex items-center gap-2 border-b bg-amber-50 px-5 py-2 text-sm text-amber-800 print:hidden">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span className="flex-1">{warning}</span>
-          <button type="button" aria-label="Dismiss" onClick={() => setWarning(null)} className="rounded p-0.5 hover:bg-amber-100">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ) : null}
+      <BoardMessages error={error} setError={setError} notice={notice} setNotice={setNotice} />
 
       {/* Entire interactive area is hidden in print — PrintSheet below is the printout. */}
-      <div className="flex min-h-0 flex-1 print:hidden">
+      {/* Phone: the Jobs panel (when shown) stacks ABOVE the board, full width. */}
+      <div className="flex min-h-0 flex-col md:flex-1 md:flex-row print:hidden">
         {/* Jobs queue — grouped, sortable, type-filterable */}
-        {sidebarOpen ? (
-          <aside
-            className="flex w-72 shrink-0 flex-col border-r bg-card/40 print:hidden"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onDropBacklog}
-            aria-label="Jobs queue"
-          >
-            <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
-              <h2 className="text-sm font-semibold">Jobs</h2>
-              <button type="button" aria-label="Hide panel" title="Hide panel" onClick={() => setSidebarOpen(false)} className="rounded p-1 text-muted-foreground hover:bg-muted">
-                <PanelLeftClose className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="flex items-center gap-1.5 border-b px-3 py-2">
-              <select className={`${selectClass} flex-1`} value={panelSort} onChange={(e) => setPanelSort(e.target.value as "date" | "so")} aria-label="Sort jobs">
-                <option value="date">Sort: Date</option>
-                <option value="so">Sort: SO #</option>
-              </select>
-              <select className={`${selectClass} flex-1`} value={panelStatus} onChange={(e) => setPanelStatus(e.target.value)} aria-label="Filter status">
-                <option value="ALL">All statuses</option>
-                {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
-                ))}
-                <option value="TENTATIVE">Tentative</option>
-              </select>
-            </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-              <PanelSection title="Scheduled" jobs={panelGroups.scheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="No scheduled jobs." />
-              <PanelSection title="Tentative" amber jobs={panelGroups.tentative} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="None to confirm." />
-              <PanelSection title="Unscheduled" jobs={panelGroups.unscheduled} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="Nothing in the backlog." hint="Drag onto the schedule to book." />
-              <PanelSection title="Completed" jobs={panelGroups.completed} collapsed={collapsed} setCollapsed={setCollapsed} onOpen={setSelected} onJump={jumpToJob} emptyText="No completed jobs." />
-            </div>
-          </aside>
-        ) : (
-          <button
-            type="button"
-            aria-label="Show panel"
-            title="Show panel"
-            onClick={() => setSidebarOpen(true)}
-            className="flex w-8 shrink-0 items-center justify-center border-r text-muted-foreground hover:bg-muted print:hidden"
-          >
-            <PanelLeftOpen className="h-4 w-4" />
-          </button>
-        )}
+        <JobsPanel
+          open={sidebarOpen}
+          setOpen={setSidebarOpen}
+          onDropBacklog={onDropBacklog}
+          panelSort={panelSort}
+          setPanelSort={setPanelSort}
+          panelStatus={panelStatus}
+          setPanelStatus={setPanelStatus}
+          panelGroups={panelGroups}
+          collapsed={collapsed}
+          setCollapsed={setCollapsed}
+          q={q}
+          hasOlderCompleted={hasOlderCompleted}
+          showingOldCompleted={showingOldCompleted}
+          onToggleOldCompleted={toggleOldCompleted}
+          renderCard={(j) => (
+            <QueueCard
+              key={j.id}
+              job={j}
+              onOpen={openJob}
+              onJump={jumpToJob}
+              onMenu={openMenu}
+              onDragStart={onCardDragStart}
+            />
+          )}
+        />
 
-        {/* Main view */}
-        <div className={`min-w-0 flex-1 print:overflow-visible ${view === "calendar" ? "overflow-hidden" : "overflow-auto"}`}>
+        {/* Main view. Phone: a fixed-height window that scrolls both ways inside
+            itself (the page never scrolls sideways); md+: fills the rest. */}
+        <div
+          className={`h-[75vh] min-w-0 flex-none md:h-auto md:flex-1 print:overflow-visible ${
+            view === "calendar" ? "overflow-x-auto overflow-y-hidden md:overflow-hidden" : "overflow-auto"
+          }`}
+        >
           {view === "calendar" ? (
             <MonthCalendar
               month={anchor}
@@ -854,94 +899,95 @@ export function ScheduleClient({
               timeOff={timeOff}
               targetedTasks={targetedTasks}
               todayYmd={todayYmd}
-              onOpenJob={setSelected}
-              onDropDay={moveDate}
+              onOpenJob={openJob}
+              onBarDragStart={onBarDragStart}
+              onDropWeek={(e, ms) => dropOnWeek(e, ms)}
+              onNewJobOnDay={(d) => openNewJob({ date: d })}
               onOpenDayTasks={openDayTasks}
               onShiftWeeks={(n) => setAnchor((a) => addDays(a, n * 7))}
-              onOpenMenu={openMenu}
-              onConflictClick={openConflict}
+              onMenu={openMenu}
+              onConflict={openConflict}
               onPreviewResize={previewResize}
               onCommitResize={commitResize}
               resizingId={resizingId}
-              onResizeActive={(id) => setResizingId(id)}
+              onResizeActive={onResizeActive}
               highlight={highlight}
             />
           ) : (
-            <>
-              <div className="sticky top-0 z-10 grid grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b bg-background">
-                <div className="border-r px-3 py-2 text-xs font-medium text-muted-foreground">Technician</div>
-                {weekDays.map((d, i) => {
-                  const isToday = ymd(d) === todayYmd;
-                  const weekend = i === 0 || i === 6;
-                  const holiday = holidayOn(d);
-                  return (
-                    <div
-                      key={i}
-                      title={holiday ? `Holiday: ${holiday}` : isToday ? "Today" : undefined}
-                      className={`border-r px-2 py-2 text-center text-xs ${isToday ? "border-b-2 border-b-primary bg-primary/10" : holiday ? "bg-amber-100/70" : weekend ? "bg-muted/40" : ""}`}
-                    >
-                      <div className={isToday ? "font-semibold text-primary" : "font-medium"}>{DAY_LABELS[i]}</div>
-                      <div className={isToday ? "inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 font-bold text-primary-foreground" : "text-muted-foreground"}>{d.getUTCDate()}</div>
-                      {holiday ? (
-                        <div className="truncate text-[10px] font-medium leading-tight text-amber-700" title={holiday}>{holiday}</div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
+            // Phone: narrower columns + the whole grid scrolls sideways inside the
+            // view; the person column stays put (sticky left).
+            <div className="min-w-[45rem] md:min-w-[59rem]">
+              <WeekHeader weekDays={weekDays} todayYmd={todayYmd} holidayOn={holidayOn} />
 
+              {rows.length === 0 ? (
+                <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+                  No people match the current filter.{" "}
+                  <button
+                    type="button"
+                    onClick={() => setFTechSel(null)}
+                    className="font-medium text-primary underline-offset-2 hover:underline"
+                  >
+                    Show everyone
+                  </button>
+                </div>
+              ) : null}
               {rows.map((row) => {
-                const laneJobs = scheduled.filter((j) => j.technicianId === row.id && inWeek(j));
+                const laneJobs = dated.filter((j) => j.technicianId === row.id && inWeek(j));
                 const packed = packLanes(laneJobs);
                 const laneCount = Math.max(1, ...packed.map((p) => p.lane + 1));
                 const laneHeight = laneCount * 34 + 8;
+                const weekStartMs = weekStart.getTime();
                 return (
-                  <div key={row.id ?? "unassigned"} className={`grid grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b ${row.inactive ? "opacity-50" : ""}`}>
-                    <div className="flex items-center gap-2 border-r px-3 py-2">
-                      <span className="h-2.5 w-2.5 rounded-full" style={dotStyle(row.color)} />
-                      <span className="truncate text-sm font-medium">{row.name}</span>
+                  <div key={row.id ?? "unassigned"} className={`grid grid-cols-[6.5rem_repeat(7,minmax(5.5rem,1fr))] md:grid-cols-[10rem_repeat(7,minmax(7rem,1fr))] border-b ${row.inactive ? "opacity-50" : ""}`}>
+                    <div className="sticky left-0 z-[5] flex min-w-0 items-center gap-2 border-r bg-background px-2 py-2 md:px-3" title={row.archived ? "This person is archived. Reassign these jobs to someone else (open a job or use ⋯ → Reassign to)." : row.inactive ? "Not schedulable. Reassign these jobs or make the person schedulable in Settings → People." : undefined}>
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={dotStyle(row.color)} />
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">{row.name}</span>
+                        {row.inactive ? (
+                          <span className="block truncate text-[10px] text-muted-foreground">Reassign these jobs</span>
+                        ) : null}
+                      </span>
                     </div>
-                    <div className="relative col-span-7" style={{ height: laneHeight }} data-weekcontainer data-weekstart={weekStart.getTime()}>
-                      <div className="absolute inset-0 grid grid-cols-7">
-                        {weekDays.map((d, i) => {
-                          const weekend = i === 0 || i === 6;
-                          const offInfo = offInfoOnDay(row.id, d);
-                          const off = !!offInfo;
-                          const holiday = holidayOn(d);
-                          const isToday = ymd(d) === todayYmd;
-                          return (
-                            <div
-                              key={i}
-                              className={`relative border-r ${off ? "bg-red-100/70" : holiday ? "bg-amber-100/60" : isToday ? "bg-primary/5 shadow-[inset_2px_0_0_hsl(var(--primary)),inset_-2px_0_0_hsl(var(--primary))]" : weekend ? "bg-muted/30" : ""}`}
-                              title={off ? `${row.name} — time off${offInfo!.reason ? ` (${offInfo!.reason})` : ""}` : holiday ? `Holiday: ${holiday}` : undefined}
-                              onDragOver={(e) => row.droppable && e.preventDefault()}
-                              onDrop={(e) => {
-                                if (row.droppable) onDropCell(e, row.id, d);
-                                else e.preventDefault();
-                              }}
-                            >
-                              {off ? (
-                                <Plane className="pointer-events-none absolute right-0.5 top-0.5 h-3 w-3 text-red-600" aria-hidden />
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
+                    <div
+                      // isolate: bars + their resize handles stay under the sticky person column.
+                      className="relative isolate col-span-7"
+                      style={{ height: laneHeight }}
+                      data-weekcontainer
+                      data-weekstart={weekStartMs}
+                      // The WHOLE lane is the drop target (bars included); the
+                      // day comes from the pointer X (dropOnWeek).
+                      onDragOver={(e) => {
+                        if (!row.droppable) return; // refuse: no drop here
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                      }}
+                      onDrop={(e) => {
+                        if (row.droppable) dropOnWeek(e, weekStartMs, row.id);
+                        else {
+                          e.preventDefault();
+                          endDrag();
+                          grabRef.current = null;
+                        }
+                      }}
+                    >
+                      <LaneDayCells
+                        row={row}
+                        weekDays={weekDays}
+                        todayYmd={todayYmd}
+                        holidayOn={holidayOn}
+                        offInfoOnDay={offInfoOnDay}
+                        openNewJob={openNewJob}
+                        onCellKey={onCellKey}
+                      />
                       {packed.map(({ job, lane }) => {
                         const startIdx = Math.max(0, dayIndex(parseYmd(job.startDate!), weekStart));
                         const endIdx = Math.min(6, dayIndex(parseYmd(job.endDate ?? job.startDate!), weekStart));
                         const span = Math.max(1, endIdx - startIdx + 1);
-                        const conflict = warnings.has(job.id);
                         return (
-                          <button
+                          <JobBar
                             key={job.id}
-                            type="button"
-                            draggable={resizingId !== job.id}
-                            onDragStart={(e) => e.dataTransfer.setData("text/plain", job.id)}
-                            onDoubleClick={() => setSelected(job)}
-                            onContextMenu={(e) => openMenu(e, job)}
-                            title={[jobLabel(job), job.description ? `Scope: ${job.description}` : "", "Double-click to open · right-click for actions · drag right edge to resize"].filter(Boolean).join("\n")}
-                            className={`absolute flex items-center gap-1 overflow-hidden rounded border px-1.5 text-left text-xs shadow-sm ${job.jobStatus === "COMPLETED" ? "opacity-60" : ""} ${highlight.has(job.id) ? "ring-2 ring-primary ring-offset-1" : ""}`}
+                            job={job}
+                            className="text-xs"
                             style={{
                               ...(job.tentative
                                 ? hatchStyle(job.technicianColor ?? row.color)
@@ -951,93 +997,59 @@ export function ScheduleClient({
                               top: lane * 34 + 4,
                               height: 28,
                             }}
-                          >
-                            {conflict ? (
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                aria-label="Show conflict details"
-                                onClick={(e) => openConflict(e, job)}
-                                className="shrink-0 cursor-help"
-                              >
-                                <AlertTriangle className="h-3 w-3 animate-pulse text-red-600" />
-                              </span>
-                            ) : null}
-                            <span className="truncate">{jobLabel(job)}</span>
-                            <ResizeHandle job={job} onPreview={previewResize} onCommit={commitResize} onActive={(a) => setResizingId(a ? job.id : null)} />
-                          </button>
+                            conflict={warnings.has(job.id)}
+                            highlighted={highlight.has(job.id)}
+                            dragDisabled={resizingId === job.id}
+                            onDragStart={onBarDragStart}
+                            onOpen={openJob}
+                            onMenu={openMenu}
+                            onConflict={openConflict}
+                            onPreviewResize={previewResize}
+                            onCommitResize={commitResize}
+                            onResizeActive={onResizeActive}
+                          />
                         );
                       })}
                     </div>
                   </div>
                 );
               })}
-            </>
+            </div>
           )}
         </div>
       </div>
 
       {newOpen && (
         <NewJobDialog
-          key="new-job"
+          key={`new-job-${newInit?.date ?? ""}-${newInit?.techId ?? ""}`}
           open={newOpen}
           onClose={() => setNewOpen(false)}
           technicians={technicians}
           allJobs={jobs}
+          initialDate={newInit?.date}
+          initialTechnicianId={newInit?.techId}
         />
       )}
       {importOpen && (
         <ImportDialog key="import" open={importOpen} onClose={() => setImportOpen(false)} />
       )}
-      {/* The printout — a purpose-built report layout (see print-sheet.tsx). */}
+      {/* The printout — a purpose-built report layout (see print-sheet.tsx). It
+          uses the same lanes as the screen (incl. inactive / archived ones). */}
       <PrintSheet
         view={view}
         anchor={anchor}
         weekDays={weekDays}
         jobs={visible.filter((j) => j.jobStatus !== "COMPLETED")}
-        techs={visibleTechs}
+        lanes={rows}
         timeOff={timeOff}
         holidays={holidayMap}
         rangeLabel={rangeLabel}
         conflicts={warnings}
+        filterNote={printNote}
       />
 
       {dayTasks && (
-        <Modal
-          open
-          onClose={() => setDayTasks(null)}
-          title={`Targeted tasks — ${parseYmd(dayTasks.ymd).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`}
-          description="Dashboard tasks due this day."
-        >
-          <ul className="space-y-1.5">
-            {dayTasks.tasks.map((t) => (
-              <li key={t.task.id}>
-                {t.editable ? (
-                  <button
-                    type="button"
-                    onClick={() => { setDayTasks(null); setTaskTicketId(t.task.id); }}
-                    className="w-full rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/40"
-                  >
-                    <span className="font-medium">{t.task.title}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {t.ownerName} · P{t.task.priority}
-                    </span>
-                  </button>
-                ) : (
-                  <div
-                    className="w-full rounded-md border border-dashed px-3 py-2 text-left text-sm opacity-70"
-                    title="Managed on that person's dashboard"
-                  >
-                    <span className="font-medium">{t.task.title}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {t.ownerName} · P{t.task.priority}
-                    </span>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Modal>
+        <DayTasksModal dayTasks={dayTasks} setDayTasks={setDayTasks} setTaskTicketId={setTaskTicketId} />
       )}
 
       {ticketEntry && (
@@ -1048,6 +1060,14 @@ export function ScheduleClient({
           currentUserId={currentUserId}
           isAdmin={isAdmin}
           onClose={() => setTaskTicketId(null)}
+          onDeleted={(t) => {
+            setUndo(null);
+            setDeletedNotice({
+              id: Date.now(),
+              text: `Deleted task “${t.title}”`,
+              undo: () => restoreTechTaskAction({ id: t.id }),
+            });
+          }}
         />
       )}
 
@@ -1061,22 +1081,42 @@ export function ScheduleClient({
           conflict={warnings.has(selected.id)}
           conflictReason={
             [
-              conflicts.has(selected.id) ? "Technician double-booked" : null,
-              ptoClashIds.has(selected.id) ? "Scheduled during the technician's time off" : null,
+              conflicts.has(selected.id) ? "Person double-booked" : null,
+              ptoClashIds.has(selected.id) ? "Scheduled during the person's time off" : null,
             ]
               .filter(Boolean)
               .join("; ") || undefined
           }
           currentUserId={currentUserId}
           isAdmin={isAdmin}
+          historyDays={historyDays}
+          runJobSave={runJobSave}
+          onDeleted={onJobDeleted}
         />
       )}
+      {binOpen ? (
+        <RecentlyDeletedDialog
+          noun="job"
+          load={listDeletedJobsAction}
+          restore={(id) => restoreJobAction({ jobId: id })}
+          onRestored={() => router.refresh()}
+          onClose={() => setBinOpen(false)}
+        />
+      ) : null}
+      {deletedNotice ? (
+        <UndoNotice
+          key={deletedNotice.id}
+          notice={deletedNotice}
+          onClose={() => setDeletedNotice(null)}
+          onUndone={() => router.refresh()}
+        />
+      ) : null}
 
       {menu && (
         <ContextMenu
           menu={menu}
           technicians={technicians}
-          onOpen={setSelected}
+          onOpen={(job) => setSelected(job)}
           onReassign={(job, techId) => doMove(job.id, { technicianId: techId })}
           onComplete={markComplete}
           onDuplicate={duplicateFromMenu}
@@ -1094,273 +1134,12 @@ export function ScheduleClient({
           onReason={(jobId, body) =>
             startTransition(async () => {
               const res = await addJobCommentAction({ jobId, body });
-              if (res.error) setWarning(res.error);
+              settled(res);
               router.refresh();
             })
           }
         />
       )}
     </div>
-  );
-}
-
-/** Technician filter: compact button opening a checkbox popover (multi-select). */
-function TechFilter({
-  technicians,
-  selected,
-  onChange,
-}: {
-  technicians: TechnicianOption[];
-  selected: Set<string> | null; // null = everyone
-  onChange: (next: Set<string> | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-
-  const active = technicians.filter((t) => t.active);
-  const isAll = selected === null;
-  const count = selected?.size ?? 0;
-  const label = isAll
-    ? "All technicians"
-    : count === 0
-      ? "No technicians"
-      : count === 1
-        ? (selected!.has("UNASSIGNED")
-            ? "Unassigned"
-            : active.find((t) => selected!.has(t.id))?.name ?? "1 selected")
-        : `${count} selected`;
-
-  const toggle = (id: string) => {
-    // Starting from "All", a click narrows to just that one — feels natural.
-    const next = selected === null ? new Set<string>() : new Set(selected);
-    if (selected === null) next.add(id);
-    else if (next.has(id)) next.delete(id);
-    else next.add(id);
-    onChange(next);
-  };
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        aria-label="Filter technicians"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className={`${selectClass} flex items-center gap-1 ${!isAll ? "border-primary/60 font-medium" : ""}`}
-      >
-        {label}
-        <ChevronDown className="h-3.5 w-3.5" />
-      </button>
-      {open ? (
-        <div className="absolute right-0 z-30 mt-1 w-56 rounded-md border bg-background p-2 shadow-lg">
-          <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs font-medium hover:bg-muted">
-            <input
-              type="checkbox"
-              checked={isAll}
-              onChange={() => onChange(isAll ? new Set() : null)}
-              className="h-3.5 w-3.5 accent-primary"
-            />
-            All technicians
-          </label>
-          <label className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted">
-            <input
-              type="checkbox"
-              checked={isAll || (selected?.has("UNASSIGNED") ?? false)}
-              onChange={() => toggle("UNASSIGNED")}
-              className="h-3.5 w-3.5 accent-primary"
-            />
-            Unassigned
-          </label>
-          <div className="my-1 border-t" />
-          <div className="max-h-64 overflow-y-auto">
-            {active.map((t) => (
-              <label key={t.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted">
-                <input
-                  type="checkbox"
-                  checked={isAll || (selected?.has(t.id) ?? false)}
-                  onChange={() => toggle(t.id)}
-                  className="h-3.5 w-3.5 accent-primary"
-                />
-                <span className="h-2 w-2 shrink-0 rounded-full" style={dotStyle(t.color)} />
-                <span className="truncate">{t.name}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function Stat({ label, value, tone }: { label: string; value: number; tone?: "warn" | "bad" }) {
-  const color = tone === "bad" ? "text-red-600" : tone === "warn" ? "text-amber-600" : "text-foreground";
-  return (
-    <span className="inline-flex items-baseline gap-1 rounded-full border bg-background px-2 py-0.5">
-      <span className={`font-semibold ${color}`}>{value}</span>
-      <span className="text-muted-foreground">{label}</span>
-    </span>
-  );
-}
-
-function PanelSection({
-  title,
-  jobs,
-  collapsed,
-  setCollapsed,
-  onOpen,
-  onJump,
-  emptyText,
-  hint,
-  amber,
-}: {
-  title: string;
-  jobs: JobRow[];
-  collapsed: Set<string>;
-  setCollapsed: (fn: (prev: Set<string>) => Set<string>) => void;
-  onOpen: (job: JobRow) => void;
-  onJump: (job: JobRow) => void;
-  emptyText: string;
-  hint?: string;
-  amber?: boolean;
-}) {
-  const isOpen = !collapsed.has(title);
-  const toggle = () =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(title)) next.delete(title);
-      else next.add(title);
-      return next;
-    });
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={toggle}
-        className="mb-1.5 flex w-full items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
-        aria-expanded={isOpen}
-      >
-        {isOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span className={amber ? "text-amber-700" : "text-foreground"}>{title}</span>
-        <span>({jobs.length})</span>
-      </button>
-      {isOpen ? (
-        jobs.length ? (
-          <>
-            {hint ? <p className="mb-2 text-xs text-muted-foreground">{hint}</p> : null}
-            <ul className="space-y-1.5">
-              {jobs.map((j) => (
-                <QueueCard key={j.id} job={j} onOpen={() => onOpen(j)} onJump={() => onJump(j)} />
-              ))}
-            </ul>
-          </>
-        ) : (
-          <p className="text-xs text-muted-foreground">{emptyText}</p>
-        )
-      ) : null}
-    </div>
-  );
-}
-
-function Detail({ label, value, wrap }: { label: string; value: string | null | undefined; wrap?: boolean }) {
-  if (!value) return null;
-  return (
-    <div className="flex gap-2">
-      <dt className="w-16 shrink-0 text-muted-foreground">{label}</dt>
-      <dd className={wrap ? "whitespace-pre-wrap break-words" : "truncate"}>{value}</dd>
-    </div>
-  );
-}
-
-function QueueCard({ job, onOpen, onJump }: { job: JobRow; onOpen: () => void; onJump: () => void }) {
-  const assigned = !!job.technicianColor;
-  const [expanded, setExpanded] = useState(false);
-  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Delay the single-click (jump to date) briefly so a double-click (open editor)
-  // can cancel it — otherwise both fire on a double-click.
-  const handleClick = () => {
-    if (clickTimer.current) clearTimeout(clickTimer.current);
-    clickTimer.current = setTimeout(() => {
-      onJump();
-      clickTimer.current = null;
-    }, 220);
-  };
-  const handleDouble = () => {
-    if (clickTimer.current) {
-      clearTimeout(clickTimer.current);
-      clickTimer.current = null;
-    }
-    onOpen();
-  };
-
-  return (
-    <li>
-      <div
-        draggable
-        role="button"
-        tabIndex={0}
-        onDragStart={(e) => e.dataTransfer.setData("text/plain", job.id)}
-        onClick={handleClick}
-        onDoubleClick={handleDouble}
-        title={`${job.description ?? jobLabel(job)}\nClick: jump to date · Double-click: open`}
-        style={assigned ? softStyle(job.technicianColor) : undefined}
-        className={`group w-full cursor-grab rounded-md border p-2 text-left text-xs shadow-sm active:cursor-grabbing ${
-          assigned
-            ? "hover:brightness-95"
-            : "border-dashed border-muted-foreground/40 bg-background hover:border-primary/50"
-        }`}
-      >
-        <div className="flex items-center justify-between gap-1">
-          <span className="truncate font-medium">{jobLabel(job)}</span>
-          <div className="flex shrink-0 items-center gap-1">
-            {job.tentative ? (
-              <span className="rounded bg-amber-200 px-1 text-[10px] font-medium text-amber-800">Tentative</span>
-            ) : job.jobStatus === "UNCONFIRMED" ? (
-              <span className="rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-700">Unconfirmed</span>
-            ) : null}
-            <button
-              type="button"
-              aria-label={expanded ? "Hide details" : "Show details"}
-              onClick={(e) => {
-                e.stopPropagation();
-                setExpanded((v) => !v);
-              }}
-              className="rounded p-0.5 hover:bg-black/10"
-            >
-              {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            </button>
-          </div>
-        </div>
-        <p className="truncate text-[11px] opacity-80">
-          {job.technicianName ?? "Unassigned"}
-          {job.startDate ? ` · ${job.startDate}` : ""}
-        </p>
-
-        {expanded ? (
-          <dl className="mt-2 space-y-0.5 border-t pt-2 text-[11px]" onClick={(e) => e.stopPropagation()}>
-            <Detail label="SO #" value={job.soNumber} />
-            <Detail label="Customer" value={job.customerName} />
-            <Detail label="Type" value={job.jobType ? JOB_TYPE_LABELS[job.jobType] : null} />
-            <Detail label="Status" value={STATUS_LABELS[job.jobStatus] ?? job.jobStatus} />
-            <Detail label="Hardware" value={job.hardwareTarget} />
-            <Detail label="Technician" value={job.technicianName ?? "Unassigned"} />
-            <Detail label="Start" value={job.startDate} />
-            <Detail label="End" value={job.endDate} />
-            <Detail label="Days" value={job.durationDays === 0 ? "TBD" : job.durationDays != null ? String(job.durationDays) : null} />
-            <Detail label="Tentative" value={job.tentative ? "Yes" : "No"} />
-            <Detail label="Scope" value={job.description} wrap />
-          </dl>
-        ) : null}
-      </div>
-    </li>
   );
 }

@@ -4,6 +4,8 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Mail, RefreshCw, CheckCircle2, XCircle, MinusCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { FormMessage } from "@/components/ui/form-message";
+import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { checkMailNowAction } from "./actions";
 import { fmtEastern } from "@/lib/tz";
@@ -53,6 +55,8 @@ export function EmailClient({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  // The outcome of the last "Check mail now": green when clean, red when the
+  // check (or any message in it) failed — e.g. bad IMAP credentials.
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,34 +68,45 @@ export function EmailClient({
       if (res.error) setError(res.error);
       else if (res.result) {
         const r = res.result;
-        setMessage(
-          `Checked: ${r.processed} email${r.processed === 1 ? "" : "s"} processed, ${r.created} task${r.created === 1 ? "" : "s"} created, ${r.skipped} skipped${r.errors.length ? `, ${r.errors.length} error(s): ${r.errors[0]}` : ""}.`,
-        );
+        const summary = `${r.processed} email${r.processed === 1 ? "" : "s"} processed, ${r.created} task${r.created === 1 ? "" : "s"} created, ${r.skipped} skipped`;
+        if (r.errors.length) {
+          setError(
+            `The mail check had ${r.errors.length === 1 ? "a problem" : `${r.errors.length} problems`}: ${r.errors[0]}${
+              r.errors.length > 1 ? ` (and ${r.errors.length - 1} more — see the history below)` : ""
+            }. ${summary}.`,
+          );
+        } else {
+          setMessage(`Checked: ${summary}.`);
+        }
         router.refresh();
       }
     });
 
   return (
-    <main className="mx-auto max-w-4xl space-y-6 p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-semibold">
-            <Mail className="h-6 w-6 text-muted-foreground" /> Email to Tasks
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {configured
-              ? `Monitoring ${mailbox} — checked automatically every ${Math.round(pollSeconds / 60) || 1} minute(s).`
-              : "Not configured — set EMAIL_INGEST_ENABLED, IMAP_USER and IMAP_PASSWORD in .env, then restart."}
-          </p>
-        </div>
-        <Button onClick={checkNow} disabled={pending || !configured}>
-          <RefreshCw className={`mr-1.5 h-4 w-4 ${pending ? "animate-spin" : ""}`} />
-          {pending ? "Checking…" : "Check mail now"}
-        </Button>
-      </div>
+    <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
+      <PageHeader
+        className="mb-0"
+        icon={<Mail className="h-5 w-5 text-muted-foreground" />}
+        title="Email"
+        description={
+          configured
+            ? `Emails to ${mailbox} become dashboard tasks — checked automatically every ${Math.round(pollSeconds / 60) || 1} minute(s).`
+            : "Not configured — set EMAIL_INGEST_ENABLED, IMAP_USER and IMAP_PASSWORD in .env, then restart."
+        }
+        actions={
+          <Button onClick={checkNow} disabled={pending || !configured}>
+            <RefreshCw className={`mr-1.5 h-4 w-4 ${pending ? "animate-spin" : ""}`} />
+            {pending ? "Checking…" : "Check mail now"}
+          </Button>
+        }
+      />
 
-      {message ? <p className="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-200">{message}</p> : null}
-      {error ? <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">{error}</p> : null}
+      <FormMessage tone="success" className="rounded-md border border-green-300 bg-green-50 px-3 py-2 dark:border-green-800 dark:bg-green-950">
+        {message}
+      </FormMessage>
+      <FormMessage tone="error" className="rounded-md border border-red-300 bg-red-50 px-3 py-2 dark:border-red-800 dark:bg-red-950">
+        {error}
+      </FormMessage>
 
       {/* 30-day statistics */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -198,7 +213,7 @@ export function EmailClient({
           )}
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }
 

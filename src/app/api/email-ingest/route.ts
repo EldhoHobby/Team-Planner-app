@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireScope, ForbiddenError, UnauthorizedError } from "@/lib/auth/current-user";
 import { ingestOnce, emailIngestEnabled } from "@/lib/email/ingest";
 import { writeAudit } from "@/lib/services/audit";
+import { logError } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ export async function POST() {
   } catch (e) {
     if (e instanceof UnauthorizedError) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (e instanceof ForbiddenError) return NextResponse.json({ error: e.message }, { status: 403 });
+    logError("email-ingest route", e);
     return NextResponse.json({ error: "Ingest failed" }, { status: 500 });
   }
 }

@@ -48,12 +48,33 @@ export function clearRateLimit(key: string): void {
   store.delete(key);
 }
 
-/** Best-effort client IP from the proxy's forwarded headers. */
+/**
+ * Pick the client IP from proxy headers (pure; exported for tests).
+ *
+ * Trust order:
+ *  1. `X-Real-IP` — Caddy OVERWRITES it with the TCP peer address
+ *     (`header_up X-Real-IP {remote_host}` in the Caddyfile), so a client
+ *     cannot forge it.
+ *  2. The LAST `X-Forwarded-For` entry — the hop appended by the proxy
+ *     closest to the app. The FIRST entry is whatever the client sent and is
+ *     trivially spoofable (an attacker could rotate it to dodge the limiter or
+ *     pin it to a victim's IP to lock them out).
+ */
+export function pickClientIp(get: (name: string) => string | null): string {
+  const real = get("x-real-ip")?.trim();
+  if (real) return real;
+  const xff = get("x-forwarded-for");
+  if (xff) {
+    const hops = xff.split(",").map((s) => s.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1]!;
+  }
+  return "unknown";
+}
+
+/** Client IP for rate-limit keys, as set by the Caddy proxy. */
 export async function clientIp(): Promise<string> {
   const h = await headers();
-  const xff = h.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]!.trim();
-  return h.get("x-real-ip") ?? "unknown";
+  return pickClientIp((n) => h.get(n));
 }
 
 // Sensible defaults.
