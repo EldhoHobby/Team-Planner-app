@@ -6,6 +6,7 @@ import { ScrollText, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
 import { FormMessage } from "@/components/ui/form-message";
 import { PageHeader } from "@/components/ui/page-header";
 import { clearAuditLogAction } from "./actions";
@@ -202,21 +203,23 @@ export function AuditClient({
             <option key={x} value={x}>{x}</option>
           ))}
         </select>
-        <Input
-          type="date"
-          className="h-9 w-auto"
-          value={filters.from}
-          onChange={(e) => apply({ from: e.target.value })}
-          aria-label="From date"
-        />
+        <div className="w-40">
+          <DatePicker
+            aria-label="From date"
+            placeholder="From date"
+            value={filters.from}
+            onChange={(v) => apply({ from: v })}
+          />
+        </div>
         <span className="text-xs text-muted-foreground">to</span>
-        <Input
-          type="date"
-          className="h-9 w-auto"
-          value={filters.to}
-          onChange={(e) => apply({ to: e.target.value })}
-          aria-label="To date"
-        />
+        <div className="w-40">
+          <DatePicker
+            aria-label="To date"
+            placeholder="To date"
+            value={filters.to}
+            onChange={(v) => apply({ to: v })}
+          />
+        </div>
         <Input
           placeholder="Search descriptions…"
           aria-label="Search descriptions"

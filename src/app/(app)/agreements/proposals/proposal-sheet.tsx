@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { DatePicker } from "@/components/ui/date-picker";
 import { useDraft } from "../use-draft";
 import {
   AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, SA_AGREEMENTS, SOFTWARE_LABELS, fmtMoney, fmtYmd, type SaAgreement,
@@ -432,20 +433,22 @@ function NotesBox({ value, onCommit }: { value: string | null; onCommit: Commit<
 }
 
 function EndDateCell({ value, onCommit }: { value: string | null; onCommit: Commit<string | null> }) {
-  const { draft, setDraft, editing, settle } = useDraft(value ?? "");
+  const { draft, setDraft, settle } = useDraft(value ?? "");
   return (
     <>
-      <input
-        type="date"
-        aria-label="Proposal end date"
-        value={draft}
-        onChange={(e) => { editing.current = true; setDraft(e.target.value); }}
-        onBlur={() => {
-          editing.current = false;
-          if ((draft || null) !== value) settle(onCommit(draft || null));
-        }}
-        className="w-full bg-transparent text-center font-bold text-black [color-scheme:light] print:!hidden"
-      />
+      {/* Picking a date (or Clear) saves straight away — there is no typing to wait for. */}
+      <div className="print:hidden">
+        <DatePicker
+          aria-label="Proposal end date"
+          placeholder="Set end date"
+          value={draft}
+          onChange={(v) => {
+            setDraft(v);
+            if ((v || null) !== value) settle(onCommit(v || null));
+          }}
+          className="h-auto justify-center gap-1.5 rounded-none border-0 px-1 py-0 text-[length:inherit] font-bold text-black shadow-none"
+        />
+      </div>
       <span className="hidden print:inline">{mmddyy(value)}</span>
     </>
   );

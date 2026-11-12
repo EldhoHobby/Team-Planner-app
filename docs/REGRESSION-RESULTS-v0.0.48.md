@@ -45,8 +45,8 @@ Each was checked live on a fresh throwaway copy.
 | Agreements | The refusal texts for a future "sent" date and a "signed before sent" date were not captured. | Seen live: "The sent date can't be in the future."; the signed-before-sent text is in the same dialog code. |
 | Schedule | Search narrows the Jobs panel only; the plan expected the board to narrow too. | By design: search narrows the panel and outlines matching bars. Help and plan case SCH-28 now say that. |
 
-Still on the browser's date box, on purpose: the Schedule "Jump to date" box, the
-Audit page's From / To filters and the yellow end-date cell on the proposal sheet.
+The Schedule "Jump to date" box, the Audit page's From / To filters and the yellow end-date
+cell on the proposal sheet were moved to the app's date picker in v0.0.53.
 
 ## What passed
 

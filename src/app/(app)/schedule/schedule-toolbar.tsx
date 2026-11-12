@@ -12,7 +12,8 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
-import { localTodayYmd, parseYmd, selectClass, ymd } from "./schedule-helpers";
+import { DatePicker } from "@/components/ui/date-picker";
+import { localTodayYmd, parseYmd, ymd } from "./schedule-helpers";
 
 /**
  * The schedule page header: Timeline | Calendar switch, Today, prev / next with
@@ -84,14 +85,14 @@ export function ScheduleToolbar({
           </button>
         </div>
         {/* Jump to a specific date (moves the view to that week/month). */}
-        <input
-          type="date"
-          aria-label="Jump to date"
-          title="Jump to date"
-          value={ymd(anchor)}
-          onChange={(e) => { if (e.target.value) setAnchor(parseYmd(e.target.value)); }}
-          className={selectClass}
-        />
+        <div className="w-36" title="Jump to date">
+          <DatePicker
+            aria-label="Jump to date"
+            value={ymd(anchor)}
+            onChange={(v) => { if (v) setAnchor(parseYmd(v)); }}
+            className="h-8 px-2 text-xs"
+          />
+        </div>
         {/* Secondary buttons: icon-only on a phone (label kept for screen readers). */}
         <Button variant="outline" size="sm" title="Import jobs from Excel" onClick={() => setImportOpen(true)}>
           <Upload className="h-4 w-4 sm:mr-1.5" aria-hidden /> <span className="sr-only sm:not-sr-only">Import</span>
