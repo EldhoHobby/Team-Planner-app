@@ -11,7 +11,7 @@ import {
 import { customerRenewal, priceHistory, type CustomerRenewal, type ProposalLite } from "@/lib/agreements/renewal";
 import { formatChange } from "@/lib/agreements/history-format";
 import {
-  HISTORY_ENTITY, assertCanEdit, audit, dateOf, getSettings, history, loadCustomer, toLineLite, toProposalLite, ymd,
+  HISTORY_ENTITY, assertCanEdit, assertCanView, audit, dateOf, getSettings, history, loadCustomer, toLineLite, toProposalLite, ymd,
 } from "./common";
 
 // ─── portfolio (every customer + renewal state) ───
@@ -25,6 +25,8 @@ export interface PortfolioRow {
   state: string | null;
   software: SaSoftware | null;
   notes: string | null;
+  /** The last logged follow-up (Renewals work list), or null. */
+  followUp: { at: string; by: string | null; note: string | null; next: string | null } | null;
   renewal: CustomerRenewal;
   proposals: ProposalLite[];
 }
@@ -44,6 +46,9 @@ export async function loadPortfolio(scope: TenantScope): Promise<{ rows: Portfol
     return {
       id: c.id, soNumber: c.soNumber, soConfirmed: c.soConfirmed, name: c.name, status: c.status, state: c.state,
       software: c.software, notes: c.notes,
+      followUp: c.followUpAt
+        ? { at: todayYmd(c.followUpAt), by: c.followUpBy, note: c.followUpNote, next: ymd(c.followUpNext) }
+        : null,
       renewal: customerRenewal(c.contracts.map(toLineLite), proposals, today, settings.dueWindowDays),
       proposals,
     };
@@ -185,6 +190,65 @@ export async function updateCustomer(scope: TenantScope, id: string, input: Cust
     await history(tx, scope, id, changes);
   });
   await audit(scope, id, "updated", `Updated service-agreement customer ${data.name}`);
+}
+
+// ─── follow-ups (Renewals work list) ───
+
+/**
+ * Log a follow-up on a customer's renewal: what was done (a short note) and, optionally, the day
+ * to follow up again. The customer row keeps only the LAST one (shown on the Renewals list);
+ * every follow-up is kept for good in the customer's Activity (ChangeHistory) and audited.
+ */
+export async function logFollowUp(
+  scope: TenantScope,
+  customerId: string,
+  input: { note: string; next: string | null },
+): Promise<void> {
+  await assertCanEdit(scope);
+  const note = (input.note ?? "").trim();
+  if (!note) throw new ForbiddenError("Say what was done, in a few words.");
+  if (note.length > 500) throw new ForbiddenError("Keep the note under 500 characters.");
+  const next = input.next?.trim() || null;
+  const today = todayYmd();
+  if (next !== null) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(next) || Number.isNaN(Date.parse(`${next}T00:00:00Z`))) throw new ForbiddenError("Pick a valid date.");
+    if (next <= today) throw new ForbiddenError("The next follow-up date must be after today.");
+  }
+  const c = await loadCustomer(scope, customerId);
+  const me = await prisma.user.findUnique({ where: { id: scope.ctx.realUserId ?? scope.ctx.userId }, select: { name: true, username: true } });
+  const by = me?.name?.trim() || me?.username || null;
+  await prisma.$transaction(async (tx) => {
+    await tx.saCustomer.updateMany({
+      where: { id: customerId, orgId: scope.ctx.orgId },
+      data: { followUpAt: new Date(), followUpBy: by, followUpNote: note, followUpNext: dateOf(next), version: { increment: 1 } },
+    });
+    await history(tx, scope, customerId, [{
+      field: "follow-up", oldValue: null, newValue: `${note}${next ? ` (follow up again ${next})` : ""}`,
+    }]);
+  });
+  await audit(scope, customerId, "follow_up", `Logged a follow-up for ${c.name}: ${note}`);
+}
+
+export interface FollowUpEntry {
+  id: string;
+  /** Day it was logged ("YYYY-MM-DD", US Eastern). */
+  day: string;
+  by: string;
+  /** The note, with "(follow up again <date>)" when a next date was given. */
+  text: string;
+}
+
+/** Every follow-up logged for a customer, newest first (from the permanent change history). */
+export async function listFollowUps(scope: TenantScope, customerId: string): Promise<FollowUpEntry[]> {
+  await assertCanView(scope);
+  if (typeof customerId !== "string" || !customerId) throw new ForbiddenError("Invalid request.");
+  const rows = await prisma.changeHistory.findMany({
+    where: { orgId: scope.ctx.orgId, entity: HISTORY_ENTITY, entityId: customerId, field: "follow-up" },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+    select: { id: true, createdAt: true, actorName: true, newValue: true },
+  });
+  return rows.map((r) => ({ id: r.id, day: todayYmd(r.createdAt), by: r.actorName, text: r.newValue ?? "" }));
 }
 
 // ─── contract lines (signed agreements) ───

@@ -36,7 +36,7 @@ export default async function ProposalPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ back?: string | string[] }>;
+  searchParams: Promise<{ back?: string | string[]; from?: string | string[] }>;
 }) {
   await requireAuth();
   const { scope } = await requireScope();
@@ -50,8 +50,9 @@ export default async function ProposalPage({
     finished ? getNextRenewal(scope, data.customer.id) : Promise.resolve(null),
     recordPageView(scope, "Service agreement proposal"),
   ]);
-  // Opened from the Proposals list (`?back=` present) → back to that list with its filters; otherwise → Renewals.
-  const fromList = typeof sp.back === "string" && sp.back !== "";
+  // Opened from the Proposals list (`?from=proposals`, plus `?back=` when it had filters) → back to that
+  // list as it was; otherwise → Renewals.
+  const fromList = sp.from === "proposals" || (typeof sp.back === "string" && sp.back !== "");
   return (
     <ProposalEditor
       data={data}

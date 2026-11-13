@@ -934,6 +934,52 @@ export async function runJobsImport(
   return summarize(results);
 }
 
+// ═════════════════ Holidays workbook (Settings → Holidays) ═════════════════
+// The Holidays page's Export + Import use these. Same Holidays columns and
+// importer as the admin round-trip (so the two stay in lock-step); admins only.
+
+export async function buildHolidaysWorkbook(scope: TenantScope): Promise<ExcelJS.Buffer> {
+  if (!scope.ctx.isOrgAdmin) throw new ForbiddenError("Only admins can export holidays.");
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Team Planner";
+  wb.created = new Date();
+
+  const info = wb.addWorksheet("README");
+  info.columns = [{ header: "How to use this file", key: "t", width: 90 }];
+  info.getRow(1).font = { bold: true };
+  [
+    "Edit the Holidays sheet, then bring it back with Import on the Holidays page.",
+    "Columns: id, date, name. Dates use YYYY-MM-DD.",
+    "To ADD a holiday, add a row and leave 'id' blank.",
+    "There is one holiday per date: a blank-id row for a date that already has a holiday renames it.",
+    "Rows with an id update that holiday (its date and name).",
+    "Removing a row does NOT delete the holiday - remove holidays on the Holidays page.",
+  ].forEach((t) => info.addRow({ t }));
+
+  const holidays = await prisma.holiday.findMany({ where: { orgId: scope.ctx.orgId }, orderBy: { date: "asc" } });
+  addSheet(wb, SHEET.holidays, ["id", "date", "name"],
+    holidays.map((h) => ({ id: h.id, date: ymd(h.date), name: h.name })));
+  return wb.xlsx.writeBuffer();
+}
+
+export async function runHolidaysImport(
+  scope: TenantScope,
+  data: ArrayBuffer,
+  apply: boolean,
+): Promise<ImportSummary> {
+  if (!scope.ctx.isOrgAdmin) throw new ForbiddenError("Only admins can import holidays.");
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(data);
+  const ws = wb.getWorksheet(SHEET.holidays);
+  const results: SheetResult[] = [];
+  if (ws) {
+    results.push(await importHolidays(scope, cappedSheetRows(ws), apply));
+  } else {
+    results.push({ sheet: SHEET.holidays, created: 0, updated: 0, unchanged: 0, skipped: 0, errors: ["No 'Holidays' sheet found in the workbook."] });
+  }
+  return summarize(results);
+}
+
 /**
  * Parse the uploaded workbook and either preview (apply=false) or apply the
  * upsert. Importable sheets only; Members/Organization are ignored.

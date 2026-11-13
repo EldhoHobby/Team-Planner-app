@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  RENEWAL_FILTERS, buildRenewalRows, isRenewalFilterKey, matchesQuery, standing,
+  RENEWAL_FILTERS, buildRenewalRows, expiryGroup, groupByExpiry, isFollowedUp, isRenewalFilterKey, matchesQuery, standing,
   type PortfolioLike, type RenewalRow,
 } from "./renewal-list";
 import type { LineLite, ProposalLite } from "./renewal";
@@ -49,6 +49,16 @@ describe("buildRenewalRows", () => {
 
   it("CURRENT customers without proposals give no rows", () => {
     expect(buildRenewalRows([customer()], TODAY)).toEqual([]);
+    expect(buildRenewalRows([customer({ renewal: { state: "CURRENT", nextEndDate: "2027-06-30", daysToEnd: 230 } })], TODAY)).toEqual([]);
+  });
+
+  it("a CURRENT customer ending within 120 days is listed, without needing action", () => {
+    const [r, ...rest] = buildRenewalRows([customer({
+      renewal: { state: "CURRENT", currentLines: current, annualValue: 10000, nextEndDate: "2027-02-28", daysToEnd: 108 },
+    })], TODAY);
+    expect(rest).toHaveLength(0);
+    expect(r).toMatchObject({ kind: "DUE", daysToEnd: 108, value: 10000, needsAction: false });
+    expect(expiryGroup(r!)).toBe("d120");
   });
 
   it("one row per DRAFT / SENT proposal, with value and agreement count", () => {
@@ -130,7 +140,7 @@ describe("buildRenewalRows", () => {
 const row = (p: Partial<RenewalRow>): RenewalRow => ({
   key: "k", kind: "DUE", customerId: "c", name: "Acme Water", soNumber: "SO-123", soConfirmed: true, customerStatus: "ACTIVE",
   proposalId: null, year: 2027, termEnd: null, daysToEnd: null, value: 0, agreements: 0, sentDaysAgo: null,
-  signedDate: null, lapsed: [], onHold: false, needsAction: false, notes: null, ...p,
+  signedDate: null, lapsed: [], onHold: false, needsAction: false, notes: null, followUp: null, followedUp: false, ...p,
 });
 
 describe("standing", () => {
@@ -161,7 +171,7 @@ describe("standing", () => {
 describe("filters and search", () => {
   const f = (key: string) => RENEWAL_FILTERS.find((x) => x.key === key)!.test;
   it("are in the agreed order", () => {
-    expect(RENEWAL_FILTERS.map((x) => x.key)).toEqual(["action", "due", "draft", "sent", "hold", "signed", "all"]);
+    expect(RENEWAL_FILTERS.map((x) => x.key)).toEqual(["expiring", "action", "due", "draft", "sent", "hold", "signed", "all"]);
   });
   it("match the right rows", () => {
     expect(f("action")(row({ needsAction: true }))).toBe(true);
@@ -176,6 +186,11 @@ describe("filters and search", () => {
     expect(f("signed")(row({ kind: "SIGNED", onHold: true }))).toBe(true);
     expect(f("all")(row({}))).toBe(true);
   });
+  it("Expiring = in an expiry group", () => {
+    expect(f("expiring")(row({ kind: "DUE", daysToEnd: 45 }))).toBe(true);
+    expect(f("expiring")(row({ kind: "DRAFT", daysToEnd: 121 }))).toBe(false);
+    expect(f("expiring")(row({ kind: "SIGNED", daysToEnd: 10 }))).toBe(false);
+  });
   it("validates filter keys", () => {
     expect(isRenewalFilterKey("sent")).toBe(true);
     expect(isRenewalFilterKey("nope")).toBe(false);
@@ -186,5 +201,61 @@ describe("filters and search", () => {
     expect(matchesQuery(row({}), "  acme ")).toBe(true);
     expect(matchesQuery(row({}), "so-12")).toBe(true);
     expect(matchesQuery(row({}), "water co")).toBe(false);
+  });
+});
+
+describe("expiry groups", () => {
+  it("puts a renewal in exactly one band by days to the term end", () => {
+    expect(expiryGroup(row({ kind: "EXPIRED", daysToEnd: -1 }))).toBe("ended");
+    expect(expiryGroup(row({ kind: "DUE", daysToEnd: 0 }))).toBe("d30");
+    expect(expiryGroup(row({ kind: "DUE", daysToEnd: 30 }))).toBe("d30");
+    expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: 31 }))).toBe("d60");
+    expect(expiryGroup(row({ kind: "SENT", daysToEnd: 60 }))).toBe("d60");
+    expect(expiryGroup(row({ kind: "DUE", daysToEnd: 61 }))).toBe("d90");
+    expect(expiryGroup(row({ kind: "DUE", daysToEnd: 90 }))).toBe("d90");
+    expect(expiryGroup(row({ kind: "DUE", daysToEnd: 91 }))).toBe("d120");
+    expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: 120 }))).toBe("d120");
+  });
+  it("leaves out far-off terms, signed renewals and rows with no end date; keeps on-hold customers", () => {
+    expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: 121 }))).toBeNull();
+    expect(expiryGroup(row({ kind: "SIGNED", daysToEnd: 20 }))).toBeNull();
+    expect(expiryGroup(row({ kind: "EXPIRED", daysToEnd: -400, onHold: true }))).toBe("ended");
+    expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: null }))).toBeNull();
+  });
+  it("groups in order, keeps empty groups, and sorts each by soonest end then name", () => {
+    const groups = groupByExpiry([
+      row({ key: "a", kind: "DUE", daysToEnd: 70, name: "Zed" }),
+      row({ key: "b", kind: "SENT", daysToEnd: 12, name: "Beta" }),
+      row({ key: "c", kind: "DUE", daysToEnd: 5, name: "Gamma" }),
+      row({ key: "d", kind: "DRAFT", daysToEnd: 12, name: "Alpha" }),
+      row({ key: "e", kind: "SIGNED", daysToEnd: 3 }),
+      row({ key: "f", kind: "EXPIRED", daysToEnd: -300 }),
+      row({ key: "g", kind: "EXPIRED", daysToEnd: -5 }),
+    ]);
+    expect(groups.map((g) => g.key)).toEqual(["d30", "d60", "d90", "d120", "ended"]);
+    // "Already ended" comes last and lists the most recently ended first.
+    expect(groups.map((g) => g.rows.map((r) => r.key))).toEqual([["c", "d", "b"], [], ["a"], [], ["g", "f"]]);
+  });
+});
+
+describe("follow-ups", () => {
+  const f = (p: Partial<{ at: string; next: string | null }>) => ({ at: "2026-11-10", by: "Mary", note: "Called", next: null, ...p });
+  it("no follow-up logged = not followed up", () => {
+    expect(isFollowedUp(null, TODAY)).toBe(false);
+  });
+  it("without a next date it stands for 7 days", () => {
+    expect(isFollowedUp(f({ at: "2026-11-06" }), TODAY)).toBe(true); // 6 days ago
+    expect(isFollowedUp(f({ at: "2026-11-05" }), TODAY)).toBe(false); // 7 days ago
+  });
+  it("with a next date it stands until that day", () => {
+    expect(isFollowedUp(f({ at: "2026-10-01", next: "2026-11-13" }), TODAY)).toBe(true);
+    expect(isFollowedUp(f({ at: "2026-11-11", next: "2026-11-12" }), TODAY)).toBe(false);
+  });
+  it("rows carry the customer's follow-up", () => {
+    const [r] = buildRenewalRows([customer({
+      followUp: { at: "2026-11-11", by: "Mary", note: "Left a voicemail", next: null },
+      renewal: { state: "EXPIRED", nextEndDate: "2026-11-01", daysToEnd: -11 },
+    })], TODAY);
+    expect(r).toMatchObject({ followedUp: true, followUp: { by: "Mary", note: "Left a voicemail" } });
   });
 });

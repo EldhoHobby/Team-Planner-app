@@ -1,28 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, Clock, StickyNote } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronRight, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/ui/date-picker";
+import { FormMessage } from "@/components/ui/form-message";
 import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import { PageHeader } from "@/components/ui/page-header";
 import { cn } from "@/lib/utils";
-import { AGREEMENT_LABELS, fmtDate, fmtMoney } from "@/lib/agreements/constants";
+import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, fmtDate, fmtMoney } from "@/lib/agreements/constants";
 import {
-  DEFAULT_RENEWAL_FILTER, RENEWAL_FILTERS, matchesQuery, standing,
-  type RenewalFilterKey, type RenewalRow,
+  DEFAULT_RENEWAL_FILTER, FOLLOW_UP_GOOD_DAYS, RENEWAL_FILTERS, groupByExpiry, matchesQuery, standing,
+  type ExpiryGroupKey, type RenewalFilterKey, type RenewalRow,
 } from "@/lib/agreements/renewal-list";
-import { CustomerStatusBadge, UnconfirmedSo } from "./badges";
+import type { FollowUpEntry } from "@/lib/services/agreements/customers";
+import { listFollowUpsAction, logFollowUpAction } from "./actions";
 import { StartProposalButton } from "./start-proposal-button";
 
-// Same pill look and colours as badges.tsx (status is never colour alone: icon + words).
-const PILL = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium";
-const TONE = {
-  warn: { cls: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200", Icon: AlertTriangle },
-  info: { cls: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-200", Icon: Clock },
-  ok: { cls: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200", Icon: CheckCircle2 },
-};
+// A deliberately plain page: one bar per expiry window, closed until you open it, each with a
+// one-line summary (how many, how much a year, how many still to follow up). Inside: short rows —
+// customer, when it ends, where it stands, one button. Details (SO #, notes, history) live on the
+// customer page and in the follow-up dialog, not in the row.
 
+const DOT = { warn: "bg-amber-500", info: "bg-sky-500", ok: "bg-emerald-500" } as const;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 function relDays(d: number | null): string | null {
@@ -49,13 +52,13 @@ function NextStep({ row, canEdit }: { row: RenewalRow; canEdit: boolean }) {
       return <StartProposalButton customerId={row.customerId} lapsedOnly label="Start proposal" />;
     case "DRAFT":
       return (
-        <Button asChild size="sm" variant={row.needsAction ? "default" : "outline"}>
+        <Button asChild size="sm" variant="outline">
           <Link href={proposalHref!}>Review prices</Link>
         </Button>
       );
     case "SENT":
       return (
-        <Button asChild size="sm" variant={row.needsAction ? "default" : "outline"}>
+        <Button asChild size="sm" variant="outline">
           <Link href={proposalHref!}>Mark signed</Link>
         </Button>
       );
@@ -68,9 +71,221 @@ function NextStep({ row, canEdit }: { row: RenewalRow; canEdit: boolean }) {
   }
 }
 
-/** Small caption shown above a cell's value on a phone, where there is no table header. */
-function CellLabel({ children }: { children: string }) {
-  return <span className="mb-0.5 block text-xs text-muted-foreground md:hidden">{children}</span>;
+function Row({ row, canEdit, onFollowUp }: { row: RenewalRow; canEdit: boolean; onFollowUp: (row: RenewalRow) => void }) {
+  const s = standing(row);
+  const rel = relDays(row.daysToEnd);
+  const f = row.followUp;
+  const showFollowUp = row.kind !== "SIGNED" && (canEdit || !!f);
+  return (
+    <li className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-center md:gap-4">
+      <div className="min-w-0 md:w-[38%]">
+        <p className="truncate">
+          <Link href={`/agreements/customers/${row.customerId}`} className="font-medium hover:underline">{row.name}</Link>
+          {row.customerStatus !== "ACTIVE" && (
+            <span className="ml-2 text-xs text-muted-foreground">{CUSTOMER_STATUS_LABELS[row.customerStatus]}</span>
+          )}
+        </p>
+        <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+          {row.termEnd
+            ? `${row.daysToEnd !== null && row.daysToEnd < 0 ? "Ended" : "Ends"} ${fmtDate(row.termEnd)}${rel ? ` · ${rel}` : ""} · `
+            : ""}
+          {fmtMoney(row.value)} a year
+        </p>
+      </div>
+
+      <div className="min-w-0 flex-1 text-sm">
+        <p className="flex items-center gap-2">
+          <span aria-hidden className={cn("h-2 w-2 shrink-0 rounded-full", DOT[s.tone])} />
+          <span className="min-w-0">
+            {s.text}
+            {row.kind === "LAPSED" && row.lapsed.length > 0 ? `: ${row.lapsed.map((l) => AGREEMENT_LABELS[l.agreement]).join(", ")}` : ""}
+          </span>
+        </p>
+        {row.kind !== "SIGNED" && f && (
+          <p
+            className={cn(
+              "mt-0.5 truncate pl-4 text-xs",
+              row.followedUp ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400",
+            )}
+            title={`${f.note ?? ""}${f.next ? ` (follow up again ${fmtDate(f.next)})` : ""}`}
+          >
+            {row.followedUp ? "Followed up" : "Follow-up due again · last"} {fmtDate(f.at)}
+            {f.by ? ` by ${f.by}` : ""}
+            {f.note ? `: ${f.note}` : ""}
+          </p>
+        )}
+      </div>
+
+      <div className="flex shrink-0 flex-wrap items-center gap-2 md:justify-end">
+        {showFollowUp && (
+          <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" onClick={() => onFollowUp(row)}>
+            <ClipboardCheck className="h-4 w-4" aria-hidden /> {canEdit ? "Follow-up" : "Follow-ups"}
+          </Button>
+        )}
+        <NextStep row={row} canEdit={canEdit} />
+      </div>
+    </li>
+  );
+}
+
+function RowList({
+  rows, canEdit, onFollowUp, flat = false,
+}: {
+  rows: RenewalRow[];
+  canEdit: boolean;
+  onFollowUp: (row: RenewalRow) => void;
+  /** Inside a group bar: no border of its own. */
+  flat?: boolean;
+}) {
+  return (
+    <ul className={cn("divide-y", !flat && "rounded-lg border bg-card")}>
+      {rows.map((r) => (
+        <Row key={r.key} row={r} canEdit={canEdit} onFollowUp={onFollowUp} />
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Follow-ups for one customer: log a new one (editors) and the full history, newest first.
+ * The history comes from the customer's permanent change history.
+ */
+function FollowUpDialog({ row, canEdit, onClose }: { row: RenewalRow; canEdit: boolean; onClose: () => void }) {
+  const router = useRouter();
+  const [note, setNote] = useState("");
+  const [next, setNext] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [history, setHistory] = useState<FollowUpEntry[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const busy = useRef(false);
+  const canClose = useCallback(() => !busy.current, []);
+
+  useEffect(() => {
+    let live = true;
+    listFollowUpsAction({ customerId: row.customerId })
+      .then((r) => {
+        if (!live) return;
+        if (r.error) setHistoryError(r.error);
+        else setHistory(r.items ?? []);
+      })
+      .catch(() => {
+        if (live) setHistoryError("Couldn't load the follow-up history — check your connection.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [row.customerId]);
+
+  const save = async () => {
+    if (busy.current) return;
+    if (!note.trim()) {
+      setError("Say what was done, in a few words.");
+      return;
+    }
+    busy.current = true;
+    setSaving(true);
+    setError(null);
+    let r: { error?: string };
+    try {
+      r = await logFollowUpAction({ customerId: row.customerId, note, next: next || null });
+    } catch {
+      r = { error: "Couldn't save — check your connection and try again." };
+    }
+    busy.current = false;
+    setSaving(false);
+    if (r.error) {
+      setError(r.error);
+      return;
+    }
+    router.refresh();
+    onClose();
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="sm"
+      title={canEdit ? "Log a follow-up" : "Follow-ups"}
+      description={row.name}
+      canClose={canClose}
+      dirty={note.trim() !== "" || next !== ""}
+      confirmClose="This follow-up has not been saved."
+    >
+      <div className="space-y-4 text-sm">
+        {canEdit && (
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save();
+            }}
+          >
+            <div className="space-y-1">
+              <label htmlFor="follow-up-note" className="text-xs font-medium text-muted-foreground">What was done</label>
+              <textarea
+                id="follow-up-note"
+                data-autofocus
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                rows={3}
+                maxLength={500}
+                placeholder="Called the customer, waiting for the PO"
+                className="w-full rounded-md border bg-background p-2 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <span id="follow-up-next-label" className="block text-xs font-medium text-muted-foreground">
+                Follow up again on (optional)
+              </span>
+              <DatePicker aria-labelledby="follow-up-next-label" value={next} onChange={setNext} placeholder="No date" />
+              <p className="text-xs text-muted-foreground">
+                Without a date it counts as followed up for {FOLLOW_UP_GOOD_DAYS} days.
+              </p>
+            </div>
+            <FormMessage tone="error">{error}</FormMessage>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  if (!busy.current) onClose();
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" aria-disabled={saving} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50">
+                {saving ? "Saving…" : "Save follow-up"}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        <section aria-labelledby="follow-up-history" className={cn(canEdit && "border-t pt-3")}>
+          <h3 id="follow-up-history" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            History
+          </h3>
+          {historyError ? (
+            <FormMessage tone="error" className="mt-2">{historyError}</FormMessage>
+          ) : history === null ? (
+            <p className="mt-2 text-xs text-muted-foreground">Loading…</p>
+          ) : history.length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">No follow-ups logged yet.</p>
+          ) : (
+            <ol className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1" tabIndex={0} aria-label="Follow-up history">
+              {history.map((h) => (
+                <li key={h.id} className="rounded-md bg-muted/50 px-3 py-2">
+                  <p className="text-xs text-muted-foreground">{fmtDate(h.day)} · {h.by}</p>
+                  <p className="break-words">{h.text.replace(/\(follow up again (\d{4}-\d{2}-\d{2})\)/, (_, d: string) => `(follow up again ${fmtDate(d)})`)}</p>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      </div>
+    </Modal>
+  );
 }
 
 export function RenewalsList({
@@ -86,6 +301,16 @@ export function RenewalsList({
   const [show, setShow] = useState<RenewalFilterKey>(initialShow);
   const [q, setQ] = useState(initialQ);
   const [urlQ, setUrlQ] = useState(initialQ);
+  // Expiring view: which group bars are open. All start closed; a search opens the groups it finds rows in.
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<ExpiryGroupKey>>(() => new Set());
+  const toggleGroup = (key: ExpiryGroupKey) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const [followUpFor, setFollowUpFor] = useState<RenewalRow | null>(null);
 
   // Filter immediately; write the search to the URL a moment after typing stops.
   useEffect(() => {
@@ -104,21 +329,17 @@ export function RenewalsList({
   }, [show, urlQ]);
 
   const searched = useMemo(() => rows.filter((r) => matchesQuery(r, q)), [rows, q]);
-  const counts = useMemo(
-    () => Object.fromEntries(RENEWAL_FILTERS.map((f) => [f.key, searched.filter(f.test).length])) as Record<RenewalFilterKey, number>,
-    [searched],
-  );
   const shown = useMemo(() => {
     const test = RENEWAL_FILTERS.find((f) => f.key === show)!.test;
     return searched.filter(test);
   }, [searched, show]);
-  const total = shown.reduce((a, r) => a + r.value, 0);
+  const groups = useMemo(() => (show === "expiring" ? groupByExpiry(shown) : null), [show, shown]);
 
   const header = (
     <PageHeader
       className="mb-1 print:hidden"
       title="Renewals"
-      description="Every agreement coming up for renewal, with the next step for each."
+      description="Agreements by when they expire. Work down the list and log each follow-up."
     />
   );
 
@@ -140,110 +361,105 @@ export function RenewalsList({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="mx-auto max-w-5xl space-y-4">
       {header}
+
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Show">
-          {RENEWAL_FILTERS.map((f) => (
-            <button
-              key={f.key}
-              type="button"
-              aria-pressed={show === f.key}
-              onClick={() => setShow(f.key)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium transition-colors",
-                show === f.key
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground",
-              )}
-            >
-              {f.label}
-              <span className="tabular-nums opacity-80">{counts[f.key]}</span>
-            </button>
-          ))}
-        </div>
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search customer or SO #"
           aria-label="Search customer or SO #"
-          className="w-full sm:ml-auto sm:w-64"
+          className="w-full sm:w-64"
         />
+        <label className="flex items-center gap-2 text-sm text-muted-foreground sm:ml-auto">
+          Show
+          <select
+            value={show}
+            onChange={(e) => {
+              setShow(e.target.value as RenewalFilterKey);
+            }}
+            className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {RENEWAL_FILTERS.map((f) => (
+              <option key={f.key} value={f.key}>{f.label}</option>
+            ))}
+          </select>
+        </label>
       </div>
 
-      <p className="text-sm text-muted-foreground" aria-live="polite">
-        {plural(shown.length, "renewal", "renewals")} · {fmtMoney(total)} a year
-      </p>
-
-      {shown.length === 0 ? (
-        <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">
-          Nothing here. Try another filter or clear the search.
-        </div>
-      ) : (
-        <div className="rounded-lg border bg-card">
-          {/* A table on desktop; on a phone each row stacks into a card (no sideways scroll). */}
-          <table className="block w-full text-sm md:table">
-            <thead className="hidden border-b bg-muted/40 text-left text-xs text-muted-foreground md:table-header-group">
-              <tr>
-                <th className="px-3 py-2 font-medium">Customer</th>
-                <th className="px-3 py-2 font-medium">Term ends</th>
-                <th className="px-3 py-2 text-right font-medium">A year</th>
-                <th className="px-3 py-2 font-medium">Where it stands</th>
-                <th className="px-3 py-2 text-right font-medium">Next step</th>
-              </tr>
-            </thead>
-            <tbody className="block divide-y md:table-row-group">
-              {shown.map((r) => {
-                const s = standing(r);
-                const tone = TONE[s.tone];
-                const rel = relDays(r.daysToEnd);
-                const notes = r.notes?.trim();
-                return (
-                  <tr key={r.key} className="grid grid-cols-2 gap-x-4 gap-y-2 p-3 md:table-row md:p-0">
-                    <td className="col-span-2 min-w-0 md:max-w-[22rem] md:px-3 md:py-2.5">
-                      <Link href={`/agreements/customers/${r.customerId}`} className="font-medium hover:underline">{r.name}</Link>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                        <span>SO # <span className="font-mono">{r.soNumber}</span></span>
-                        {!r.soConfirmed && <UnconfirmedSo />}
-                        {r.customerStatus !== "ACTIVE" && <CustomerStatusBadge status={r.customerStatus} />}
-                      </div>
-                      {notes && (
-                        <p className="mt-0.5 truncate text-xs text-muted-foreground" title={notes}>
-                          <StickyNote className="mr-1 inline h-3 w-3 -translate-y-px" aria-label="Notes" />
-                          {notes}
-                        </p>
-                      )}
-                    </td>
-                    <td className="md:whitespace-nowrap md:px-3 md:py-2.5">
-                      <CellLabel>Term ends</CellLabel>
-                      {fmtDate(r.termEnd) || "—"}
-                      {r.termEnd && rel && <span className="block text-xs text-muted-foreground">{rel}</span>}
-                    </td>
-                    <td className="text-right tabular-nums md:whitespace-nowrap md:px-3 md:py-2.5">
-                      <CellLabel>A year</CellLabel>
-                      {fmtMoney(r.value)}
-                      <span className="block text-xs text-muted-foreground">{plural(r.agreements, "agreement", "agreements")}</span>
-                    </td>
-                    <td className="col-span-2 md:px-3 md:py-2.5">
-                      <span className={cn(PILL, tone.cls)}>
-                        <tone.Icon className="h-3 w-3 shrink-0" aria-hidden />
-                        {s.text}
+      {groups ? (
+        <div className="space-y-2">
+          {groups.map((g) => {
+            const count = g.rows.length;
+            const toDo = g.rows.filter((r) => !r.followedUp).length;
+            const value = g.rows.reduce((a, r) => a + r.value, 0);
+            const searching = q.trim() !== "";
+            const open = count > 0 && (searching || openGroups.has(g.key));
+            const ended = g.key === "ended";
+            return (
+              <section key={g.key} className="overflow-hidden rounded-lg border bg-card">
+                <h2>
+                  <button
+                    type="button"
+                    id={`grp-${g.key}`}
+                    aria-expanded={open}
+                    aria-controls={`grp-${g.key}-rows`}
+                    aria-disabled={count === 0}
+                    onClick={() => {
+                      if (count > 0) toggleGroup(g.key);
+                    }}
+                    className={cn(
+                      "flex w-full flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-left",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                      count > 0 ? "hover:bg-muted/50" : "cursor-default",
+                    )}
+                  >
+                    <ChevronRight
+                      aria-hidden
+                      className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90", count === 0 && "opacity-30")}
+                    />
+                    <span className={cn("min-w-0 flex-1 text-sm font-semibold", count === 0 && "text-muted-foreground")}>{g.label}</span>
+                    <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm tabular-nums">
+                      <span className={cn("font-semibold", count === 0 && "text-muted-foreground", ended && count > 0 && "text-amber-700 dark:text-amber-400")}>
+                        {plural(count, "renewal", "renewals")}
                       </span>
-                      {r.kind === "LAPSED" && r.lapsed.length > 0 && (
-                        <span className="mt-1 block text-xs text-muted-foreground">
-                          {r.lapsed.map((l) => AGREEMENT_LABELS[l.agreement]).join(", ")}
+                      {count > 0 && <span className="text-muted-foreground">{fmtMoney(value)} a year</span>}
+                      {count > 0 && (
+                        <span className={toDo === 0 ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}>
+                          {toDo === 0 ? "all followed up" : `${toDo} to follow up`}
                         </span>
                       )}
-                    </td>
-                    <td className="col-span-2 md:whitespace-nowrap md:px-3 md:py-2.5 md:text-right">
-                      <NextStep row={r} canEdit={canEdit} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    </span>
+                  </button>
+                </h2>
+                {open && (
+                  <div id={`grp-${g.key}-rows`} role="region" aria-labelledby={`grp-${g.key}`} className="border-t">
+                    <RowList rows={g.rows} canEdit={canEdit} onFollowUp={setFollowUpFor} flat />
+                  </div>
+                )}
+              </section>
+            );
+          })}
+          {q.trim() !== "" && shown.length === 0 && (
+            <p className="px-1 pt-1 text-sm text-muted-foreground">No customer matches that search.</p>
+          )}
         </div>
+      ) : shown.length === 0 ? (
+        <p className="rounded-lg border border-dashed bg-card px-4 py-6 text-center text-sm text-muted-foreground">
+          Nothing here. Try another view or clear the search.
+        </p>
+      ) : (
+        <>
+          <p className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
+            {plural(shown.length, "renewal", "renewals")} · {fmtMoney(shown.reduce((a, r) => a + r.value, 0))} a year
+          </p>
+          <RowList rows={shown} canEdit={canEdit} onFollowUp={setFollowUpFor} />
+        </>
+      )}
+
+      {followUpFor && (
+        <FollowUpDialog key={followUpFor.key} row={followUpFor} canEdit={canEdit} onClose={() => setFollowUpFor(null)} />
       )}
     </div>
   );

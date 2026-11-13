@@ -44,7 +44,12 @@ export function useBoardNotice() {
  * Technician filter is a checkbox multi-select: null = everyone; otherwise a
  * set of technician ids (plus "UNASSIGNED"). Initialised to the viewer's
  * personal scope (self for members, team for managers) — changeable.
+ * The last selection is remembered in this browser (localStorage) and restored
+ * after mount (avoids an SSR hydration mismatch) — but only while the personal
+ * default is the one it was saved under, so "View as" or a change of department
+ * starts from that person's default again.
  */
+const PEOPLE_FILTER_KEY = "schedule.people";
 export function useTechFilterSelection(defaultTechIds: string[] | null) {
   const [fTechSel, setFTechSel] = useState<Set<string> | null>(() =>
     defaultTechIds ? new Set(defaultTechIds) : null,
@@ -54,6 +59,31 @@ export function useTechFilterSelection(defaultTechIds: string[] | null) {
   // left alone otherwise — we only react to a different default arriving.
   const defaultKey = defaultTechIds ? [...defaultTechIds].sort().join(",") : "__ALL__";
   const lastDefaultKey = useRef(defaultKey);
+  const restored = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PEOPLE_FILTER_KEY);
+      const saved: unknown = raw ? JSON.parse(raw) : null;
+      if (saved && typeof saved === "object") {
+        const { d, ids } = saved as { d?: unknown; ids?: unknown };
+        if (d === defaultKey && (ids === null || Array.isArray(ids))) {
+          setFTechSel(ids === null ? null : new Set(ids.filter((x): x is string => typeof x === "string")));
+        }
+      }
+    } catch {
+      /* unreadable or blocked storage: keep the default */
+    }
+    restored.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once, on mount
+  }, []);
+  useEffect(() => {
+    if (!restored.current) return;
+    try {
+      localStorage.setItem(PEOPLE_FILTER_KEY, JSON.stringify({ d: defaultKey, ids: fTechSel === null ? null : [...fTechSel] }));
+    } catch {
+      /* ignore */
+    }
+  }, [fTechSel, defaultKey]);
   useEffect(() => {
     if (lastDefaultKey.current !== defaultKey) {
       lastDefaultKey.current = defaultKey;

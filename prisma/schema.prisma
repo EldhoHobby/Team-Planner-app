@@ -854,6 +854,11 @@ model SaCustomer {
   lastServerSo    String?
   qwebLicenses    Int?
   notes           String?
+  // Renewals work list: the last logged follow-up (each one is also kept in ChangeHistory).
+  followUpAt      DateTime?
+  followUpBy      String? // display name of who logged it
+  followUpNote    String?
+  followUpNext    DateTime?        @db.Date // optional "follow up again on"
   version         Int              @default(1)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt

@@ -6,7 +6,8 @@ import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
 import { actionError } from "@/lib/log";
 import { updateSettings, type SettingsRow } from "@/lib/services/agreements/common";
 import {
-  addContractLine, createCustomer, deleteContractLine, saveCalls, updateContractLine, updateCustomer,
+  addContractLine, createCustomer, deleteContractLine, listFollowUps, logFollowUp, saveCalls, updateContractLine, updateCustomer,
+  type FollowUpEntry,
   type ContractInput, type CustomerInput,
 } from "@/lib/services/agreements/customers";
 import {
@@ -170,6 +171,25 @@ export async function bulkProposalsAction(input: { month: string; apply: boolean
     return { ok: true, rows };
   } catch (e) {
     return fail("agreements.bulkProposals", e, "Couldn't create the proposals. Please try again.");
+  }
+}
+
+// ─── follow-ups ───
+
+/** Renewals list: record that a renewal was followed up (note + optional next date). */
+export async function logFollowUpAction(input: { customerId: string; note: string; next: string | null }) {
+  return run("agreements.followUp", "Couldn't save the follow-up. Please try again.", (scope) =>
+    logFollowUp(scope, String(input?.customerId ?? ""), { note: String(input?.note ?? ""), next: input?.next ? String(input.next) : null }),
+  );
+}
+
+/** The follow-up history of one customer, newest first (anyone who can see Agreements). */
+export async function listFollowUpsAction(input: { customerId: string }): Promise<{ items?: FollowUpEntry[]; error?: string }> {
+  try {
+    const { scope } = await requireScope();
+    return { items: await listFollowUps(scope, String(input?.customerId ?? "")) };
+  } catch (e) {
+    return actionError("agreements.listFollowUps", e, "Couldn't load the follow-up history.");
   }
 }
 

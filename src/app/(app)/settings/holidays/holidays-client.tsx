@@ -4,8 +4,11 @@ import { fmtDateOnly, fmtEastern } from "@/lib/tz";
 import { useActionState, useEffect, useRef, useTransition, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Trash2, History } from "lucide-react";
-import { createHolidayAction, deleteHolidayAction } from "./actions";
+import { Download, Trash2, History, Upload } from "lucide-react";
+import {
+  applyHolidaysImportAction, createHolidayAction, deleteHolidayAction, previewHolidaysImportAction,
+} from "./actions";
+import { ImportDialog, type ImportDialogConfig } from "../../schedule/import-dialog";
 import { listHolidayHistoryAction } from "../../tasks/actions";
 import type { HolidayFormState, HolidayRow } from "./types";
 import type { AuditEntry } from "../../schedule/types";
@@ -27,6 +30,22 @@ import {
 import { useFlash } from "../use-flash";
 
 const initial: HolidayFormState = {};
+
+/** The Holidays page's Excel import (same two-step dialog as the Schedule's). */
+const HOLIDAYS_IMPORT: ImportDialogConfig = {
+  title: "Import holidays (Excel)",
+  description:
+    "Upload the exported .xlsx workbook — you see what would change before anything is saved. Blank-id rows add a holiday (or rename the one already on that date); rows with an id update that holiday. Nothing is deleted. Tip: use Export first to get a file with the right columns.",
+  columns: (
+    <>
+      Columns on the <span className="font-medium">Holidays</span> sheet: id, date, name. Dates use
+      YYYY-MM-DD (for example 2027-01-01). Leave id blank for a new holiday.
+    </>
+  ),
+  preview: previewHolidaysImportAction,
+  apply: applyHolidaysImportAction,
+  unknownOutcome: "Could not reach the server — the import may not have run. Close this and check the holiday list.",
+};
 
 function AddButton() {
   const { pending } = useFormStatus();
@@ -117,6 +136,36 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [flash, showFlash, clearFlash] = useFlash();
   const formRef = useRef<HTMLFormElement>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const exportXlsx = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const res = await fetch("/api/holidays/export");
+      if (!res.ok) {
+        const msg = (await res.text().catch(() => "")).trim().slice(0, 200);
+        setExportError(`Export failed: ${msg || `server returned ${res.status}`}`);
+        return;
+      }
+      const blob = await res.blob();
+      const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "holidays.xlsx";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setExportError("Export failed — check your connection and try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
   // The date picker keeps its own state, so it is remounted to clear it.
   const [formKey, setFormKey] = useState(0);
   // Set on submit: the date already had a holiday, so this add renames it.
@@ -190,9 +239,34 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Holiday calendar</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-lg">Holiday calendar</CardTitle>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" title="Bring holidays in from Excel" onClick={() => setImportOpen(true)}>
+                <Upload className="mr-1.5 h-4 w-4" aria-hidden /> Import
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                title="Download the holidays as an Excel file"
+                aria-disabled={exporting}
+                className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                onClick={() => {
+                  if (!exporting) void exportXlsx();
+                }}
+              >
+                <Download className="mr-1.5 h-4 w-4" aria-hidden /> {exporting ? "Exporting…" : "Export"}
+              </Button>
+            </div>
+          </div>
+          <CardDescription>
+            Export downloads the list as an Excel file; edit it (or add next year&apos;s holidays) and bring it back
+            with Import.
+          </CardDescription>
         </CardHeader>
         <CardContent>
+          <FormMessage className="mb-2">{exportError}</FormMessage>
           {holidays.length ? (
             <ul className="divide-y">
               {holidays.map((h) => (
@@ -204,6 +278,8 @@ export function HolidaysClient({ holidays }: { holidays: HolidayRow[] }) {
           )}
         </CardContent>
       </Card>
+
+      <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} config={HOLIDAYS_IMPORT} />
 
       <Modal
         open={!!historyHoliday}
