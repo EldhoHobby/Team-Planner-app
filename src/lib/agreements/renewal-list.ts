@@ -30,6 +30,32 @@ export interface RenewalRow {
   onHold: boolean;
   needsAction: boolean;
   notes: string | null;
+  /** The customer's last logged follow-up, or null. */
+  followUp: FollowUp | null;
+  /** A follow-up was logged and is not due again yet (see `isFollowedUp`). */
+  followedUp: boolean;
+}
+
+export interface FollowUp {
+  /** Day it was logged ("YYYY-MM-DD", US Eastern). */
+  at: string;
+  by: string | null;
+  note: string | null;
+  /** Day to follow up again, when one was given. */
+  next: string | null;
+}
+
+/** Without a "follow up again" date, a logged follow-up counts for this many days. */
+export const FOLLOW_UP_GOOD_DAYS = 7;
+
+/**
+ * Whether a logged follow-up still stands: until its "follow up again" date arrives, or for
+ * FOLLOW_UP_GOOD_DAYS days when no date was given. After that the renewal needs following up again.
+ */
+export function isFollowedUp(f: FollowUp | null, today: string): boolean {
+  if (!f) return false;
+  if (f.next) return today < f.next;
+  return daysBetween(f.at, today) < FOLLOW_UP_GOOD_DAYS;
 }
 
 /** The subset of the service's PortfolioRow this list needs. */
@@ -40,6 +66,7 @@ export interface PortfolioLike {
   soConfirmed: boolean;
   status: SaCustomerStatus;
   notes: string | null;
+  followUp?: FollowUp | null;
   renewal: Pick<CustomerRenewal, "state" | "currentYear" | "currentLines" | "annualValue" | "nextEndDate" | "daysToEnd" | "lapsedLines">;
   proposals: ProposalLite[];
 }
@@ -70,6 +97,7 @@ export function buildRenewalRows(rows: PortfolioLike[], today: string): RenewalR
     const base = {
       customerId: c.id, name: c.name, soNumber: c.soNumber, soConfirmed: c.soConfirmed,
       customerStatus: c.status, notes: c.notes, onHold,
+      followUp: c.followUp ?? null, followedUp: isFollowedUp(c.followUp ?? null, today),
     };
     const push = (row: Omit<RenewalRow, keyof typeof base | "needsAction">) =>
       out.push({ ...base, ...row, needsAction: needsActionFor(row.kind, onHold, row.sentDaysAgo) });
@@ -151,8 +179,55 @@ export function standing(row: RenewalRow): { tone: "warn" | "info" | "ok"; text:
 
 const NO_PROPOSAL: readonly RenewalKind[] = ["DUE", "EXPIRED", "LAPSED"];
 
+// ─── expiry groups (the default "Expiring" view) ───
+// Renewals grouped by when the current term ends: already ended, then the next 30 days,
+// 31 to 60 days and 61 to 90 days. Each renewal is in exactly one group (no double listing).
+
+/** How far ahead the Expiring view looks. */
+export const EXPIRY_HORIZON_DAYS = 90;
+
+export type ExpiryGroupKey = "ended" | "d30" | "d60" | "d90";
+
+export const EXPIRY_GROUPS: readonly { key: ExpiryGroupKey; label: string; hint: string }[] = [
+  { key: "ended", label: "Already ended, needs follow-up", hint: "The term has ended and the renewal is not signed yet." },
+  { key: "d30", label: "Expiring in the next 30 days", hint: "Ends today to 30 days from now." },
+  { key: "d60", label: "Expiring in 31 to 60 days", hint: "Ends 31 to 60 days from now." },
+  { key: "d90", label: "Expiring in 61 to 90 days", hint: "Ends 61 to 90 days from now." },
+];
+
+/**
+ * Which expiry group a renewal belongs to, or null when it is not in the Expiring view:
+ * signed renewals, rows without a term end, and terms ending more than 90 days out.
+ * Pending / Expired - still waiting customers ARE included (an ended agreement that is still
+ * being chased is exactly what "Already ended, needs follow-up" is for); they keep their
+ * status badge and are also under the "On hold" filter.
+ */
+export function expiryGroup(row: RenewalRow): ExpiryGroupKey | null {
+  if (row.kind === "SIGNED" || row.daysToEnd === null) return null;
+  if (row.daysToEnd < 0) return "ended";
+  if (row.daysToEnd <= 30) return "d30";
+  if (row.daysToEnd <= 60) return "d60";
+  if (row.daysToEnd <= EXPIRY_HORIZON_DAYS) return "d90";
+  return null;
+}
+
+/** The Expiring view's rows, split into its groups (every group present, possibly empty; rows keep their order). */
+export function groupByExpiry(rows: RenewalRow[]): { key: ExpiryGroupKey; label: string; hint: string; rows: RenewalRow[] }[] {
+  const by = new Map<ExpiryGroupKey, RenewalRow[]>(EXPIRY_GROUPS.map((g) => [g.key, []]));
+  for (const r of rows) {
+    const g = expiryGroup(r);
+    if (g) by.get(g)!.push(r);
+  }
+  // Inside a group: soonest end first, then name. "Already ended" runs the other way — the most
+  // recently ended first, since those are the ones most likely to still be won back.
+  const byEnd = (a: RenewalRow, b: RenewalRow) => (a.daysToEnd ?? 0) - (b.daysToEnd ?? 0) || a.name.localeCompare(b.name);
+  const recentFirst = (a: RenewalRow, b: RenewalRow) => (b.daysToEnd ?? 0) - (a.daysToEnd ?? 0) || a.name.localeCompare(b.name);
+  return EXPIRY_GROUPS.map((g) => ({ ...g, rows: by.get(g.key)!.slice().sort(g.key === "ended" ? recentFirst : byEnd) }));
+}
+
 /** The filter chips, in display order. The first one is the default view. */
 export const RENEWAL_FILTERS = [
+  { key: "expiring", label: "Expiring", test: (r: RenewalRow) => expiryGroup(r) !== null },
   { key: "action", label: "Needs action", test: (r: RenewalRow) => r.needsAction },
   { key: "due", label: "No proposal yet", test: (r: RenewalRow) => NO_PROPOSAL.includes(r.kind) && !r.onHold },
   { key: "draft", label: "Drafts", test: (r: RenewalRow) => r.kind === "DRAFT" && !r.onHold },
@@ -163,7 +238,7 @@ export const RENEWAL_FILTERS = [
 ] as const satisfies readonly { key: string; label: string; test: (r: RenewalRow) => boolean }[];
 
 export type RenewalFilterKey = (typeof RENEWAL_FILTERS)[number]["key"];
-export const DEFAULT_RENEWAL_FILTER: RenewalFilterKey = "action";
+export const DEFAULT_RENEWAL_FILTER: RenewalFilterKey = "expiring";
 
 export function isRenewalFilterKey(v: unknown): v is RenewalFilterKey {
   return typeof v === "string" && RENEWAL_FILTERS.some((f) => f.key === v);

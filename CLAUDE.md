@@ -538,7 +538,13 @@ host normally has no npm — Docker is the supported path).
   `agreements/renewals-list.tsx`. The old dashboard is `/agreements/overview` ("Overview"). The proposal
   page is a guided three-step renewal (Review prices → Send to customer → Record signature) with one
   primary button per status and a "Next: <customer>" link once finished; the save queue, locks and
-  dialogs are unchanged.
+  dialogs are unchanged. **v0.1.2:** the default chip is **Expiring** — rows grouped by term end into
+  "Already ended, needs follow-up" / next 30 days / 31–60 / 61–90 (`expiryGroup`, `groupByExpiry`; one
+  group per row; signed, on-hold and >90-day rows are left out). **Follow-ups:** `logFollowUp()` in
+  `services/agreements/customers.ts` (+ `logFollowUpAction`) stores the LAST follow-up on the customer
+  (`SaCustomer.followUpAt / followUpBy / followUpNote / followUpNext`, migration
+  `20261113120000_sa_customer_follow_up`) and every one in ChangeHistory (field "follow-up") + the audit
+  log; a follow-up "stands" until its next date, or 7 days without one (`isFollowedUp`).
 - **Service agreements (`/agreements`, v0.0.14 redesign):** Dashboard (now at `/agreements/overview`; KPIs, needs-action
   list, renewals-by-month chart, recent activity), Pipeline board (Due → Draft → Sent → Signed /
   Declined, drag to move), Customers list + customer page (header card; tabs Agreements /

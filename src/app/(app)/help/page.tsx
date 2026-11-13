@@ -383,14 +383,36 @@ export default async function HelpPage() {
                   <>: <UI>Start proposal</UI>, <UI>Review prices</UI> or <UI>Mark signed</UI></>
                 ) : (
                   <> (for you, <UI>Open</UI>)</>
-                )}. The buttons above the list narrow it: <UI>Needs action</UI>,{" "}
+                )}. The page opens on <UI>Expiring</UI>, which sorts the renewals into groups by when the current
+              term ends: <UI>Already ended, needs follow-up</UI>, <UI>Expiring in the next 30 days</UI>,{" "}
+              <UI>Expiring in 31 to 60 days</UI> and <UI>Expiring in 61 to 90 days</UI>. Each renewal is in one group
+              only, and each group shows how many are still to follow up. Pending and Expired – still waiting
+              customers are included, with their status shown. The other buttons above the list narrow it
+              differently: <UI>Needs action</UI>,{" "}
                 <UI>No proposal yet</UI>, <UI>Drafts</UI>, <UI>Waiting on customer</UI>, <UI>On hold</UI> (Pending and
                 Expired – still waiting customers), <UI>Signed</UI> (the last 60 days) and <UI>All</UI>. Search finds
                 a customer by name or SO #. The numbers, chart and recent activity are on <UI>Overview</UI>.
               </p>
             </Sub>
 
-            <Sub title="Customers and agreements">
+            <Sub title="Follow-ups">
+            <p className={P}>
+              The Renewals list is meant to be worked through like a to-do list.{" "}
+              {editsAgreements ? (
+                <>
+                  After you chase a renewal, click <UI>Log follow-up</UI> on its row, say what was done, and
+                  optionally pick a date to <UI>Follow up again on</UI>.
+                </>
+              ) : (
+                <>The people who edit agreements log a follow-up on a row each time they chase that renewal.</>
+              )}{" "}
+              The row then shows who followed up, when and the note, in green. It turns amber and says{" "}
+              <UI>due again</UI> when that date arrives, or after 7 days if no date was given. Every follow-up is kept
+              in the customer&apos;s <UI>Activity</UI> tab.
+            </p>
+          </Sub>
+
+          <Sub title="Customers and agreements">
               <p className={P}>
                 A customer&apos;s page has the tabs <UI>Agreements</UI>, <UI>History</UI>, <UI>Proposals</UI>,{" "}
                 <UI>Calls &amp; repairs</UI> and <UI>Activity</UI>{editsAgreements ? (
