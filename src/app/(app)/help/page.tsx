@@ -376,32 +376,34 @@ export default async function HelpPage() {
             </p>
 
             <Sub title="Renewals: where to start">
-              <p className={P}>
-                <UI>Renewals</UI> is one list of everything coming up for renewal. Each row says where it stands in
-                plain words (for example &quot;Renewal due in 50 days&quot; or &quot;Sent 16 days ago, waiting on
-                customer&quot;) and has one button for the next step{editsAgreements ? (
-                  <>: <UI>Start proposal</UI>, <UI>Review prices</UI> or <UI>Mark signed</UI></>
-                ) : (
-                  <> (for you, <UI>Open</UI>)</>
-                )}. The page opens on <UI>Expiring</UI>, which sorts the renewals into groups by when the current
-              term ends: <UI>Already ended, needs follow-up</UI>, <UI>Expiring in the next 30 days</UI>,{" "}
-              <UI>Expiring in 31 to 60 days</UI> and <UI>Expiring in 61 to 90 days</UI>. Each renewal is in one group
-              only, and each group shows how many are still to follow up. Pending and Expired – still waiting
-              customers are included, with their status shown. The other buttons above the list narrow it
-              differently: <UI>Needs action</UI>,{" "}
-                <UI>No proposal yet</UI>, <UI>Drafts</UI>, <UI>Waiting on customer</UI>, <UI>On hold</UI> (Pending and
-                Expired – still waiting customers), <UI>Signed</UI> (the last 60 days) and <UI>All</UI>. Search finds
-                a customer by name or SO #. The numbers, chart and recent activity are on <UI>Overview</UI>.
-              </p>
-            </Sub>
+            <p className={P}>
+              <UI>Renewals</UI> lists the agreements that are about to expire, or already have. Four boxes across
+              the top count them by when the current term ends: <UI>Already ended</UI>, <UI>Next 30 days</UI>,{" "}
+              <UI>31 to 60 days</UI> and <UI>61 to 90 days</UI>, each with how many are still to follow up. Click a
+              box to see only that group; click it again to see all four. Each renewal is in one group only, and
+              Pending and Expired – still waiting customers are included, with their status next to the name.
+            </p>
+            <p className={P}>
+              Each row shows the customer, when the term ends, the yearly amount, where it stands in plain words (for
+              example &quot;Sent 16 days ago, waiting on customer&quot;) and one button for the next step{editsAgreements ? (
+                <>: <UI>Start proposal</UI>, <UI>Review prices</UI> or <UI>Mark signed</UI></>
+              ) : (
+                <> (for you, <UI>Open</UI>)</>
+              )}. Search finds a customer by name or SO #. The <UI>Show</UI> menu switches to other lists:{" "}
+              <UI>Needs action</UI>, <UI>No proposal yet</UI>, <UI>Drafts</UI>, <UI>Waiting on customer</UI>,{" "}
+              <UI>On hold</UI>, <UI>Signed</UI> (the last 60 days) and <UI>All</UI>. The numbers, chart and recent
+              activity are on <UI>Overview</UI>.
+            </p>
+          </Sub>
 
             <Sub title="Follow-ups">
             <p className={P}>
               The Renewals list is meant to be worked through like a to-do list.{" "}
               {editsAgreements ? (
                 <>
-                  After you chase a renewal, click <UI>Log follow-up</UI> on its row, say what was done, and
-                  optionally pick a date to <UI>Follow up again on</UI>.
+                  After you chase a renewal, click <UI>Follow-up</UI> on its row, say what was done, and
+                  optionally pick a date to <UI>Follow up again on</UI>. The same window lists every earlier
+                  follow-up for that customer under <UI>History</UI>.
                 </>
               ) : (
                 <>The people who edit agreements log a follow-up on a row each time they chase that renewal.</>

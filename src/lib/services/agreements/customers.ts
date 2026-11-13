@@ -11,7 +11,7 @@ import {
 import { customerRenewal, priceHistory, type CustomerRenewal, type ProposalLite } from "@/lib/agreements/renewal";
 import { formatChange } from "@/lib/agreements/history-format";
 import {
-  HISTORY_ENTITY, assertCanEdit, audit, dateOf, getSettings, history, loadCustomer, toLineLite, toProposalLite, ymd,
+  HISTORY_ENTITY, assertCanEdit, assertCanView, audit, dateOf, getSettings, history, loadCustomer, toLineLite, toProposalLite, ymd,
 } from "./common";
 
 // ─── portfolio (every customer + renewal state) ───
@@ -227,6 +227,28 @@ export async function logFollowUp(
     }]);
   });
   await audit(scope, customerId, "follow_up", `Logged a follow-up for ${c.name}: ${note}`);
+}
+
+export interface FollowUpEntry {
+  id: string;
+  /** Day it was logged ("YYYY-MM-DD", US Eastern). */
+  day: string;
+  by: string;
+  /** The note, with "(follow up again <date>)" when a next date was given. */
+  text: string;
+}
+
+/** Every follow-up logged for a customer, newest first (from the permanent change history). */
+export async function listFollowUps(scope: TenantScope, customerId: string): Promise<FollowUpEntry[]> {
+  await assertCanView(scope);
+  if (typeof customerId !== "string" || !customerId) throw new ForbiddenError("Invalid request.");
+  const rows = await prisma.changeHistory.findMany({
+    where: { orgId: scope.ctx.orgId, entity: HISTORY_ENTITY, entityId: customerId, field: "follow-up" },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+    select: { id: true, createdAt: true, actorName: true, newValue: true },
+  });
+  return rows.map((r) => ({ id: r.id, day: todayYmd(r.createdAt), by: r.actorName, text: r.newValue ?? "" }));
 }
 
 // ─── contract lines (signed agreements) ───
