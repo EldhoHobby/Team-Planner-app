@@ -140,6 +140,14 @@ first X-Forwarded-For entry. The login limiter (`src/app/(auth)/login/actions.ts
 keys failures on account + IP (`login:id:<name>:<ip>`) plus a per-IP cap, so a
 colleague can't lock someone else out; the audit log does not store what was
 typed into the username box. The limiter is in-memory (resets on restart).
+**Docker Desktop on Windows hides client addresses**: Caddy only ever sees Docker's gateway
+(172.18.0.1), so `X-Real-IP` is the same for every PC. Since v0.1.2 each browser gets a
+long-lived random `tp_device` cookie (`src/lib/auth/device.ts`; pure helpers + tests in
+`device-label.ts`): the audit log says "signed in from Edge on Windows, device 3F2A" (the real
+IP is included when it is not a shared address — `isSharedAddress`), and when the address is
+shared the login limiter keys on the device id instead, with wider shared backstops
+(`LOGIN_SHARED_IP_LIMIT`, `LOGIN_ACCOUNT_SHARED_LIMIT`). Real addresses would need Caddy
+running natively on Windows instead of in Docker.
 There is no `SESSION_SECRET` (nothing is signed) and no SMTP setting.
 
 **Server actions** live next to their route in `actions.ts` with `"use server"` —
@@ -535,7 +543,8 @@ host normally has no npm — Docker is the supported path).
   next-step button; filter chips + search kept in the URL as `?show=` / `?q=`). Rules are pure in
   `src/lib/agreements/renewal-list.ts` (`buildRenewalRows`, `standing`, `RENEWAL_FILTERS`; unit-tested),
   service `src/lib/services/agreements/renewals.ts` (`getRenewals`, `getNextRenewal`), client
-  `agreements/renewals-list.tsx`. The old dashboard is `/agreements/overview` ("Overview"). The proposal
+  `agreements/renewals-list.tsx`. The old dashboard is `/agreements/overview` ("Overview"). The Pipeline tab is hidden from the
+  Agreements nav for now (the user's request, 2026-11-13); `/agreements/pipeline` still works by address. The proposal
   page is a guided three-step renewal (Review prices → Send to customer → Record signature) with one
   primary button per status and a "Next: <customer>" link once finished; the save queue, locks and
   dialogs are unchanged. **v0.1.2:** the default chip is **Expiring** — rows grouped by term end into

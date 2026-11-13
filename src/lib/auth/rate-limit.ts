@@ -81,4 +81,9 @@ export async function clientIp(): Promise<string> {
 export const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 export const LOGIN_IP_LIMIT = 20; // failed logins per IP per window
 export const LOGIN_EMAIL_LIMIT = 8; // failed logins per email per window
+// When the proxy can only see Docker's gateway address (Docker Desktop on Windows), every PC
+// shares one "IP". The per-address limits above then follow the browser's device id instead,
+// with these wider backstops for something that sends no cookie at all:
+export const LOGIN_SHARED_IP_LIMIT = 200; // failed logins through the shared address per window
+export const LOGIN_ACCOUNT_SHARED_LIMIT = 40; // failed logins per account, any device, per window
 export const RESET_IP_LIMIT = 30; // invalid reset/token attempts per IP per window

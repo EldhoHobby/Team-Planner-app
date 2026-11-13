@@ -371,8 +371,8 @@ export default async function HelpPage() {
                   made by admins and the <UI>Customer Service</UI> work group.
                 </>
               )}{" "}
-              The bar at the top has <UI>Renewals</UI>, <UI>Overview</UI>,{" "}
-              <UI>Pipeline</UI>, <UI>Customers</UI>, <UI>Proposals</UI> and <UI>Settings</UI>.
+              The bar at the top has <UI>Renewals</UI>, <UI>Overview</UI>, <UI>Customers</UI>,{" "}
+              <UI>Proposals</UI> and <UI>Settings</UI>.
             </p>
 
             <Sub title="Renewals: where to start">
@@ -434,7 +434,7 @@ export default async function HelpPage() {
                   walks through three steps (<UI>Review prices</UI>, <UI>Send to customer</UI>,{" "}
                   <UI>Record signature</UI>) and shows one main button for the step you are on: <UI>Mark sent</UI>, then{" "}
                   <UI>Mark signed</UI>. <UI>Decline / withdraw</UI> and <UI>Back to draft</UI> sit beside it. After
-                  signing, <UI>Next: …</UI> opens the next renewal that needs action. On the <UI>Pipeline</UI> you can do the same by dragging cards between columns. Signing copies the
+                  signing, <UI>Next: …</UI> opens the next renewal that needs action. Signing copies the
                   proposal&apos;s prices into the customer&apos;s signed agreements. <UI>Print / PDF</UI> prints a
                   proposal; on <UI>Proposals</UI> you can print several at once, and{" "}
                   <UI>Create proposals in bulk…</UI> starts proposals for every agreement ending in a month you pick.
@@ -447,8 +447,7 @@ export default async function HelpPage() {
                   A proposal moves <UI>Draft</UI> → <UI>Sent</UI> → <UI>Signed</UI>, or is closed as <UI>Declined</UI>{" "}
                   or <UI>Withdrawn</UI>. The proposal page shows which of the three steps it is on (
                   <UI>Review prices</UI>, <UI>Send to customer</UI>, <UI>Record signature</UI>) and{" "}
-                  <UI>Print / PDF</UI> prints it. The <UI>Pipeline</UI> and <UI>Proposals</UI> tabs show the same
-                  proposals as a board and as a list.
+                  <UI>Print / PDF</UI> prints it. The <UI>Proposals</UI> tab lists every proposal.
                 </p>
               </Sub>
             )}
@@ -604,6 +603,9 @@ export default async function HelpPage() {
               <p className={P}>
                 <UI>Audit</UI> records everything done in the app — sign-ins, changes, imports and exports — for the last
                 30 days by default. Filter by person, area, action or date, or search. It updates live.{" "}
+                Sign-ins show the browser and a short device code (for example{" "}
+                <UI>Edge on Windows, device 3F2A</UI>): the same PC and browser always get the same code, so you
+                can tell PCs apart. The PC&apos;s network address is not shown because the server can&apos;t see it.{" "}
                 <UI>Clear log</UI> wipes the history (the wipe itself is recorded).
               </p>
             </Sub>

@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Columns3, FileText, LayoutDashboard, ListChecks, Settings, Users } from "lucide-react";
+import { FileText, LayoutDashboard, ListChecks, Settings, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
   { href: "/agreements", label: "Renewals", icon: ListChecks, exact: true },
   { href: "/agreements/overview", label: "Overview", icon: LayoutDashboard },
-  { href: "/agreements/pipeline", label: "Pipeline", icon: Columns3 },
+  // Pipeline is hidden for now (2026-11): the page at /agreements/pipeline still works by address.
+  // To bring the tab back, add: { href: "/agreements/pipeline", label: "Pipeline", icon: Columns3 }
   { href: "/agreements/customers", label: "Customers", icon: Users },
   { href: "/agreements/proposals", label: "Proposals", icon: FileText },
   { href: "/agreements/settings", label: "Settings", icon: Settings },
