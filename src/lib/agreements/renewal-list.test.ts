@@ -49,6 +49,16 @@ describe("buildRenewalRows", () => {
 
   it("CURRENT customers without proposals give no rows", () => {
     expect(buildRenewalRows([customer()], TODAY)).toEqual([]);
+    expect(buildRenewalRows([customer({ renewal: { state: "CURRENT", nextEndDate: "2027-06-30", daysToEnd: 230 } })], TODAY)).toEqual([]);
+  });
+
+  it("a CURRENT customer ending within 120 days is listed, without needing action", () => {
+    const [r, ...rest] = buildRenewalRows([customer({
+      renewal: { state: "CURRENT", currentLines: current, annualValue: 10000, nextEndDate: "2027-02-28", daysToEnd: 108 },
+    })], TODAY);
+    expect(rest).toHaveLength(0);
+    expect(r).toMatchObject({ kind: "DUE", daysToEnd: 108, value: 10000, needsAction: false });
+    expect(expiryGroup(r!)).toBe("d120");
   });
 
   it("one row per DRAFT / SENT proposal, with value and agreement count", () => {
@@ -178,7 +188,7 @@ describe("filters and search", () => {
   });
   it("Expiring = in an expiry group", () => {
     expect(f("expiring")(row({ kind: "DUE", daysToEnd: 45 }))).toBe(true);
-    expect(f("expiring")(row({ kind: "DRAFT", daysToEnd: 120 }))).toBe(false);
+    expect(f("expiring")(row({ kind: "DRAFT", daysToEnd: 121 }))).toBe(false);
     expect(f("expiring")(row({ kind: "SIGNED", daysToEnd: 10 }))).toBe(false);
   });
   it("validates filter keys", () => {
@@ -203,9 +213,11 @@ describe("expiry groups", () => {
     expect(expiryGroup(row({ kind: "SENT", daysToEnd: 60 }))).toBe("d60");
     expect(expiryGroup(row({ kind: "DUE", daysToEnd: 61 }))).toBe("d90");
     expect(expiryGroup(row({ kind: "DUE", daysToEnd: 90 }))).toBe("d90");
+    expect(expiryGroup(row({ kind: "DUE", daysToEnd: 91 }))).toBe("d120");
+    expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: 120 }))).toBe("d120");
   });
   it("leaves out far-off terms, signed renewals and rows with no end date; keeps on-hold customers", () => {
-    expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: 91 }))).toBeNull();
+    expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: 121 }))).toBeNull();
     expect(expiryGroup(row({ kind: "SIGNED", daysToEnd: 20 }))).toBeNull();
     expect(expiryGroup(row({ kind: "EXPIRED", daysToEnd: -400, onHold: true }))).toBe("ended");
     expect(expiryGroup(row({ kind: "DRAFT", daysToEnd: null }))).toBeNull();
@@ -220,9 +232,9 @@ describe("expiry groups", () => {
       row({ key: "f", kind: "EXPIRED", daysToEnd: -300 }),
       row({ key: "g", kind: "EXPIRED", daysToEnd: -5 }),
     ]);
-    expect(groups.map((g) => g.key)).toEqual(["ended", "d30", "d60", "d90"]);
-    // "Already ended" lists the most recently ended first.
-    expect(groups.map((g) => g.rows.map((r) => r.key))).toEqual([["g", "f"], ["c", "d", "b"], [], ["a"]]);
+    expect(groups.map((g) => g.key)).toEqual(["d30", "d60", "d90", "d120", "ended"]);
+    // "Already ended" comes last and lists the most recently ended first.
+    expect(groups.map((g) => g.rows.map((r) => r.key))).toEqual([["c", "d", "b"], [], ["a"], [], ["g", "f"]]);
   });
 });
 

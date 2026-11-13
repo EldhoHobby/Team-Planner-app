@@ -377,11 +377,13 @@ export default async function HelpPage() {
 
             <Sub title="Renewals: where to start">
             <p className={P}>
-              <UI>Renewals</UI> lists the agreements that are about to expire, or already have. Four boxes across
-              the top count them by when the current term ends: <UI>Already ended</UI>, <UI>Next 30 days</UI>,{" "}
-              <UI>31 to 60 days</UI> and <UI>61 to 90 days</UI>, each with how many are still to follow up. Click a
-              box to see only that group; click it again to see all four. Each renewal is in one group only, and
-              Pending and Expired – still waiting customers are included, with their status next to the name.
+              <UI>Renewals</UI> lists the agreements that are about to expire, or already have, as five bars:{" "}
+              <UI>Expiring in the next 30 days</UI>, <UI>31 to 60 days</UI>, <UI>61 to 90 days</UI>,{" "}
+              <UI>91 to 120 days</UI> and <UI>Already ended, needs follow-up</UI>. Each bar is closed to start with
+              and shows a summary: how many renewals, how much they are worth a year, and how many are still to
+              follow up. Click a bar to open or close it. Each renewal is in one bar only, and Pending and Expired –
+              still waiting customers are included, with their status next to the name. Searching opens the bars
+              that have a match.
             </p>
             <p className={P}>
               Each row shows the customer, when the term ends, the yearly amount, where it stands in plain words (for

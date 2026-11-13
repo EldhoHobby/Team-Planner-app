@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ClipboardCheck } from "lucide-react";
+import { ChevronRight, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/ui/date-picker";
 import { FormMessage } from "@/components/ui/form-message";
@@ -20,18 +20,12 @@ import type { FollowUpEntry } from "@/lib/services/agreements/customers";
 import { listFollowUpsAction, logFollowUpAction } from "./actions";
 import { StartProposalButton } from "./start-proposal-button";
 
-// A deliberately plain page: four numbers across the top (one per expiry window), then short
-// rows — customer, when it ends, where it stands, one button. Details (SO #, notes, history)
-// live on the customer page and in the follow-up dialog, not in the row.
+// A deliberately plain page: one bar per expiry window, closed until you open it, each with a
+// one-line summary (how many, how much a year, how many still to follow up). Inside: short rows —
+// customer, when it ends, where it stands, one button. Details (SO #, notes, history) live on the
+// customer page and in the follow-up dialog, not in the row.
 
 const DOT = { warn: "bg-amber-500", info: "bg-sky-500", ok: "bg-emerald-500" } as const;
-const TILE_LABEL: Record<ExpiryGroupKey, string> = {
-  ended: "Already ended",
-  d30: "Next 30 days",
-  d60: "31 to 60 days",
-  d90: "61 to 90 days",
-};
-
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 function relDays(d: number | null): string | null {
@@ -134,9 +128,17 @@ function Row({ row, canEdit, onFollowUp }: { row: RenewalRow; canEdit: boolean; 
   );
 }
 
-function RowList({ rows, canEdit, onFollowUp }: { rows: RenewalRow[]; canEdit: boolean; onFollowUp: (row: RenewalRow) => void }) {
+function RowList({
+  rows, canEdit, onFollowUp, flat = false,
+}: {
+  rows: RenewalRow[];
+  canEdit: boolean;
+  onFollowUp: (row: RenewalRow) => void;
+  /** Inside a group bar: no border of its own. */
+  flat?: boolean;
+}) {
   return (
-    <ul className="divide-y rounded-lg border bg-card">
+    <ul className={cn("divide-y", !flat && "rounded-lg border bg-card")}>
       {rows.map((r) => (
         <Row key={r.key} row={r} canEdit={canEdit} onFollowUp={onFollowUp} />
       ))}
@@ -299,8 +301,15 @@ export function RenewalsList({
   const [show, setShow] = useState<RenewalFilterKey>(initialShow);
   const [q, setQ] = useState(initialQ);
   const [urlQ, setUrlQ] = useState(initialQ);
-  // Expiring view: one window picked from the tiles (null = all four).
-  const [only, setOnly] = useState<ExpiryGroupKey | null>(null);
+  // Expiring view: which group bars are open. All start closed; a search opens the groups it finds rows in.
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<ExpiryGroupKey>>(() => new Set());
+  const toggleGroup = (key: ExpiryGroupKey) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   const [followUpFor, setFollowUpFor] = useState<RenewalRow | null>(null);
 
   // Filter immediately; write the search to the URL a moment after typing stops.
@@ -369,7 +378,6 @@ export function RenewalsList({
             value={show}
             onChange={(e) => {
               setShow(e.target.value as RenewalFilterKey);
-              setOnly(null);
             }}
             className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
@@ -381,65 +389,62 @@ export function RenewalsList({
       </div>
 
       {groups ? (
-        <>
-          {/* One number per window; click one to see only that window, click again for all. */}
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-4" role="group" aria-label="Expiry windows">
-            {groups.map((g) => {
-              const toDo = g.rows.filter((r) => !r.followedUp).length;
-              const on = only === g.key;
-              return (
-                <button
-                  key={g.key}
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => setOnly(on ? null : g.key)}
-                  className={cn(
-                    "rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-primary/60",
-                    on && "border-primary ring-1 ring-primary",
-                  )}
-                >
-                  <span className="block text-xs font-medium text-muted-foreground">{TILE_LABEL[g.key]}</span>
-                  <span
+        <div className="space-y-2">
+          {groups.map((g) => {
+            const count = g.rows.length;
+            const toDo = g.rows.filter((r) => !r.followedUp).length;
+            const value = g.rows.reduce((a, r) => a + r.value, 0);
+            const searching = q.trim() !== "";
+            const open = count > 0 && (searching || openGroups.has(g.key));
+            const ended = g.key === "ended";
+            return (
+              <section key={g.key} className="overflow-hidden rounded-lg border bg-card">
+                <h2>
+                  <button
+                    type="button"
+                    id={`grp-${g.key}`}
+                    aria-expanded={open}
+                    aria-controls={`grp-${g.key}-rows`}
+                    aria-disabled={count === 0}
+                    onClick={() => {
+                      if (count > 0) toggleGroup(g.key);
+                    }}
                     className={cn(
-                      "mt-1 block text-2xl font-semibold tabular-nums",
-                      g.key === "ended" && g.rows.length > 0 && "text-amber-700 dark:text-amber-400",
+                      "flex w-full flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-left",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                      count > 0 ? "hover:bg-muted/50" : "cursor-default",
                     )}
                   >
-                    {g.rows.length}
-                  </span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground tabular-nums">
-                    {g.rows.length === 0 ? "nothing" : toDo === 0 ? "all followed up" : `${toDo} to follow up`}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="space-y-5">
-            {groups
-              .filter((g) => (only ? g.key === only : g.rows.length > 0))
-              .map((g) => (
-                <section key={g.key} aria-labelledby={`grp-${g.key}`} className="space-y-2">
-                  <h2 id={`grp-${g.key}`} className="flex flex-wrap items-baseline gap-x-2 text-sm font-semibold">
-                    {g.label}
-                    <span className="font-normal text-muted-foreground tabular-nums">
-                      {g.rows.length ? fmtMoney(g.rows.reduce((a, r) => a + r.value, 0)) + " a year" : ""}
+                    <ChevronRight
+                      aria-hidden
+                      className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90", count === 0 && "opacity-30")}
+                    />
+                    <span className={cn("min-w-0 flex-1 text-sm font-semibold", count === 0 && "text-muted-foreground")}>{g.label}</span>
+                    <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm tabular-nums">
+                      <span className={cn("font-semibold", count === 0 && "text-muted-foreground", ended && count > 0 && "text-amber-700 dark:text-amber-400")}>
+                        {plural(count, "renewal", "renewals")}
+                      </span>
+                      {count > 0 && <span className="text-muted-foreground">{fmtMoney(value)} a year</span>}
+                      {count > 0 && (
+                        <span className={toDo === 0 ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}>
+                          {toDo === 0 ? "all followed up" : `${toDo} to follow up`}
+                        </span>
+                      )}
                     </span>
-                  </h2>
-                  {g.rows.length ? (
-                    <RowList rows={g.rows} canEdit={canEdit} onFollowUp={setFollowUpFor} />
-                  ) : (
-                    <p className="rounded-lg border border-dashed bg-card px-4 py-3 text-sm text-muted-foreground">Nothing in this window.</p>
-                  )}
-                </section>
-              ))}
-            {!only && shown.length === 0 && (
-              <p className="rounded-lg border border-dashed bg-card px-4 py-6 text-center text-sm text-muted-foreground">
-                {q.trim() ? "No customer matches that search." : "Nothing is expiring in the next 90 days."}
-              </p>
-            )}
-          </div>
-        </>
+                  </button>
+                </h2>
+                {open && (
+                  <div id={`grp-${g.key}-rows`} role="region" aria-labelledby={`grp-${g.key}`} className="border-t">
+                    <RowList rows={g.rows} canEdit={canEdit} onFollowUp={setFollowUpFor} flat />
+                  </div>
+                )}
+              </section>
+            );
+          })}
+          {q.trim() !== "" && shown.length === 0 && (
+            <p className="px-1 pt-1 text-sm text-muted-foreground">No customer matches that search.</p>
+          )}
+        </div>
       ) : shown.length === 0 ? (
         <p className="rounded-lg border border-dashed bg-card px-4 py-6 text-center text-sm text-muted-foreground">
           Nothing here. Try another view or clear the search.

@@ -80,7 +80,8 @@ export function ProposalsClient({
     const url = `${window.location.pathname}${listQs ? `?${listQs}` : ""}`;
     if (`${window.location.pathname}${window.location.search}` !== url) window.history.replaceState(null, "", url);
   }, [listQs]);
-  const proposalHref = (id: string) => `/agreements/proposals/${id}${listQs ? `?back=${encodeURIComponent(listQs)}` : ""}`;
+  // `from=proposals` is always sent, so the proposal's back link says "Proposals" even when no filter is set.
+  const proposalHref = (id: string) => `/agreements/proposals/${id}?from=proposals${listQs ? `&back=${encodeURIComponent(listQs)}` : ""}`;
   const [preview, setPreview] = useState<BulkRow[] | null>(null);
   const [result, setResult] = useState<BulkRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);

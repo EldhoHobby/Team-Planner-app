@@ -121,6 +121,17 @@ export function buildRenewalRows(rows: PortfolioLike[], today: string): RenewalR
       }
     }
 
+    // Not "due" yet by the Settings due window, but the term ends within the Expiring view's
+    // horizon: listed (so the 91 to 120 day group is complete) without counting as needing action.
+    const early = r.state === "CURRENT" && r.daysToEnd !== null && r.daysToEnd >= 0 && r.daysToEnd <= EXPIRY_HORIZON_DAYS;
+    if (early) {
+      out.push({
+        ...base, key: `due-${c.id}`, kind: "DUE", proposalId: null, year: r.currentYear === null ? null : r.currentYear + 1,
+        termEnd: r.nextEndDate, daysToEnd: r.daysToEnd, value: r.annualValue, agreements: r.currentLines.length,
+        sentDaysAgo: null, signedDate: null, lapsed: [], needsAction: false,
+      });
+    }
+
     if (r.state === "DUE" || r.state === "EXPIRED") {
       push({
         key: `due-${c.id}`, kind: r.state, proposalId: null, year: r.currentYear === null ? null : r.currentYear + 1,
@@ -180,24 +191,26 @@ export function standing(row: RenewalRow): { tone: "warn" | "info" | "ok"; text:
 const NO_PROPOSAL: readonly RenewalKind[] = ["DUE", "EXPIRED", "LAPSED"];
 
 // ─── expiry groups (the default "Expiring" view) ───
-// Renewals grouped by when the current term ends: already ended, then the next 30 days,
-// 31 to 60 days and 61 to 90 days. Each renewal is in exactly one group (no double listing).
+// Renewals grouped by when the current term ends: the next 30 days, 31 to 60, 61 to 90 and
+// 91 to 120 days, then the ones that already ended. Each renewal is in exactly one group.
 
 /** How far ahead the Expiring view looks. */
-export const EXPIRY_HORIZON_DAYS = 90;
+export const EXPIRY_HORIZON_DAYS = 120;
 
-export type ExpiryGroupKey = "ended" | "d30" | "d60" | "d90";
+export type ExpiryGroupKey = "d30" | "d60" | "d90" | "d120" | "ended";
 
+/** In display order. */
 export const EXPIRY_GROUPS: readonly { key: ExpiryGroupKey; label: string; hint: string }[] = [
-  { key: "ended", label: "Already ended, needs follow-up", hint: "The term has ended and the renewal is not signed yet." },
   { key: "d30", label: "Expiring in the next 30 days", hint: "Ends today to 30 days from now." },
   { key: "d60", label: "Expiring in 31 to 60 days", hint: "Ends 31 to 60 days from now." },
   { key: "d90", label: "Expiring in 61 to 90 days", hint: "Ends 61 to 90 days from now." },
+  { key: "d120", label: "Expiring in 91 to 120 days", hint: "Ends 91 to 120 days from now." },
+  { key: "ended", label: "Already ended, needs follow-up", hint: "The term has ended and the renewal is not signed yet." },
 ];
 
 /**
  * Which expiry group a renewal belongs to, or null when it is not in the Expiring view:
- * signed renewals, rows without a term end, and terms ending more than 90 days out.
+ * signed renewals, rows without a term end, and terms ending more than 120 days out.
  * Pending / Expired - still waiting customers ARE included (an ended agreement that is still
  * being chased is exactly what "Already ended, needs follow-up" is for); they keep their
  * status badge and are also under the "On hold" filter.
@@ -207,7 +220,8 @@ export function expiryGroup(row: RenewalRow): ExpiryGroupKey | null {
   if (row.daysToEnd < 0) return "ended";
   if (row.daysToEnd <= 30) return "d30";
   if (row.daysToEnd <= 60) return "d60";
-  if (row.daysToEnd <= EXPIRY_HORIZON_DAYS) return "d90";
+  if (row.daysToEnd <= 90) return "d90";
+  if (row.daysToEnd <= EXPIRY_HORIZON_DAYS) return "d120";
   return null;
 }
 

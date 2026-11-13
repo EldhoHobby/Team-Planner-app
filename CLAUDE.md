@@ -548,8 +548,10 @@ host normally has no npm — Docker is the supported path).
   page is a guided three-step renewal (Review prices → Send to customer → Record signature) with one
   primary button per status and a "Next: <customer>" link once finished; the save queue, locks and
   dialogs are unchanged. **v0.1.2:** the default chip is **Expiring** — rows grouped by term end into
-  "Already ended, needs follow-up" / next 30 days / 31–60 / 61–90 (`expiryGroup`, `groupByExpiry`; one
-  group per row; signed, on-hold and >90-day rows are left out). **Follow-ups:** `logFollowUp()` in
+  next 30 days / 31–60 / 61–90 / 91–120 / "Already ended, needs follow-up", in that order
+  (`expiryGroup`, `groupByExpiry`; one group per row; signed and >120-day rows are left out; customers not
+  yet "due" by the Settings window but ending within 120 days get a DUE row with `needsAction: false`).
+  Each group is a collapsible bar, closed by default, with a summary (count, $ a year, how many to follow up). **Follow-ups:** `logFollowUp()` in
   `services/agreements/customers.ts` (+ `logFollowUpAction`) stores the LAST follow-up on the customer
   (`SaCustomer.followUpAt / followUpBy / followUpNote / followUpNext`, migration
   `20261113120000_sa_customer_follow_up`) and every one in ChangeHistory (field "follow-up") + the audit
