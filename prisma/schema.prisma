@@ -45,6 +45,8 @@ model Organization {
   saProposalLines  SaProposalLine[]
   saCalls          SaCallsRepairs[]
   saSettings       SaSettings?
+  openPos          OpenPo[]
+  saSystems        SaSystem[]
 }
 
 model User {
@@ -79,6 +81,7 @@ model User {
   managerLinks    ManagerLink[]        @relation("MgrLinkMember")
   workGroups      WorkGroupMembership[]
   actingSessions  Session[]            @relation("SessionActingAs")
+  openPos         OpenPo[]             @relation("OpenPoOwner")
 }
 
 // Extra reporting lines beyond a person's home department — for the few people
@@ -867,6 +870,7 @@ model SaCustomer {
   contracts SaContractLine[]
   proposals SaProposal[]
   calls     SaCallsRepairs[]
+  systems   SaSystem[]
 
   @@unique([orgId, soNumber])
   @@index([orgId, name])
@@ -991,4 +995,87 @@ model SaSettings {
   updatedAt           DateTime      @updatedAt
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────── Open POs (Customer Service) ───────────────────────────
+
+enum OpenPoStatus {
+  OPEN
+  ON_HOLD
+  CLOSED
+}
+
+/// A customer purchase order that is still open (work or billing left). Keyed by the
+/// order number. Every status update and field change is kept in ChangeHistory
+/// (entity "open_po").
+model OpenPo {
+  id             String       @id @default(cuid())
+  orgId          String
+  orderNo        String // e.g. OR000001962 — unique per org
+  orderDate      DateTime?    @db.Date
+  customer       String
+  customerNo     String?
+  customerPo     String?
+  reference      String?
+  productCode    String?
+  description    String? // what the order is for ("PDF Comments" in the source workbook)
+  status         OpenPoStatus @default(OPEN)
+  poValue        Decimal?     @db.Decimal(12, 2)
+  billed         Decimal?     @db.Decimal(12, 2)
+  expectedDate   DateTime?    @db.Date // expected completion
+  reviewDate     DateTime?    @db.Date // "check again on"
+  ownerId        String? // responsible person
+  notes          String?
+  // The latest logged update (each one is also kept in ChangeHistory, field "update").
+  lastUpdateAt   DateTime?
+  lastUpdateBy   String? // display name of who logged it
+  lastUpdateNote String?
+  closedAt       DateTime?
+  version        Int          @default(1)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner User?        @relation("OpenPoOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, orderNo])
+  @@index([orgId, status])
+}
+
+/// One installed system of an agreement customer (keyed by the system's own SO #): the server
+/// service tags with their warranty end dates, and the QWEB (Thinfinity) license. A customer
+/// can have several (e.g. a second QWEB order).
+model SaSystem {
+  id             String    @id @default(cuid())
+  orgId          String
+  customerId     String
+  soNumber       String // the system's sales order — unique per org
+  name           String? // label from the source list, e.g. "Emerald Coast (TDMS) Second QWEB"
+  product        String? // "QSCADA" | "QVISION" (free text)
+  serverA        String? // tag number, or "VM" / "N/A" / free text
+  serverAExp     DateTime? @db.Date
+  serverB        String?
+  serverBExp     DateTime? @db.Date
+  serverC        String?
+  serverCExp     DateTime? @db.Date
+  serverD        String?
+  serverDExp     DateTime? @db.Date
+  serverHist     String?
+  serverHistExp  DateTime? @db.Date
+  serverQweb     String?
+  serverQwebExp  DateTime? @db.Date
+  qwebLicenseKey String? // shown in full to agreement editors only
+  qwebRenewDate  DateTime? @db.Date
+  qwebCancelled  Boolean   @default(false)
+  qwebUsers      Int?
+  notes          String?
+  version        Int       @default(1)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  customer SaCustomer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, soNumber])
+  @@index([orgId, customerId])
 }

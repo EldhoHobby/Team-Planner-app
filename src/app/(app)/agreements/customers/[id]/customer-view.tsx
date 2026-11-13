@@ -168,6 +168,11 @@ export function CustomerView({
               </div>
             ))}
           </dl>
+          <p className="mt-3 text-xs print:hidden">
+            <Link href={`/agreements/systems?q=${encodeURIComponent(c.name)}`} className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+              Server tags and QWEB license details
+            </Link>
+          </p>
         </div>
         {c.notes && (
           <div className="mt-4 rounded-md border bg-muted/40 p-3">

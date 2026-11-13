@@ -197,7 +197,7 @@ const NO_PROPOSAL: readonly RenewalKind[] = ["DUE", "EXPIRED", "LAPSED"];
 /** How far ahead the Expiring view looks. */
 export const EXPIRY_HORIZON_DAYS = 120;
 
-export type ExpiryGroupKey = "d30" | "d60" | "d90" | "d120" | "ended";
+export type ExpiryGroupKey = "d30" | "d60" | "d90" | "d120" | "ended" | "endedWaiting";
 
 /** In display order. */
 export const EXPIRY_GROUPS: readonly { key: ExpiryGroupKey; label: string; hint: string }[] = [
@@ -206,6 +206,11 @@ export const EXPIRY_GROUPS: readonly { key: ExpiryGroupKey; label: string; hint:
   { key: "d90", label: "Expiring in 61 to 90 days", hint: "Ends 61 to 90 days from now." },
   { key: "d120", label: "Expiring in 91 to 120 days", hint: "Ends 91 to 120 days from now." },
   { key: "ended", label: "Already ended, needs follow-up", hint: "The term has ended and the renewal is not signed yet." },
+  {
+    key: "endedWaiting",
+    label: "Already ended, followed up",
+    hint: "A follow-up was logged; the renewal waits here until its next follow-up date, then moves back up.",
+  },
 ];
 
 /**
@@ -217,7 +222,9 @@ export const EXPIRY_GROUPS: readonly { key: ExpiryGroupKey; label: string; hint:
  */
 export function expiryGroup(row: RenewalRow): ExpiryGroupKey | null {
   if (row.kind === "SIGNED" || row.daysToEnd === null) return null;
-  if (row.daysToEnd < 0) return "ended";
+  // Ended: a standing follow-up (until its "follow up again" date, or 7 days when none was given)
+  // parks the row in its own group; when that date arrives it is back under "needs follow-up".
+  if (row.daysToEnd < 0) return row.followedUp ? "endedWaiting" : "ended";
   if (row.daysToEnd <= 30) return "d30";
   if (row.daysToEnd <= 60) return "d60";
   if (row.daysToEnd <= 90) return "d90";
@@ -236,7 +243,7 @@ export function groupByExpiry(rows: RenewalRow[]): { key: ExpiryGroupKey; label:
   // recently ended first, since those are the ones most likely to still be won back.
   const byEnd = (a: RenewalRow, b: RenewalRow) => (a.daysToEnd ?? 0) - (b.daysToEnd ?? 0) || a.name.localeCompare(b.name);
   const recentFirst = (a: RenewalRow, b: RenewalRow) => (b.daysToEnd ?? 0) - (a.daysToEnd ?? 0) || a.name.localeCompare(b.name);
-  return EXPIRY_GROUPS.map((g) => ({ ...g, rows: by.get(g.key)!.slice().sort(g.key === "ended" ? recentFirst : byEnd) }));
+  return EXPIRY_GROUPS.map((g) => ({ ...g, rows: by.get(g.key)!.slice().sort(g.key === "ended" || g.key === "endedWaiting" ? recentFirst : byEnd) }));
 }
 
 /** The filter chips, in display order. The first one is the default view. */
