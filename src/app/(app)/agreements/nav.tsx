@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileText, LayoutDashboard, ListChecks, Settings, Users } from "lucide-react";
+import { FileText, LayoutDashboard, ListChecks, Server, Settings, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
@@ -12,6 +12,7 @@ const ITEMS = [
   // To bring the tab back, add: { href: "/agreements/pipeline", label: "Pipeline", icon: Columns3 }
   { href: "/agreements/customers", label: "Customers", icon: Users },
   { href: "/agreements/proposals", label: "Proposals", icon: FileText },
+  { href: "/agreements/systems", label: "Servers & QWEB", icon: Server },
   { href: "/agreements/settings", label: "Settings", icon: Settings },
 ];
 

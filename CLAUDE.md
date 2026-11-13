@@ -602,6 +602,41 @@ host normally has no npm — Docker is the supported path).
   line Cancelled dismisses it); proposal workflows lock the customer row first
   (`lockCustomer()` = `SELECT … FOR UPDATE` in `agreements/common.ts`) so two people
   can't double-propose; the monthly workbook code split into `workbook/`.
+- **Customer Service group + Open POs (v0.1.3):** the sidebar has ONE **Customer Service** item (in Work, where
+  Agreements was; `also` prefixes keep it lit on `/agreements` and `/open-pos`) that opens `/customer-service`:
+  a page with two buttons, **Agreements** and **Open POs** (each has a "Customer Service" back link). The item
+  and the page follow `canSeeAgreements` / `requireAgreementsAccess`. `/open-pos` tracks customer orders that are still open: model `OpenPo` (unique
+  `orgId + orderNo`; status OPEN / ON_HOLD / CLOSED; PO value, billed, expected completion, "check again on"
+  review date, responsible person `ownerId`, last update columns, `version`), migration
+  `20261113180000_open_po`. Pure rules + sheet columns in `src/lib/open-po/rules.ts` (tested), service
+  `src/lib/services/open-pos.ts` (`listOpenPos`, `createOpenPo`, `updateOpenPo` — field changes AND logged
+  updates go to ChangeHistory entity `open_po` in the same transaction, optimistic `version` —
+  `deleteOpenPo`, `listOpenPoHistory`, `buildOpenPosWorkbook`, `runOpenPosImport`), page + dialogs in
+  `src/app/(app)/open-pos/`, export `GET /api/open-pos/export`. Rights = Agreements: the page calls
+  `requireAgreementsAccess`; edits need `canEditAgreements` (admins + "Customer Service" work group). Excel:
+  rows matched by **Order No.** (no id column), the header row may sit below title lines, a "Status (…)"
+  header is read as Latest Update, absent columns are left alone; the import writes through the services.
+  Included in the full backup (`openPos` key; a file without the key keeps the current POs and their
+  history); NOT part of "Restore agreements only" or Settings → Data → Reset. Renewals: an ended agreement
+  with a standing follow-up sits in a sixth bar "Already ended, followed up" (`endedWaiting`) until the
+  follow-up date.
+- **Servers & QWEB (v0.1.3):** `/agreements/systems` (Agreements tab "Servers & QWEB") is the ONE place for
+  server tag numbers, warranty end dates and QWEB (Thinfinity) licenses. Model `SaSystem` (one row per system
+  SO #, unique per org, `customerId` → `SaCustomer` cascade; six server tag + warranty-date pairs A / B / C /
+  D / Hist / Qweb; `qwebLicenseKey`, `qwebRenewDate`, `qwebCancelled`, `qwebUsers`, `notes`, `version`),
+  migration `20261113200000_sa_system`. Pure rules in `src/lib/agreements/systems.ts` (roles, flags, filters,
+  `matchCustomer`, `mapSystemHeaders`; tested), service `src/lib/services/agreements/systems.ts`, UI
+  `agreements/systems/` (list + dialog + actions), export `GET /api/agreements/systems/export`. The agreement
+  (customer page, proposal sheet, monthly workbook) still shows only the hand-typed
+  `SaCustomer.qwebLicenses` number — by the user's choice it is NOT derived from the systems; the customer
+  page has a link to the list filtered to that customer. **License keys and notes go in full to agreement
+  editors only** (`listSystems` masks the key and blanks the notes for everyone else; the export is
+  editors-only); keys are never written to ChangeHistory or the audit log (history stores the masked form
+  under the customer, entity `sa_customer`). Excel import accepts the "QSCADA_Server_Tag_Numbers…" list as
+  it is: rows matched by system SO #, a new row tied to a customer by "Agreement SO #", else the customer's
+  Last server SO # / SO #, else name (reported as a warning); a "QVISION" heading row switches the product.
+  Backups: `saSystems` key in the full backup; "Restore agreements only" replaces them with the customers
+  (a file without the key keeps the current systems of customers that come back).
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog,
   daily agenda email, AI scheduling suggestions, reports page, customers
   directory.

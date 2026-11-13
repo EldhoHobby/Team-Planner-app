@@ -232,9 +232,15 @@ describe("expiry groups", () => {
       row({ key: "f", kind: "EXPIRED", daysToEnd: -300 }),
       row({ key: "g", kind: "EXPIRED", daysToEnd: -5 }),
     ]);
-    expect(groups.map((g) => g.key)).toEqual(["d30", "d60", "d90", "d120", "ended"]);
+    expect(groups.map((g) => g.key)).toEqual(["d30", "d60", "d90", "d120", "ended", "endedWaiting"]);
     // "Already ended" comes last and lists the most recently ended first.
-    expect(groups.map((g) => g.rows.map((r) => r.key))).toEqual([["c", "d", "b"], [], ["a"], [], ["g", "f"]]);
+    expect(groups.map((g) => g.rows.map((r) => r.key))).toEqual([["c", "d", "b"], [], ["a"], [], ["g", "f"], []]);
+  });
+  it("parks an ended renewal with a standing follow-up in its own group", () => {
+    expect(expiryGroup(row({ kind: "EXPIRED", daysToEnd: -20, followedUp: true }))).toBe("endedWaiting");
+    expect(expiryGroup(row({ kind: "EXPIRED", daysToEnd: -20, followedUp: false }))).toBe("ended");
+    // Not yet ended: a follow-up does not move it out of its expiry window.
+    expect(expiryGroup(row({ kind: "DUE", daysToEnd: 20, followedUp: true }))).toBe("d30");
   });
 });
 

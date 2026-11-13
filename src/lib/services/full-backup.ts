@@ -6,6 +6,7 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { verifyPassword } from "@/lib/auth/password";
 import { clearRateLimit, isRateLimited, registerFailure, WINDOW_MS } from "@/lib/auth/rate-limit";
 import { writeAudit } from "@/lib/services/audit";
+import { OPEN_PO_HISTORY_ENTITY } from "@/lib/open-po/rules";
 import {
   AGREEMENT_HISTORY_ENTITIES,
   BACKUP_FORMAT,
@@ -146,7 +147,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     workGroups, workGroupMemberships, projects, boards, boardColumns,
     tasks, taskAssignments, attachments, calendarEvents, timeOffs, technicianTimeOffs,
     holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
-    changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings,
+    changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings, openPos, saSystems,
   ] = await Promise.all([
     prisma.user.findMany({ where: { memberships: { some: { orgId } } } }),
     prisma.membership.findMany({ where: { orgId } }),
@@ -179,6 +180,8 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.saContractLine.findMany({ where: { orgId } }),
     prisma.saCallsRepairs.findMany({ where: { orgId } }),
     prisma.saSettings.findMany({ where: { orgId } }),
+    prisma.openPo.findMany({ where: { orgId } }),
+    prisma.saSystem.findMany({ where: { orgId } }),
   ]);
 
   // The file carries password hashes — every download is in the audit trail.
@@ -199,7 +202,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
       workGroups, workGroupMemberships, projects, boards, boardColumns,
       tasks, taskAssignments, attachments, calendarEvents, timeOffs, technicianTimeOffs,
       holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
-      changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings,
+      changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings, openPos, saSystems,
     },
   };
 }
@@ -436,13 +439,23 @@ export async function restoreFullBackup(
       // restoring an older backup (no "changeHistory" key) never erases it.
       // When the file has history but NO agreement data, the agreements were
       // kept above — so keep their history too (and don't insert the file's).
+      // Open POs (Customer Service). Same rule: replaced only when the file carries them.
+      const fileHasOpenPos = Array.isArray(backup.data?.openPos);
+      if (fileHasOpenPos) {
+        await tx.openPo.deleteMany({ where: { orgId } });
+        await tx.openPo.createMany({ data: reOrg(rows(backup, "openPos"), orgId) });
+      }
       if (fileHasHistory) {
-        const agreementEntities = [...AGREEMENT_HISTORY_ENTITIES];
+        // History of whatever was KEPT above (not in the file) is kept with it.
+        const keptEntities: string[] = [
+          ...(fileHasAgreements ? [] : AGREEMENT_HISTORY_ENTITIES),
+          ...(fileHasOpenPos ? [] : [OPEN_PO_HISTORY_ENTITY]),
+        ];
         await tx.changeHistory.deleteMany({
-          where: fileHasAgreements ? { orgId } : { orgId, entity: { notIn: agreementEntities } },
+          where: keptEntities.length ? { orgId, entity: { notIn: keptEntities } } : { orgId },
         });
         const fileHistory = rows(backup, "changeHistory").filter(
-          (h) => fileHasAgreements || !isAgreementHistoryEntity(h.entity),
+          (h) => !keptEntities.includes(String(h.entity)),
         );
         await tx.changeHistory.createMany({
           data: reOrg(fileHistory, orgId).map((h) => restampHistoryEntityId(h, orgId)),
@@ -499,6 +512,11 @@ async function replaceAgreementTables(
   orgId: string,
   transform: { proposal?: (r: Row) => any } = {},
 ): Promise<void> {
+  // Customer systems (server tags + QWEB licenses) go with their customers (FK cascade). A file
+  // from before they existed has no "saSystems" key: keep the current ones for the customers
+  // that come back.
+  const keptSystems: Row[] = Array.isArray(backup.data?.saSystems) ? [] : await tx.saSystem.findMany({ where: { orgId } });
+  await tx.saSystem.deleteMany({ where: { orgId } });
   await tx.saCallsRepairs.deleteMany({ where: { orgId } });
   await tx.saContractLine.deleteMany({ where: { orgId } });
   await tx.saProposalLine.deleteMany({ where: { orgId } });
@@ -511,6 +529,9 @@ async function replaceAgreementTables(
   await tx.saProposalLine.createMany({ data: reOrg(rows(backup, "saProposalLines"), orgId) });
   await tx.saContractLine.createMany({ data: reOrg(rows(backup, "saContractLines"), orgId) });
   await tx.saCallsRepairs.createMany({ data: reOrg(rows(backup, "saCalls"), orgId) });
+  const customerIds = new Set(rows(backup, "saCustomers").map((c) => String(c.id)));
+  const systems = Array.isArray(backup.data?.saSystems) ? rows(backup, "saSystems") : keptSystems;
+  await tx.saSystem.createMany({ data: reOrg(systems.filter((s) => customerIds.has(String(s.customerId))), orgId) });
   // One row per org (orgId is the primary key) — keep at most one.
   await tx.saSettings.createMany({ data: reOrg(rows(backup, "saSettings").slice(0, 1), orgId) });
 }

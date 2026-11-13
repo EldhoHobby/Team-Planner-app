@@ -19,7 +19,14 @@ type NavItem = {
   adminOnly?: boolean;
   /** Shown only to people allowed to see the service agreements. */
   agreements?: boolean;
+  /** Other path prefixes that also light this item up (pages reached from it). */
+  also?: string[];
 };
+
+/** Whether `pathname` belongs to the item: its own href or one of its `also` prefixes. */
+function isActive(item: NavItem, pathname: string): boolean {
+  return pathname.startsWith(item.href) || (item.also ?? []).some((p) => pathname.startsWith(p));
+}
 
 const WORK_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -27,7 +34,8 @@ const WORK_NAV: NavItem[] = [
   { href: "/tasks", label: "Tasks", icon: ListChecks, adminOnly: true },
   { href: "/timesheet", label: "Timesheet", icon: Clock, adminOnly: true },
   { href: "/projects", label: "Projects", icon: FolderOpen, adminOnly: true },
-  { href: "/agreements", label: "Agreements", icon: Handshake, agreements: true },
+  // One item: its page (/customer-service) has a button for Agreements and one for Open POs.
+  { href: "/customer-service", label: "Customer Service", icon: Handshake, agreements: true, also: ["/agreements", "/open-pos"] },
   { href: "/activity", label: "Activity", icon: History },
   { href: "/help", label: "Help", icon: LifeBuoy },
 ];
@@ -55,7 +63,9 @@ export interface NavProps {
 /** The nav label for the current path (the phone top bar shows it); null when none matches. */
 export function navTitleFor(pathname: string): string | null {
   if (pathname.startsWith("/settings/account")) return "Account";
-  const item = [...WORK_NAV, ...ADMIN_NAV].find((i) => pathname.startsWith(i.href));
+  if (pathname.startsWith("/agreements")) return "Agreements";
+  if (pathname.startsWith("/open-pos")) return "Open POs";
+  const item = [...WORK_NAV, ...ADMIN_NAV].find((i) => isActive(i, pathname));
   return item ? item.label : null;
 }
 
@@ -66,7 +76,7 @@ const FOCUS_RING =
 
 function NavLink({ item, pathname, onNavigate }: { item: NavItem; pathname: string; onNavigate?: () => void }) {
   const { href, label, icon: Icon } = item;
-  const active = pathname.startsWith(href);
+  const active = isActive(item, pathname);
   return (
     <Link
       href={href}
@@ -99,7 +109,7 @@ function NavGroup({
   idPrefix: string;
   onNavigate?: () => void;
 }) {
-  const headingId = `${idPrefix}-group-${title.toLowerCase()}`;
+  const headingId = `${idPrefix}-group-${title.toLowerCase().replace(/\s+/g, "-")}`;
   return (
     <div role="group" aria-labelledby={headingId} className="space-y-0.5">
       <p id={headingId} className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">

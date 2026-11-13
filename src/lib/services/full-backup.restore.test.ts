@@ -88,7 +88,7 @@ const READ_OPS = new Set(["findMany", "findUnique", "findFirst", "count"]);
 const writes = () => db.state.calls.filter((c) => !READ_OPS.has(c.op));
 const callsTo = (model: string, op: string) => db.state.calls.filter((c) => c.model === model && c.op === op);
 
-const AGREEMENT_MODELS = ["saCallsRepairs", "saContractLine", "saProposalLine", "saProposal", "saCustomer", "saSettings"];
+const AGREEMENT_MODELS = ["saCallsRepairs", "saContractLine", "saProposalLine", "saProposal", "saCustomer", "saSettings", "saSystem"];
 
 beforeEach(() => {
   db.state.calls.length = 0;
@@ -221,7 +221,9 @@ describe("restoreFullBackup", () => {
     );
     const del = callsTo("changeHistory", "deleteMany");
     expect(del).toHaveLength(1);
-    expect(del[0]!.args).toEqual({ where: { orgId: "org1", entity: { notIn: ["sa_customer", "sa_settings"] } } });
+    // The file has no open POs either, so their history is kept too.
+    expect(del[0]!.args).toEqual({ where: { orgId: "org1", entity: { notIn: ["sa_customer", "sa_settings", "open_po"] } } });
+    expect(callsTo("openPo", "deleteMany")).toEqual([]);
     const created = callsTo("changeHistory", "createMany")[0]!.args.data as any[];
     expect(created.map((h) => h.id)).toEqual(["h1"]);
     expect(writes().some((c) => AGREEMENT_MODELS.includes(c.model))).toBe(false);

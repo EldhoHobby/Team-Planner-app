@@ -23,6 +23,7 @@ const SECTIONS: { id: string; title: string; for: Audience }[] = [
   { id: "schedule", title: "The schedule", for: "everyone" },
   { id: "timesheet", title: "Timesheet", for: "admin" },
   { id: "agreements", title: "Service agreements", for: "agreements" },
+  { id: "open-pos", title: "Open POs", for: "agreements" },
   { id: "signing-in", title: "Signing in and passwords", for: "everyone" },
   { id: "admins", title: "For admins", for: "admin" },
 ];
@@ -131,7 +132,12 @@ export default async function HelpPage() {
             {isAdmin && <li><UI>Tasks</UI> — tasks organised under projects (admins only).</li>}
             {isAdmin && <li><UI>Timesheet</UI> — enter your hours for the week and produce the timesheet Excel file (admins only).</li>}
             {isAdmin && <li><UI>Projects</UI> — the projects that group the tasks on the Tasks page (admins only).</li>}
-            {seesAgreements && <li><UI>Agreements</UI> — service agreements: customers, renewals and proposals.</li>}
+            {seesAgreements && (
+              <li>
+                <UI>Customer Service</UI> opens a page with two buttons: <UI>Agreements</UI> (service agreements:
+                customers, renewals, proposals) and <UI>Open POs</UI> (customer orders that are still open).
+              </li>
+            )}
             <li><UI>Activity</UI> — everything you have done in the app recently, newest first.</li>
             <li><UI>Help</UI> — this page.</li>
           </ul>
@@ -372,14 +378,31 @@ export default async function HelpPage() {
                 </>
               )}{" "}
               The bar at the top has <UI>Renewals</UI>, <UI>Overview</UI>, <UI>Customers</UI>,{" "}
-              <UI>Proposals</UI> and <UI>Settings</UI>.
+              <UI>Proposals</UI>, <UI>Servers &amp; QWEB</UI> and <UI>Settings</UI>.
             </p>
+
+            <Sub title="Servers & QWEB: tag numbers and licenses in one place">
+              <p className={P}>
+                <UI>Servers &amp; QWEB</UI> lists every customer system by its SO #: the server tag numbers with
+                their warranty end dates, and the QWEB (Thinfinity) license with its user count and renew date. A
+                warranty that has ended and a QWEB renewal due within 60 days are shown in amber; the{" "}
+                <UI>Show</UI> menu narrows the list to those. The agreement itself (customer page and proposal
+                sheet) shows only the <UI>QWEB licenses</UI> number; the link under the customer details opens that
+                customer here.{" "}
+                {editsAgreements
+                  ? "Edit opens a system to change it, Add system adds one, and Import / Export bring the list in or out as Excel (the file holds the license keys, so keep it safe)."
+                  : "License keys and notes are hidden from you; admins and the Customer Service work group see them."}
+              </p>
+            </Sub>
 
             <Sub title="Renewals: where to start">
             <p className={P}>
               <UI>Renewals</UI> lists the agreements that are about to expire, or already have, as five bars:{" "}
               <UI>Expiring in the next 30 days</UI>, <UI>31 to 60 days</UI>, <UI>61 to 90 days</UI>,{" "}
-              <UI>91 to 120 days</UI> and <UI>Already ended, needs follow-up</UI>. Each bar is closed to start with
+              <UI>91 to 120 days</UI> and <UI>Already ended, needs follow-up</UI>, plus a sixth bar,{" "}
+              <UI>Already ended, followed up</UI>: once a follow-up is logged for an ended agreement it waits there
+              until its &quot;follow up again&quot; date (or 7 days when no date was given), then moves back to{" "}
+              <UI>needs follow-up</UI>. Each bar is closed to start with
               and shows a summary: how many renewals, how much they are worth a year, and how many are still to
               follow up. Click a bar to open or close it. Each renewal is in one bar only, and Pending and Expired –
               still waiting customers are included, with their status next to the name. Searching opens the bars
@@ -489,6 +512,55 @@ export default async function HelpPage() {
                   since your export are listed as conflicts and skipped — redo those in the app.
                 </p>
               </HowTo>
+            )}
+          </Section>
+        )}
+
+        {/* ─────────────── Open POs ─────────────── */}
+        {seesAgreements && (
+          <Section id="open-pos" title="Open POs">
+            <p className={P}>
+              <UI>Open POs</UI> (under <UI>Customer Service</UI>) lists the customer orders that are still open, in
+              three bars: <UI>Open</UI>, <UI>On hold</UI> and <UI>Closed</UI>. Each bar shows how many POs it holds,
+              how much is left to bill and how many are due a check. A row shows the customer, the order and PO
+              number, what is left to bill, and the latest update with who wrote it and when. Search finds a PO by
+              customer, order number or PO number.{" "}
+              {editsAgreements
+                ? "You can make changes here."
+                : "You can look but not change anything; admins and the Customer Service work group keep the list."}
+            </p>
+            <p className={P}>
+              <UI>{editsAgreements ? "Update" : "History"}</UI> on a row opens the full history of that PO, newest
+              first: every update that was logged and every change to its status, amounts, dates or responsible
+              person, with who made it and when. The history is kept for good.
+            </p>
+            {editsAgreements && (
+              <>
+                <HowTo summary="Log the latest status of a PO">
+                  <p>
+                    Click <UI>Update</UI> on the row, type what the latest is, and if needed change the{" "}
+                    <UI>Status</UI>, the amount <UI>Billed so far</UI> and the <UI>Check again on</UI> date. Click{" "}
+                    <UI>Save update</UI>. When the check date arrives the row moves to the top of its bar and is
+                    marked <UI>Check due</UI>.
+                  </p>
+                </HowTo>
+                <HowTo summary="Add a PO or change its details">
+                  <p>
+                    <UI>Add PO</UI> at the top adds one; <UI>Details</UI> on a row changes anything about it (PO
+                    value, expected completion, responsible person, notes). Set the status to <UI>Closed</UI> when
+                    the order is finished: it moves to the Closed bar and keeps its history. <UI>Remove</UI> is only
+                    for a PO entered by mistake: it deletes the PO and its history.
+                  </p>
+                </HowTo>
+                <HowTo summary="Bring in or send out the list as Excel">
+                  <p>
+                    <UI>Export</UI> downloads the list. <UI>Import</UI> takes an Excel file with an{" "}
+                    <UI>Order No.</UI> column (the Open PO List workbook works as it is): choose the file, check the
+                    preview, then apply. Known order numbers are updated, new ones are added, nothing is deleted.
+                    Text in the <UI>Latest Update</UI> column is logged as a new update.
+                  </p>
+                </HowTo>
+              </>
             )}
           </Section>
         )}
