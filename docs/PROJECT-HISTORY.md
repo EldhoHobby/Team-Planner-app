@@ -17,10 +17,10 @@ profile)._
 | **GitHub `main`** | **v0.1.3** | tagged `v0.1.3` (2026-11-13; `feature/open-po` merged). Earlier: `v0.1.2` (help by role, renewals bars, 2026-11-13), `v0.1.1` (agreements workflow, 2026-11-12), `v0.1.0` (first release to production) |
 | **v0.1.3** | 2026-11-13 | Sidebar: **Agreements** is replaced by one **Customer Service** item that opens a page with two buttons, Agreements and the new **Open POs** page. Open POs tracks customer orders that are still open (Open / On hold / Closed bars with count, left to bill and checks due; Update dialog logs the latest status with optional status / billed / check-again date; Details dialog; permanent history of every update and field change; Excel export + import matched by Order No. — the "Open PO List" workbook imports as it is). Same rights as Agreements. Adds a migration (`OpenPo` table). Renewals: ended agreements with a standing follow-up move to a sixth bar, "Already ended, followed up", until the follow-up date arrives. Agreements → **Servers & QWEB**: one page for server tag numbers, warranty dates and QWEB (Thinfinity) licenses per system SO #, tied to the agreement customer (import of the server tag / QWEB list, export, add / edit; keys and notes shown to editors only); the agreement still shows only the typed QWEB licenses number. Adds a second migration (`SaSystem` table). |
 | **v0.1.2** | 2026-11-12 | Help shows only what applies to the reader: Tasks / Timesheet / Projects and the "For admins" section for admins only; the Agreements section only for people who can see Agreements, with the editing how-tos (proposal steps, undo signing, monthly workbook) only for people who can edit; the "your people" notes only for managers. The Schedule remembers the people filter in the browser across reloads (`schedule.people` in localStorage, per personal default). Settings → Holidays has Export / Import (Excel, preview then apply, admins only). Agreements → Renewals opens on **Expiring**: groups for already ended (needs follow-up), the next 30 days, 31–60 and 61–90 days; **Log follow-up** on a row records what was done, by whom and when (and an optional next date), shown on the row and kept in the customer Activity. Adds a migration (four nullable follow-up columns on `SaCustomer`). The Renewals page was then redone to be much plainer (four count boxes for the expiry windows, short rows, a Show menu for the other lists), and the follow-up window lists the full follow-up history. Sign-in audit entries now say which browser and device ("Edge on Windows, device 3F2A") instead of Docker's gateway address 172.18.0.1, and the sign-in limiter follows the device when every PC shares that address. The Pipeline tab is hidden from the Agreements bar for now (the page still exists). Renewals groups are now collapsible bars, closed by default, each with a summary, in the order next 30 / 31–60 / 61–90 / 91–120 days / already ended (the 91–120 day group is new). Also `scripts/update-production.ps1` (one-step production update). |
-| **v0.1.1** | 2026-11-12 | Agreements workflow rework (from the reviewed mock-up): `/agreements` is now the **Renewals** work list (one row per renewal, plain-words status, one next-step button, filter chips + search); the old dashboard moved to `/agreements/overview`; the proposal page is a guided three-step renewal with one primary button per step and a "Next: customer" link after signing. No change to saving, pricing, the proposal sheet or the workbook. Merged into `main` and tagged `v0.1.1` on 2026-11-12; not deployed to production yet (production is on v0.1.0). |
-| **Production — `10.210.6.233`** (the user still calls it "the SCADA PC") | **v0.1.0** | since **2026-11-12** (v0.0.10 before that, moved here 2026-11-06). Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Caddyfile as in git (`LAN_IP` in `.env`). Email ingest off. See `DEPLOY.md` section 1 |
+| **v0.1.1** | 2026-11-12 | Agreements workflow rework (from the reviewed mock-up): `/agreements` is now the **Renewals** work list (one row per renewal, plain-words status, one next-step button, filter chips + search); the old dashboard moved to `/agreements/overview`; the proposal page is a guided three-step renewal with one primary button per step and a "Next: customer" link after signing. No change to saving, pricing, the proposal sheet or the workbook. Merged into `main`, tagged `v0.1.1` and deployed to production on 2026-11-12. |
+| **Production — `10.210.6.233`** (the user still calls it "the SCADA PC") | **v0.1.3** | since **2026-11-13** (v0.1.2 earlier the same day, v0.1.0 and v0.1.1 on 2026-11-12, v0.0.10 before that; moved here 2026-11-06). Updated with `scripts/update-production.ps1`. Holds the real service-agreements data (brought over with "Restore agreements only" on 2026-11-12 — do not repeat that restore). The Open POs and Servers & QWEB lists are filled by Excel export on dev → import here. Has internet. Git clone of `main` in `C:\TeamPlanner`, images built on the PC, `docker-compose.offline.yml`, `https://10.210.6.233:8443`. Caddyfile as in git (`LAN_IP` in `.env`). Email ingest off. See `DEPLOY.md` section 1 |
 | **Old SCADA PC `10.210.4.65`** | v0.0.8 last deployed (stopped) | **retired** 2026-11-06; stack stopped but the PC is kept as a fallback for now. Don't start it while the new PC is live (data would diverge) |
-| **Dev PC `10.210.4.130`** | v0.1.3 | on `main`, `planner.localhost`, `docker-compose.yml`. Until "Restore agreements only" has been run on production, the dev DB holds the only copy of the service-agreements data |
+| **Dev PC `10.210.4.130`** | v0.1.3 | on `main`, `planner.localhost`, `docker-compose.yml`. Its service-agreements data is a test copy; the real data is on production |
 
 ---
 
@@ -108,29 +108,35 @@ Both branched from v0.0.8 and were taken out of `main` on 2026-10-30.
 
 ## Open issues / things to check
 
-- ~~Upgrade production from v0.0.10~~ — **done 2026-11-12**: production runs
-  v0.1.0 (deployed by the user per `DEPLOY.md` 1.1, reported working).
-- **After the v0.1.0 deploy — check each was done on production:** remove the
-  old `ollama` container; "Restore agreements only" (next item); choose who
-  sees Agreements (Agreements → Settings → Who can see Agreements — open to
-  everyone until saved); create the "Customer Service" work group (agreement
-  editors — it does not exist on dev, so until then only admins can edit).
-  Keep the old Docker images (`caddy:2-alpine`, `postgres:16-alpine`,
-  `ollama/ollama`) until v0.1.0 has run for a while — a rollback to v0.0.10
-  needs them.
-- **Agreement data exists only on dev** — move it with **Restore agreements
-  only** (Settings → Data): (1) upgrade production, (2) take a production full
-  backup, (3) on dev download a full backup, (4) on production run "Restore
-  agreements only" with the dev file. It replaces just the `Sa*` tables + the
-  agreement history; people, jobs and tasks are untouched; dev users that
-  don't exist on production keep their names in the history (user link left
-  empty). A file with no agreement customers is refused. Do it before people
-  enter agreements on production. Full backup download / full restore /
-  Settings → Data reset are **Owner-only**; the agreements restore + reset
-  stay admin-level.
-- **Off-PC backups on production** — schedule `backup-offsite.ps1` from a copy
-  kept OUTSIDE the clone in `C:\TeamPlanner-local\` (`DEPLOY.md` 2.3) once a
-  destination share / USB drive is chosen.
+- ~~Upgrade production from v0.0.10~~ — **done**: production runs **v0.1.3**
+  (2026-11-13; v0.1.0 and v0.1.1 on 2026-11-12, v0.1.2 earlier on 2026-11-13),
+  each deployed by the user and reported working. From v0.1.2 on the update is
+  one step: `scripts/update-production.ps1`.
+- ~~After the v0.1.0 deploy~~ — **done 2026-11-12**: old `ollama` container,
+  old v0.0.10 images and build cache removed (no quick rollback to v0.0.10 any
+  more); "Who can see Agreements" set.
+- **"Customer Service" work group on production** — check it exists and holds
+  the right people. Until it does, only admins can edit Agreements, Open POs
+  and Servers & QWEB.
+- ~~Agreement data exists only on dev~~ — **done 2026-11-12**: the user ran
+  "Restore agreements only" on production with a dev full backup.
+  **Production now holds the real agreement data — never repeat that
+  restore** (it would overwrite what people entered there). Dev's agreement
+  data is a test copy. New lists move dev → production by Excel export /
+  import of that list.
+- **Open POs and Servers & QWEB on production (v0.1.3)** — both pages start
+  empty there. Fill them with Export on dev → Import on production (7 open
+  POs, 39 systems on dev). The Servers & QWEB export holds the license keys:
+  move it like a password file and delete it afterwards. The Open POs import
+  brings each PO's latest update, not its earlier history. To check in the
+  loaded systems: keys typed from a screenshot; the 23002 / 23004 keys look
+  swapped in the source list; Kings Mountain 24005 is marked Cancelled but has
+  a 2026 renewal; the Blue Grass renew date.
+- ~~Off-PC backups on production~~ — **done 2026-11-12**: scheduled task
+  "TeamPlanner off-PC backup" (3 AM, runs as SYSTEM) copies the dumps to a USB
+  drive, script copy in `C:\TeamPlanner-local\` (`DEPLOY.md` 2.3). The drive
+  stays plugged into the PC, so it is not off-site — rotating two drives or
+  a network share would fix that.
 - ~~Production Caddyfile is a local edit~~ — fixed at the v0.1.0 update
   (`LAN_IP=10.210.6.233` in `.env`; the old file is kept in
   `C:\TeamPlanner-local\Caddyfile`).
