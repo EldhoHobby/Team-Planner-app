@@ -6,9 +6,9 @@ import { StaleSaveError, parseExpectedVersion } from "@/lib/db/optimistic";
 import { actionError } from "@/lib/log";
 import { updateSettings, type SettingsRow } from "@/lib/services/agreements/common";
 import {
-  addContractLine, createCustomer, deleteContractLine, listFollowUps, logFollowUp, saveCalls, updateContractLine, updateCustomer,
+  addContractLine, addSignedYear, createCustomer, deleteContractLine, listFollowUps, logFollowUp, saveCalls, updateContractLine, updateCustomer,
   type FollowUpEntry,
-  type ContractInput, type CustomerInput,
+  type ContractInput, type CustomerInput, type SignedYearInput,
 } from "@/lib/services/agreements/customers";
 import {
   addLine, bulkCreateProposals, createProposal, deleteDraftProposal, removeLine, setLinePrice, transitionProposal, undoSigning, updateProposalHeader,
@@ -82,6 +82,19 @@ export async function saveContractLineAction(input: {
     if (input.id) await updateContractLine(scope, input.id, data, version(input.version));
     else if (input.create) await addContractLine(scope, input.customerId, { ...data, year: Number(input.create.year), agreement: input.create.agreement });
   });
+}
+
+/** "Add signed year": several signed lines for one year, saved together. */
+export async function addSignedYearAction(input: { customerId: string; data: SignedYearInput }) {
+  return run("agreements.addSignedYear", "Couldn't add the signed year. Please try again.", (scope) =>
+    addSignedYear(scope, String(input?.customerId ?? ""), {
+      year: Number(input?.data?.year),
+      lines: (Array.isArray(input?.data?.lines) ? input.data.lines : []).map((l) => ({
+        agreement: l.agreement, price: Number(l.price), endDate: l.endDate ? String(l.endDate) : null,
+      })),
+      note: input?.data?.note ? String(input.data.note) : null,
+    }),
+  );
 }
 
 export async function deleteContractLineAction(input: { id: string; version: number }) {
@@ -176,10 +189,12 @@ export async function bulkProposalsAction(input: { month: string; apply: boolean
 
 // ─── follow-ups ───
 
-/** Renewals list: record that a renewal was followed up (note + optional next date). */
-export async function logFollowUpAction(input: { customerId: string; note: string; next: string | null }) {
+/** Record that a renewal was followed up (note + next date, or "no further follow-up needed"). */
+export async function logFollowUpAction(input: { customerId: string; note: string; next: string | null; noFurther?: boolean }) {
   return run("agreements.followUp", "Couldn't save the follow-up. Please try again.", (scope) =>
-    logFollowUp(scope, String(input?.customerId ?? ""), { note: String(input?.note ?? ""), next: input?.next ? String(input.next) : null }),
+    logFollowUp(scope, String(input?.customerId ?? ""), {
+      note: String(input?.note ?? ""), next: input?.next ? String(input.next) : null, noFurther: input?.noFurther === true,
+    }),
   );
 }
 

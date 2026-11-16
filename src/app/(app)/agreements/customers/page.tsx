@@ -36,7 +36,7 @@ export default async function CustomersPage({
   const sp = await searchParams;
   const [{ rows }, canEdit] = await Promise.all([loadPortfolio(scope), canEditAgreements(scope)]);
   const list: CustomerListRow[] = rows.map((r) => ({
-    id: r.id, name: r.name, soNumber: r.soNumber, soConfirmed: r.soConfirmed, status: r.status, state: r.state,
+    id: r.id, name: r.name, aliases: r.aliases, soNumber: r.soNumber, soConfirmed: r.soConfirmed, status: r.status, state: r.state,
     software: r.software, annualValue: r.renewal.annualValue, currentYear: r.renewal.currentYear,
     nextEndDate: r.renewal.nextEndDate, renewal: r.renewal.state, agreements: r.renewal.currentLines.length,
     endMonths: [...new Set(r.renewal.currentLines.map((l) => l.endDate?.slice(0, 7)).filter((m): m is string => !!m))],

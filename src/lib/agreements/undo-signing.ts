@@ -16,7 +16,13 @@ export interface SignedLineLite {
 }
 
 export interface UndoSigningInput {
-  proposal: { id: string; year: number; signedDate: string | null; lines: { agreement: SaAgreement; price: number }[] };
+  proposal: {
+    id: string;
+    year: number;
+    signedDate: string | null;
+    /** `autoNote`: the note signing wrote on that line (a prorated line's "Prorated N months; …") — not an edit. */
+    lines: { agreement: SaAgreement; price: number; autoNote?: string | null }[];
+  };
   /** The contract lines that signing created (may be empty: deleted by hand). */
   signedLines: SignedLineLite[];
   /** All of the customer's proposals (this one included — it is skipped). */
@@ -45,6 +51,7 @@ export function undoSigningBlockers(input: UndoSigningInput): string[] {
   const { proposal: p } = input;
   const out: string[] = [];
   const priceOf = new Map(p.lines.map((l) => [l.agreement, l.price]));
+  const autoNoteOf = new Map(p.lines.map((l) => [l.agreement, l.autoNote?.trim() || null]));
 
   for (const l of input.signedLines) {
     const why: string[] = [];
@@ -56,7 +63,7 @@ export function undoSigningBlockers(input: UndoSigningInput): string[] {
     else if (Math.round(price * 100) !== Math.round(l.price * 100)) why.push(`price now ${fmtMoney(l.price)}`);
     if (l.checked) why.push("marked checked");
     if (l.invoicedDate) why.push(`invoiced ${fmtDate(l.invoicedDate)}`);
-    if (l.notes?.trim()) why.push("has notes");
+    if (l.notes?.trim() && l.notes.trim() !== autoNoteOf.get(l.agreement)) why.push("has notes");
     if (l.signedDate !== p.signedDate) why.push(`signed date ${fmtDate(l.signedDate) || "cleared"}`);
     if (why.length) out.push(`${l.year} ${AGREEMENT_LABELS[l.agreement]} was changed after signing (${[...new Set(why)].join(", ")})`);
   }

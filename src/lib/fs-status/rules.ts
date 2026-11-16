@@ -181,7 +181,8 @@ export function fieldsOfGroup(key: FsGroupKey): { status: FsOrderStatus; onWeekl
 
 /**
  * A Status cell of the Excel sheet → what to store; null when it is not one of the choices.
- * A bare "Open" / "Closed" sets the status only and leaves the weekly report mark as it is.
+ * A bare "Open" sets the status only and leaves the weekly report mark as it is; a closed
+ * order is never on the weekly report.
  */
 export function parseFsChoice(v: string | null | undefined): { status: FsOrderStatus; onWeeklyReport?: boolean } | null {
   const s = (v ?? "").trim().toLowerCase().replace(/[\s_,-]+/g, " ");
@@ -190,7 +191,8 @@ export function parseFsChoice(v: string | null | undefined): { status: FsOrderSt
     return fieldsOfGroup(/\bnot\b/.test(s) ? "notReport" : "report");
   }
   const status = parseFsStatus(v);
-  return status ? { status } : null;
+  if (!status) return null;
+  return status === "OPEN" ? { status } : { status, onWeeklyReport: false };
 }
 
 /** The "Show" buttons above the sheet (also what the print view is asked for). */

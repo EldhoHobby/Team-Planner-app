@@ -1,23 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { ChevronRight, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DatePicker } from "@/components/ui/date-picker";
-import { FormMessage } from "@/components/ui/form-message";
 import { Input } from "@/components/ui/input";
-import { Modal } from "@/components/ui/modal";
 import { PageHeader } from "@/components/ui/page-header";
 import { cn } from "@/lib/utils";
 import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, fmtDate, fmtMoney } from "@/lib/agreements/constants";
 import {
-  DEFAULT_RENEWAL_FILTER, FOLLOW_UP_GOOD_DAYS, RENEWAL_FILTERS, groupByExpiry, matchesQuery, standing,
+  DEFAULT_RENEWAL_FILTER, RENEWAL_FILTERS, groupByExpiry, matchesQuery, standing,
   type ExpiryGroupKey, type RenewalFilterKey, type RenewalRow,
 } from "@/lib/agreements/renewal-list";
-import type { FollowUpEntry } from "@/lib/services/agreements/customers";
-import { listFollowUpsAction, logFollowUpAction } from "./actions";
+import { FollowUpDialog } from "./follow-up-dialog";
 import { StartProposalButton } from "./start-proposal-button";
 
 // A deliberately plain page: one bar per expiry window, closed until you open it, each with a
@@ -109,9 +104,30 @@ function Row({ row, canEdit, onFollowUp }: { row: RenewalRow; canEdit: boolean; 
             )}
             title={`${f.note ?? ""}${f.next ? ` (follow up again ${fmtDate(f.next)})` : ""}`}
           >
-            {row.followedUp ? "Followed up" : "Follow-up due again · last"} {fmtDate(f.at)}
+            {row.followedUp ? "Followed up" : row.followUpDue ? "Last follow-up" : "Follow-up due again · last"} {fmtDate(f.at)}
             {f.by ? ` by ${f.by}` : ""}
             {f.note ? `: ${f.note}` : ""}
+          </p>
+        )}
+        {(row.followUpDue || row.hardwareServers > 0) && (
+          <p className="mt-1 flex flex-wrap gap-1.5 pl-4 text-xs">
+            {row.followUpDue && f?.next && (
+              <span
+                className={cn(
+                  "rounded-full border px-2 py-0.5 font-medium",
+                  row.followUpDue === "past"
+                    ? "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400"
+                    : "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+                )}
+              >
+                Follow up due {row.followUpDue === "today" ? "today" : `since ${fmtDate(f.next)}`}
+              </span>
+            )}
+            {row.hardwareServers > 0 && (
+              <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-amber-800 dark:text-amber-300">
+                Server warranty ended ({plural(row.hardwareServers, "server", "servers")}) — offer Server Hardware
+              </span>
+            )}
           </p>
         )}
       </div>
@@ -143,148 +159,6 @@ function RowList({
         <Row key={r.key} row={r} canEdit={canEdit} onFollowUp={onFollowUp} />
       ))}
     </ul>
-  );
-}
-
-/**
- * Follow-ups for one customer: log a new one (editors) and the full history, newest first.
- * The history comes from the customer's permanent change history.
- */
-function FollowUpDialog({ row, canEdit, onClose }: { row: RenewalRow; canEdit: boolean; onClose: () => void }) {
-  const router = useRouter();
-  const [note, setNote] = useState("");
-  const [next, setNext] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [history, setHistory] = useState<FollowUpEntry[] | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const busy = useRef(false);
-  const canClose = useCallback(() => !busy.current, []);
-
-  useEffect(() => {
-    let live = true;
-    listFollowUpsAction({ customerId: row.customerId })
-      .then((r) => {
-        if (!live) return;
-        if (r.error) setHistoryError(r.error);
-        else setHistory(r.items ?? []);
-      })
-      .catch(() => {
-        if (live) setHistoryError("Couldn't load the follow-up history — check your connection.");
-      });
-    return () => {
-      live = false;
-    };
-  }, [row.customerId]);
-
-  const save = async () => {
-    if (busy.current) return;
-    if (!note.trim()) {
-      setError("Say what was done, in a few words.");
-      return;
-    }
-    busy.current = true;
-    setSaving(true);
-    setError(null);
-    let r: { error?: string };
-    try {
-      r = await logFollowUpAction({ customerId: row.customerId, note, next: next || null });
-    } catch {
-      r = { error: "Couldn't save — check your connection and try again." };
-    }
-    busy.current = false;
-    setSaving(false);
-    if (r.error) {
-      setError(r.error);
-      return;
-    }
-    router.refresh();
-    onClose();
-  };
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      size="sm"
-      title={canEdit ? "Log a follow-up" : "Follow-ups"}
-      description={row.name}
-      canClose={canClose}
-      dirty={note.trim() !== "" || next !== ""}
-      confirmClose="This follow-up has not been saved."
-    >
-      <div className="space-y-4 text-sm">
-        {canEdit && (
-          <form
-            className="space-y-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void save();
-            }}
-          >
-            <div className="space-y-1">
-              <label htmlFor="follow-up-note" className="text-xs font-medium text-muted-foreground">What was done</label>
-              <textarea
-                id="follow-up-note"
-                data-autofocus
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                rows={3}
-                maxLength={500}
-                placeholder="Called the customer, waiting for the PO"
-                className="w-full rounded-md border bg-background p-2 text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <span id="follow-up-next-label" className="block text-xs font-medium text-muted-foreground">
-                Follow up again on (optional)
-              </span>
-              <DatePicker aria-labelledby="follow-up-next-label" value={next} onChange={setNext} placeholder="No date" />
-              <p className="text-xs text-muted-foreground">
-                Without a date it counts as followed up for {FOLLOW_UP_GOOD_DAYS} days.
-              </p>
-            </div>
-            <FormMessage tone="error">{error}</FormMessage>
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  if (!busy.current) onClose();
-                }}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" aria-disabled={saving} className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50">
-                {saving ? "Saving…" : "Save follow-up"}
-              </Button>
-            </div>
-          </form>
-        )}
-
-        <section aria-labelledby="follow-up-history" className={cn(canEdit && "border-t pt-3")}>
-          <h3 id="follow-up-history" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            History
-          </h3>
-          {historyError ? (
-            <FormMessage tone="error" className="mt-2">{historyError}</FormMessage>
-          ) : history === null ? (
-            <p className="mt-2 text-xs text-muted-foreground">Loading…</p>
-          ) : history.length === 0 ? (
-            <p className="mt-2 text-xs text-muted-foreground">No follow-ups logged yet.</p>
-          ) : (
-            <ol className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1" tabIndex={0} aria-label="Follow-up history">
-              {history.map((h) => (
-                <li key={h.id} className="rounded-md bg-muted/50 px-3 py-2">
-                  <p className="text-xs text-muted-foreground">{fmtDate(h.day)} · {h.by}</p>
-                  <p className="break-words">{h.text.replace(/\(follow up again (\d{4}-\d{2}-\d{2})\)/, (_, d: string) => `(follow up again ${fmtDate(d)})`)}</p>
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
-      </div>
-    </Modal>
   );
 }
 
@@ -368,8 +242,8 @@ export function RenewalsList({
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search customer or SO #"
-          aria-label="Search customer or SO #"
+          placeholder="Search customer (or other name) or SO #"
+          aria-label="Search customer, other name or SO #"
           className="w-full sm:w-64"
         />
         <label className="flex items-center gap-2 text-sm text-muted-foreground sm:ml-auto">
@@ -459,7 +333,13 @@ export function RenewalsList({
       )}
 
       {followUpFor && (
-        <FollowUpDialog key={followUpFor.key} row={followUpFor} canEdit={canEdit} onClose={() => setFollowUpFor(null)} />
+        <FollowUpDialog
+          key={followUpFor.key}
+          customerId={followUpFor.customerId}
+          customerName={followUpFor.name}
+          canEdit={canEdit}
+          onClose={() => setFollowUpFor(null)}
+        />
       )}
     </div>
   );

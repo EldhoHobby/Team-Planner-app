@@ -103,8 +103,8 @@ describe("groups", () => {
     expect(parseFsChoice(FS_GROUP_LABELS.report)).toEqual({ status: "OPEN", onWeeklyReport: true });
     expect(parseFsChoice("open, NOT on weekly report")).toEqual({ status: "OPEN", onWeeklyReport: false });
     expect(parseFsChoice("Open")).toEqual({ status: "OPEN" });
-    expect(parseFsChoice("Closed")).toEqual({ status: "CLOSED" });
-    expect(parseFsChoice(FS_GROUP_LABELS.workLeft)).toEqual({ status: "CLOSED_WORK_LEFT" });
+    expect(parseFsChoice("Closed")).toEqual({ status: "CLOSED", onWeeklyReport: false });
+    expect(parseFsChoice(FS_GROUP_LABELS.workLeft)).toEqual({ status: "CLOSED_WORK_LEFT", onWeeklyReport: false });
     expect(parseFsChoice("open soon")).toBeNull();
     expect(parseFsChoice("")).toBeNull();
     expect(isFsGroupKey("report")).toBe(true);

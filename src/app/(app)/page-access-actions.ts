@@ -23,11 +23,15 @@ export async function savePageAccessAction(input: {
   restricted: boolean;
   viewerIds: string[];
   editorIds: string[];
+  /** Only for a page whose editors list is optional: true = only the people ticked can change it. */
+  editRestricted?: boolean;
 }): Promise<{ ok?: boolean; error?: string }> {
   try {
     const { scope } = await requireScope();
     if (!isAccessPage(input?.page)) return { error: "Unknown page." };
-    await setPageAccess(scope, input.page, { restricted: input.restricted, viewerIds: input.viewerIds, editorIds: input.editorIds });
+    await setPageAccess(scope, input.page, {
+      restricted: input.restricted, viewerIds: input.viewerIds, editorIds: input.editorIds, editRestricted: input.editRestricted === true,
+    });
     revalidatePath("/", "layout"); // the sidebar item and every page behind it
     return { ok: true };
   } catch (e) {

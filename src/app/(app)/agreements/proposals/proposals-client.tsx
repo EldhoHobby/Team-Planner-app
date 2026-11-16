@@ -19,6 +19,7 @@ import { CustomerStatusBadge, ProposalBadge } from "../badges";
 import { bulkProposalsAction } from "../actions";
 import { MonthPicker } from "../month-picker";
 import { printInFrame } from "../print-frame";
+import { proposalPrintUrl } from "./print-options";
 import type { BulkRow } from "../types";
 
 const SELECT = "h-9 max-w-full rounded-md border bg-background px-2 text-sm";
@@ -107,7 +108,7 @@ export function ProposalsClient({
   const printSelected = () => {
     setPrinting(true);
     const title = month ? `Proposals ending ${month}` : printIds.length === 1 ? "Proposal" : "Proposals";
-    printInFrame(`/agreements/proposals/print?ids=${printIds.join(",")}${month ? `&title=${month}` : ""}`, title, () => setPrinting(false));
+    printInFrame(proposalPrintUrl(printIds, month || null), title, () => setPrinting(false));
   };
 
   const shown = useMemo(() => {

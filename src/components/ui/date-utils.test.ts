@@ -7,6 +7,7 @@ import {
   formatMonthLabel,
   formatYmdLong,
   formatYmdShort,
+  parseDateText,
   parseYmd,
   toYmd,
   weekEnd,
@@ -74,5 +75,42 @@ describe("labels (fixed en-US, no locale)", () => {
   });
   it("passes an unparseable value through", () => {
     expect(formatYmdShort("someday")).toBe("someday");
+  });
+});
+
+describe("parseDateText", () => {
+  it("reads US numeric dates, 2-digit years = 20xx", () => {
+    expect(parseDateText("01/31/27")).toBe("2027-01-31");
+    expect(parseDateText("1/31/2027")).toBe("2027-01-31");
+    expect(parseDateText("3/5/26")).toBe("2026-03-05");
+    expect(parseDateText("03-05-2026")).toBe("2026-03-05");
+    expect(parseDateText(" 12.25.2026 ")).toBe("2026-12-25");
+  });
+  it("reads ISO dates", () => {
+    expect(parseDateText("2026-11-10")).toBe("2026-11-10");
+    expect(parseDateText("2026/1/5")).toBe("2026-01-05");
+  });
+  it("reads month names", () => {
+    expect(parseDateText("Jan 31 2026")).toBe("2026-01-31");
+    expect(parseDateText("Jan 31, 2026")).toBe("2026-01-31");
+    expect(parseDateText("january 31, 2026")).toBe("2026-01-31");
+    expect(parseDateText("Sept 3, 26")).toBe("2026-09-03");
+    expect(parseDateText("31 Jan 2026")).toBe("2026-01-31");
+    expect(parseDateText("Nov 10, 2026")).toBe("2026-11-10"); // the field's own display format
+  });
+  it("blank means no date", () => {
+    expect(parseDateText("")).toBe("");
+    expect(parseDateText("   ")).toBe("");
+  });
+  it("rejects impossible or unclear text", () => {
+    expect(parseDateText("2/30/2026")).toBeNull();
+    expect(parseDateText("13/01/2026")).toBeNull();
+    expect(parseDateText("2/29/2027")).toBeNull();
+    expect(parseDateText("2/29/2028")).toBe("2028-02-29");
+    expect(parseDateText("1/31/202")).toBeNull();
+    expect(parseDateText("Janx 3 2026")).toBeNull();
+    expect(parseDateText("Ju 3 2026")).toBeNull();
+    expect(parseDateText("tomorrow")).toBeNull();
+    expect(parseDateText("1/31")).toBeNull();
   });
 });

@@ -12,11 +12,16 @@ import { PageHeader } from "@/components/ui/page-header";
 import { SaveStatus, useSaveStatus } from "@/components/ui/save-status";
 import { cn } from "@/lib/utils";
 import { AGREEMENT_LABELS, fmtDate, fmtMoney, type SaAgreement } from "@/lib/agreements/constants";
-import { pctBetween } from "@/lib/agreements/pricing";
+import { comparablePrice, pctBetween } from "@/lib/agreements/pricing";
+import type { EndedServer } from "@/lib/agreements/hardware";
 import type { ProposalDetail } from "@/lib/services/agreements/proposals";
 import { CustomerStatusBadge, ProposalBadge, UnconfirmedSo } from "../../badges";
 import { CloseProposalDialog } from "../../close-proposal-dialog";
 import { ProposalSheet } from "../proposal-sheet";
+import { proposalPrintUrl, readPrintIncrease, writePrintIncrease } from "../print-options";
+import { ProrateDialog } from "./prorate-dialog";
+import { HardwareCue, StaleProposalBanner } from "./proposal-cues";
+import { replaceStaleDraftAction, setLineProrationAction } from "./actions";
 import { leaveFlash } from "../../flash";
 import { printInFrame } from "../../print-frame";
 import { SendSignDialog, type SendSignRequest } from "../../send-sign-dialog";
@@ -37,11 +42,15 @@ function signedPct(n: number | null) {
 }
 
 export function ProposalEditor({
-  data, canEdit, today, backHref = "/agreements/proposals", backLabel = "Proposals", next = null,
+  data, canEdit, today, backHref = "/agreements/proposals", backLabel = "Proposals", next = null, hardware = null, senderName = null,
 }: {
   data: ProposalDetail;
   canEdit: boolean;
   today: string;
+  /** Servers out of warranty with no Server Hardware agreement (getHardwareCue), else null. */
+  hardware?: { servers: EndedServer[] } | null;
+  /** The signed-in person's name — signs the hardware offer email. */
+  senderName?: string | null;
   /** Where the back link goes: Renewals (`/agreements`) or the Proposals list as the user left it (filters kept). */
   backHref?: string;
   backLabel?: string;
@@ -61,11 +70,22 @@ export function ProposalEditor({
   // Reopening a proposal of a "Not renewed" customer asks whether the customer goes back to Active.
   const [reopening, setReopening] = useState(false);
   const [printing, setPrinting] = useState(false);
+  // Print the price history's increase row? Per viewer (localStorage), read after mount (no hydration mismatch).
+  const [printIncrease, setPrintIncrease] = useState(true);
+  useEffect(() => setPrintIncrease(readPrintIncrease()), []);
+  const [prorating, setProrating] = useState<Line | null>(null);
   const p = data.proposal;
   const c = data.customer;
   const editable = canEdit && (p.status === "DRAFT" || p.status === "SENT");
   const total = p.lines.reduce((a, l) => a + l.price, 0);
   const lastTotal = p.lines.reduce((a, l) => a + (l.lastPrice ?? 0), 0);
+  // Prorated lines: the change vs last year is worked out on their FULL-year prices (a part-year
+  // price is not a cut); the proposed total stays the real amount, with a note.
+  const prorated = p.lines.filter((l) => l.prorateMonths !== null);
+  const compareTotal = p.lines.reduce((a, l) => a + comparablePrice(l), 0);
+  const proratedNote = prorated.length
+    ? `incl. prorated ${prorated.map((l) => `${AGREEMENT_LABELS[l.agreement]} (${l.prorateMonths} mo)`).join(", ")}`
+    : null;
   const sentAgo = p.status === "SENT" && p.sentDate ? daysBetween(p.sentDate, today) : null;
 
   // ── Saves run one after another, each with the newest versions we know of ──
@@ -236,6 +256,36 @@ export function ProposalEditor({
     );
   };
 
+  /** Prorate a line, or (`v` null) remove its proration — queued like a price edit. */
+  const prorate = (line: Line, v: { start: string; fullPrice: number } | null) =>
+    edit(() => setLineProrationAction({ lineId: line.id, version: known.current.lines.get(line.id) ?? line.version, prorate: v }), line.id);
+
+  /** Out-of-date draft → delete it and create the next-year proposal; then open that one. */
+  const replaceStale = async () => {
+    const signedYear = p.staleYear ?? p.year;
+    const ok = await confirm({
+      title: `Replace with a ${signedYear + 1} proposal?`,
+      message:
+        `${c.name}'s ${p.year} draft (${fmtMoney(total)}) is deleted and a new ${signedYear + 1} draft is created from the signed ` +
+        `${signedYear} prices, priced by the Settings rules. If no new draft can be made, nothing changes.`,
+      confirmLabel: "Replace",
+      tone: "danger",
+    });
+    if (!ok) return;
+    lockEdits("This draft was just replaced; your last change was not saved.");
+    step(
+      () => replaceStaleDraftAction({ id: p.id, version: known.current.proposal }),
+      "Replaced.",
+      (r) => {
+        if (r.error || !r.id) unlockEdits();
+        else {
+          leaveFlash(`${c.name}'s out-of-date ${p.year} draft was replaced with this proposal.`);
+          router.push(`/agreements/proposals/${r.id}`);
+        }
+      },
+    );
+  };
+
   const addAgreement = async (agreement: SaAgreement, suggested: number | null) => {
     const label = AGREEMENT_LABELS[agreement];
     const raw = await confirm({
@@ -290,13 +340,24 @@ export function ProposalEditor({
         actions={
           <>
             {editable && <SaveStatus state={save.state} className="mr-1" />}
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground" title="Print the price history's increase row">
+              <input
+                type="checkbox"
+                checked={printIncrease}
+                onChange={(e) => {
+                  setPrintIncrease(e.target.checked);
+                  writePrintIncrease(e.target.checked);
+                }}
+              />
+              Show price history increase row
+            </label>
             <Button
               variant="outline"
               size="sm"
               disabled={printing}
               onClick={() => {
                 setPrinting(true);
-                printInFrame(`/agreements/proposals/print?ids=${p.id}`, `Proposal - ${c.name} ${p.year}`, () => setPrinting(false));
+                printInFrame(proposalPrintUrl([p.id]), `Proposal - ${c.name} ${p.year}`, () => setPrinting(false));
               }}
             >
               <Printer className="h-4 w-4" aria-hidden /> {printing ? "Preparing…" : "Print / PDF"}
@@ -304,6 +365,22 @@ export function ProposalEditor({
           </>
         }
       />
+
+      {p.staleYear !== null && (p.status === "DRAFT" || p.status === "SENT") && (
+        <StaleProposalBanner
+          year={p.year}
+          signedYear={p.staleYear}
+          status={p.status}
+          canEdit={canEdit}
+          pending={pending}
+          onDelete={deleteDraft}
+          onReplace={replaceStale}
+          onWithdraw={() => setClosing(true)}
+        />
+      )}
+      {hardware && (p.status === "DRAFT" || p.status === "SENT") && (
+        <HardwareCue customerName={c.name} servers={hardware.servers} senderName={senderName} canEdit={canEdit} />
+      )}
 
       {/* Key figures + workflow (screen only: Ctrl+P prints just the sheet, like Print / PDF) */}
       <section className="rounded-lg border bg-card p-4 print:hidden">
@@ -341,12 +418,18 @@ export function ProposalEditor({
           <div>
             <dt className="text-xs text-muted-foreground">Proposed total</dt>
             <dd className="text-xl font-semibold tabular-nums">{fmtMoney(total)}</dd>
-            <dd className="text-xs text-muted-foreground">{p.lines.length} agreement{p.lines.length === 1 ? "" : "s"}</dd>
+            <dd className="text-xs text-muted-foreground">
+              {p.lines.length} agreement{p.lines.length === 1 ? "" : "s"}
+              {proratedNote && <span className="block">{proratedNote}</span>}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">Change vs last year</dt>
-            <dd className="text-xl font-semibold tabular-nums">{lastTotal ? signedPct(pctBetween(lastTotal, total)) : "—"}</dd>
-            <dd className="text-xs text-muted-foreground tabular-nums">{lastTotal ? `${total - lastTotal >= 0 ? "+" : "−"}${fmtMoney(Math.abs(total - lastTotal))} on ${fmtMoney(lastTotal)}` : "no prior prices"}</dd>
+            <dd className="text-xl font-semibold tabular-nums">{lastTotal ? signedPct(pctBetween(lastTotal, compareTotal)) : "—"}</dd>
+            <dd className="text-xs text-muted-foreground tabular-nums">
+              {lastTotal ? `${compareTotal - lastTotal >= 0 ? "+" : "−"}${fmtMoney(Math.abs(compareTotal - lastTotal))} on ${fmtMoney(lastTotal)}` : "no prior prices"}
+              {lastTotal > 0 && prorated.length > 0 ? <span className="block">on full-year prices ({fmtMoney(compareTotal)})</span> : null}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">Term ends</dt>
@@ -489,14 +572,34 @@ export function ProposalEditor({
           d={data}
           printDate={today}
           editable={editable}
+          printIncrease={printIncrease}
           onPrice={(line, price) =>
             edit(() => setLinePriceAction({ lineId: line.id, version: known.current.lines.get(line.id) ?? line.version, price: Math.round(price) }), line.id)}
+          onProrate={setProrating}
+          onFullPrice={(line, fullPrice) =>
+            line.prorateStart
+              ? prorate(line, { start: line.prorateStart, fullPrice: Math.round(fullPrice) })
+              : edit(() => setLinePriceAction({ lineId: line.id, version: known.current.lines.get(line.id) ?? line.version, price: Math.round(fullPrice) }), line.id)}
           onEndDate={(endDate) => saveHeader({ endDate })}
           onAdd={addAgreement}
           onRemove={removeAgreement}
           onNotes={(notes) => saveHeader({ notes })}
         />
       </div>
+
+      <ProrateDialog
+        line={prorating}
+        proposal={p}
+        onCancel={() => setProrating(null)}
+        onSave={(line, v) => {
+          setProrating(null);
+          void prorate(line, v);
+        }}
+        onRemove={(line) => {
+          setProrating(null);
+          void prorate(line, null);
+        }}
+      />
 
       {closing && (
         <CloseProposalDialog

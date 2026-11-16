@@ -6,6 +6,7 @@ import { Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FormMessage } from "@/components/ui/form-message";
 import { Modal } from "@/components/ui/modal";
+import { cn } from "@/lib/utils";
 import type { AccessPage, PageAccess } from "@/lib/services/page-access";
 import { getPageAccessAction, savePageAccessAction } from "@/app/(app)/page-access-actions";
 
@@ -29,6 +30,8 @@ function AccessDialog({ page, covers, onClose }: { page: AccessPage; covers?: st
   const router = useRouter();
   const [access, setAccess] = useState<PageAccess | null>(null);
   const [restricted, setRestricted] = useState(false);
+  // Pages whose editors list is optional: false = everyone who can see it can change it.
+  const [editRestricted, setEditRestricted] = useState<boolean | null>(null);
   const [viewers, setViewers] = useState<Set<string>>(new Set());
   const [editors, setEditors] = useState<Set<string>>(new Set());
   const [dirty, setDirty] = useState(false);
@@ -43,6 +46,7 @@ function AccessDialog({ page, covers, onClose }: { page: AccessPage; covers?: st
       if (r.error || !r.access) return setError(r.error ?? "Couldn't load who has access.");
       setAccess(r.access);
       setRestricted(r.access.restricted);
+      setEditRestricted(r.access.editRestricted);
       setViewers(new Set(r.access.people.filter((p) => p.viewer).map((p) => p.id)));
       setEditors(new Set(r.access.people.filter((p) => p.editor).map((p) => p.id)));
     });
@@ -68,7 +72,9 @@ function AccessDialog({ page, covers, onClose }: { page: AccessPage; covers?: st
     setSaving(true);
     setError(null);
     try {
-      const r = await savePageAccessAction({ page, restricted, viewerIds: [...viewers], editorIds: [...editors] });
+      const r = await savePageAccessAction({
+        page, restricted, viewerIds: [...viewers], editorIds: [...editors], editRestricted: editRestricted === true,
+      });
       if (r.error) return setError(r.error);
       router.refresh();
       onClose();
@@ -80,6 +86,8 @@ function AccessDialog({ page, covers, onClose }: { page: AccessPage; covers?: st
     }
   };
 
+  // false only on a page whose editors list is optional and switched off.
+  const editList = editRestricted !== false;
   const others = access?.people.filter((p) => !p.admin) ?? [];
   const admins = access?.people.filter((p) => p.admin) ?? [];
 
@@ -115,8 +123,21 @@ function AccessDialog({ page, covers, onClose }: { page: AccessPage; covers?: st
               Only the people ticked under &quot;Can see&quot;
             </label>
           </fieldset>
+          {editRestricted !== null && (
+            <fieldset className="space-y-1.5">
+              <legend className="mb-1 font-medium">Who can change it</legend>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="page-edit" checked={!editRestricted} onChange={() => { setEditRestricted(false); setDirty(true); }} />
+                Everyone who can see it
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="page-edit" checked={editRestricted} onChange={() => { setEditRestricted(true); setDirty(true); }} />
+                Only the people ticked under &quot;Can change&quot;
+              </label>
+            </fieldset>
+          )}
 
-          <div className="max-h-[45vh] overflow-y-auto rounded-md border">
+          <div className={cn("max-h-[45vh] overflow-y-auto rounded-md border", !restricted && !editList && "hidden")}>
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-muted text-xs">
                 <tr>
@@ -127,7 +148,7 @@ function AccessDialog({ page, covers, onClose }: { page: AccessPage; covers?: st
               </thead>
               <tbody className="divide-y">
                 {others.map((p) => {
-                  const edits = editors.has(p.id);
+                  const edits = editList && editors.has(p.id);
                   return (
                     <tr key={p.id}>
                       <td className="px-3 py-1.5">{p.label}</td>
@@ -145,13 +166,17 @@ function AccessDialog({ page, covers, onClose }: { page: AccessPage; covers?: st
                         )}
                       </td>
                       <td className="px-3 py-1.5 text-center">
-                        <input
-                          type="checkbox"
-                          aria-label={`${p.label} can change the page`}
-                          checked={edits}
-                          onChange={() => flip(setEditors, p.id)}
-                          className="h-4 w-4"
-                        />
+                        {editList ? (
+                          <input
+                            type="checkbox"
+                            aria-label={`${p.label} can change the page`}
+                            checked={edits}
+                            onChange={() => flip(setEditors, p.id)}
+                            className="h-4 w-4"
+                          />
+                        ) : (
+                          <span className="text-xs text-muted-foreground">{!restricted || viewers.has(p.id) ? "Yes" : "No"}</span>
+                        )}
                       </td>
                     </tr>
                   );

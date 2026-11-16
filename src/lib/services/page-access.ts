@@ -11,14 +11,18 @@ import { displayHandle } from "@/lib/users";
 //   viewers group missing or archived -> everyone in the org sees the page;
 //   viewers group active              -> only org admins, the page's editors and its members do;
 //   editors group                     -> its members (and org admins) may change the page.
+// The Bug & Request Tracker's editors list is optional (`openEdit`): while it is off, everyone
+// who can see the page can change it.
 // Customer Service (Agreements + Open POs) keeps the groups it always had, so its rules in
 // services/agreements/common.ts are unchanged. Field Service Status has its own pair; until an
 // admin saves its access once, its editors are the Customer Service group (as before v0.1.4).
 
-export type AccessPage = "customerService" | "fsStatus";
+export type AccessPage = "customerService" | "fsStatus" | "tracker";
 
 export const FS_VIEWER_GROUP = "Field Service Status Viewers";
 export const FS_EDITOR_GROUP = "Field Service Status Editors";
+export const TRACKER_VIEWER_GROUP = "Bug Tracker Viewers";
+export const TRACKER_EDITOR_GROUP = "Bug Tracker Editors";
 
 interface PageDef {
   label: string;
@@ -26,11 +30,17 @@ interface PageDef {
   editors: string;
   /** Editors group used while `editors` has never been created. */
   editorsFallback?: string;
+  /**
+   * The editors list is optional: while its group is missing or archived, everyone who can see
+   * the page can change it. (Without this, a missing group means admins only.)
+   */
+  openEdit?: boolean;
 }
 
 export const ACCESS_PAGES: Record<AccessPage, PageDef> = {
   customerService: { label: "Customer Service", viewers: SA_VIEWER_GROUP, editors: SA_EDITOR_GROUP },
   fsStatus: { label: "Field Service Status", viewers: FS_VIEWER_GROUP, editors: FS_EDITOR_GROUP, editorsFallback: SA_EDITOR_GROUP },
+  tracker: { label: "Bug & Request Tracker", viewers: TRACKER_VIEWER_GROUP, editors: TRACKER_EDITOR_GROUP, openEdit: true },
 };
 
 export const isAccessPage = (v: unknown): v is AccessPage => typeof v === "string" && v in ACCESS_PAGES;
@@ -63,8 +73,13 @@ async function loadGroups(orgId: string, def: PageDef, onlyUserId?: string): Pro
 /** May this person change the page? Org admins always; otherwise members of its (active) editors group. */
 export async function pageEditableBy(page: AccessPage, who: { orgId: string; userId: string; isOrgAdmin: boolean }): Promise<boolean> {
   if (who.isOrgAdmin) return true;
-  const { editors } = await loadGroups(who.orgId, ACCESS_PAGES[page], who.userId);
-  return !!editors && !editors.archived && editors.userIds.length > 0;
+  const def = ACCESS_PAGES[page];
+  const { viewers, editors } = await loadGroups(who.orgId, def, who.userId);
+  const listed = !!editors && !editors.archived;
+  if (listed) return editors.userIds.length > 0;
+  if (!def.openEdit) return false;
+  // No editors list: everyone who can see the page can change it.
+  return !viewers || viewers.archived || viewers.userIds.length > 0;
 }
 
 /** May this person see the page? Admins and editors always; everyone when the page is not limited. */
@@ -95,6 +110,11 @@ export interface PageAccess {
   label: string;
   /** false = everyone in the organization can see the page. */
   restricted: boolean;
+  /**
+   * Pages whose editors list is optional: false = everyone who can see the page can change it,
+   * true = only the people ticked. null = the page always has an editors list.
+   */
+  editRestricted: boolean | null;
   people: AccessPerson[];
 }
 
@@ -125,7 +145,13 @@ export async function getPageAccess(scope: TenantScope, page: AccessPage): Promi
       editor: editorIds.has(m.user.id),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
-  return { page, label: def.label, restricted: !!viewers && !viewers.archived, people };
+  return {
+    page,
+    label: def.label,
+    restricted: !!viewers && !viewers.archived,
+    editRestricted: def.openEdit ? !!editors && !editors.archived : null,
+    people,
+  };
 }
 
 /**
@@ -135,7 +161,7 @@ export async function getPageAccess(scope: TenantScope, page: AccessPage): Promi
 export async function setPageAccess(
   scope: TenantScope,
   page: AccessPage,
-  input: { restricted: boolean; viewerIds: string[]; editorIds: string[] },
+  input: { restricted: boolean; viewerIds: string[]; editorIds: string[]; editRestricted?: boolean },
 ): Promise<void> {
   assertAdmin(scope);
   const ids = (v: unknown): v is string[] => Array.isArray(v) && v.length <= 2000 && v.every((id) => typeof id === "string" && id);
@@ -151,6 +177,8 @@ export async function setPageAccess(
   const viewerIds = [...new Set(input.viewerIds)].filter((id) => known.has(id));
   const editorIds = [...new Set(input.editorIds)].filter((id) => known.has(id));
 
+  const editList = def.openEdit ? input.editRestricted === true : true;
+
   await prisma.$transaction(async (tx) => {
     const find = (name: string) => tx.workGroup.findFirst({ where: { orgId, name: { equals: name, mode: "insensitive" } }, select: { id: true } });
     const fill = async (groupId: string, userIds: string[]) => {
@@ -158,12 +186,15 @@ export async function setPageAccess(
       if (userIds.length) await tx.workGroupMembership.createMany({ data: userIds.map((userId) => ({ workGroupId: groupId, userId })) });
     };
 
-    // Editors: the group always exists after a save (an empty one = admins only).
+    // Editors: the group always exists after a save (an empty one = admins only) - except on a
+    // page whose editors list is optional and switched off: there it is archived (list kept).
     const editors = await find(def.editors);
-    const editorGroup = editors
-      ? await tx.workGroup.update({ where: { id: editors.id }, data: { archived: false }, select: { id: true } })
-      : await tx.workGroup.create({ data: { orgId, name: def.editors, purpose: "OTHER" }, select: { id: true } });
-    await fill(editorGroup.id, editorIds);
+    if (editors || editList) {
+      const editorGroup = editors
+        ? await tx.workGroup.update({ where: { id: editors.id }, data: { archived: !editList }, select: { id: true } })
+        : await tx.workGroup.create({ data: { orgId, name: def.editors, purpose: "OTHER" }, select: { id: true } });
+      await fill(editorGroup.id, editorIds);
+    }
 
     // Viewers: active = limited; archived (or never made) = everyone.
     const viewers = await find(def.viewers);
@@ -180,6 +211,6 @@ export async function setPageAccess(
     entity: "page-access",
     entityId: page,
     action: "updated",
-    summary: `${def.label} access: ${input.restricted ? `seen by admins, editors and ${n(viewerIds.length)} chosen` : "seen by everyone"}; changed by admins and ${n(editorIds.length)}`,
+    summary: `${def.label} access: ${input.restricted ? `seen by admins, editors and ${n(viewerIds.length)} chosen` : "seen by everyone"}; changed by ${editList ? `admins and ${n(editorIds.length)}` : "everyone who can see it"}`,
   });
 }

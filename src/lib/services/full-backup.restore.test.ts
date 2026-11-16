@@ -222,9 +222,10 @@ describe("restoreFullBackup", () => {
     const del = callsTo("changeHistory", "deleteMany");
     expect(del).toHaveLength(1);
     // The file has no open POs either, so their history is kept too.
-    expect(del[0]!.args).toEqual({ where: { orgId: "org1", entity: { notIn: ["sa_customer", "sa_settings", "open_po", "fs_order"] } } });
+    expect(del[0]!.args).toEqual({ where: { orgId: "org1", entity: { notIn: ["sa_customer", "sa_settings", "open_po", "fs_order", "tracker_item"] } } });
     expect(callsTo("openPo", "deleteMany")).toEqual([]);
     expect(callsTo("fsOrder", "deleteMany")).toEqual([]);
+    expect(callsTo("trackerItem", "deleteMany")).toEqual([]);
     const created = callsTo("changeHistory", "createMany")[0]!.args.data as any[];
     expect(created.map((h) => h.id)).toEqual(["h1"]);
     expect(writes().some((c) => AGREEMENT_MODELS.includes(c.model))).toBe(false);

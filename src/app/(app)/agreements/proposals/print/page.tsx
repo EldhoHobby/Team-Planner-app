@@ -10,8 +10,15 @@ import { ProposalSheet } from "../proposal-sheet";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Print proposals" };
 
-/** ?ids=a,b,c — one landscape, black-and-white page per proposal. ?title=YYYY-MM names the PDF. */
-export default async function PrintProposals({ searchParams }: { searchParams: Promise<{ ids?: string; title?: string }> }) {
+/**
+ * ?ids=a,b,c — one landscape, black-and-white page per proposal. ?title=YYYY-MM names the PDF.
+ * ?increase=0 leaves out the price history's "N-year increase" row (print-options.ts).
+ */
+export default async function PrintProposals({
+  searchParams,
+}: {
+  searchParams: Promise<{ ids?: string; title?: string; increase?: string }>;
+}) {
   await requireAuth();
   const { scope } = await requireScope();
   await requireAgreementsAccess(scope);
@@ -30,7 +37,7 @@ export default async function PrintProposals({ searchParams }: { searchParams: P
       <PrintToolbar title={title} count={list.length} />
       {list.map((d) => (
         <div key={d.proposal.id} className="sa-page mx-auto mb-8 max-w-[1200px] print:mb-0 print:max-w-none">
-          <ProposalSheet d={d} printDate={today} />
+          <ProposalSheet d={d} printDate={today} printIncrease={sp.increase !== "0"} />
         </div>
       ))}
       {!list.length && <p className="text-sm text-muted-foreground">Nothing to print.</p>}

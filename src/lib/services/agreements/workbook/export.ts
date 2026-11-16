@@ -35,7 +35,7 @@ import { packageXlsm } from "../vba/xlsm";
 import { buildCustomerSheet } from "./customer-sheet";
 import type { ExportData, WbProposal } from "./data";
 import {
-  CHECK_FIELDS, CHECK_HEADER, COUNT, DATE, EDITABLE_PROPOSAL, FONT, HELPER, INPUT, LABEL, LINE_LABEL, LIST, MC, MONEY, NAVY, PC, PCT,
+  CHECK_FIELDS, CHECK_HEADER, COUNT, CU, DATE, EDITABLE_PROPOSAL, FONT, HELPER, INPUT, LABEL, LINE_LABEL, LIST, MC, MONEY, NAVY, PC, PCT,
   RECENT, RESERVED, S, SET, SETK, SET_CHECK_COL, SET_CHECK_KEY, WHITE, WINDOW, WORKBOOK_MARKER, XC, KC,
   agRow, box, colL, d8, f, fingerprintOf, headerIndex, macroLayout, masterSheet, put, q, ranges, safeSheetName,
   settingsFingerprint, sheetRef, sizesFor, validate, workbookLimitProblem,
@@ -105,12 +105,15 @@ export function renderAgreementsWorkbook(data: ExportData): { wb: ExcelJS.Workbo
     { header: "WV / PE version", width: 20, edit: true }, { header: "Server", width: 28, edit: true }, { header: "Server install", width: 12, edit: true },
     { header: "Last server SO #", width: 12, edit: true }, { header: "QWEB licenses", width: 10, edit: true }, { header: "Notes", width: 45, edit: true },
     { header: "SO confirmed", width: 10, edit: true, list: ["Yes", "No"] }, { header: "ID", width: 26 }, { header: "Version", width: 8 }, check,
+    // After the hidden Row check on purpose: added later, it must not move any column (see CU).
+    { header: "Also known as", width: 30, edit: true },
   ], sizes.CR);
   customers.forEach((c, i) => {
     const r = i + 2;
     [c.name, c.soNumber, ST[c.status], c.state, c.software ? SOFTWARE_LABELS[c.software] : null, c.softwareVersion, c.wvPeVersion,
       c.server, c.serverInstall, c.lastServerSo, c.qwebLicenses, c.notes, c.soConfirmed ? "Yes" : "No", c.id, c.version]
       .forEach((v, ci) => (cws.getCell(r, ci + 1).value = (v ?? null) as ExcelJS.CellValue));
+    cws.getCell(`${CU.aliases}${r}`).value = c.aliases ?? null;
   });
   writeChecks(cws, CHECK_FIELDS.customers, customers.length + 1);
 

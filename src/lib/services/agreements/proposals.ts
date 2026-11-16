@@ -5,7 +5,12 @@ import { ForbiddenError } from "@/lib/auth/current-user";
 import { StaleSaveError, assertFreshWrite, versionGuard } from "@/lib/db/optimistic";
 import { todayYmd } from "@/lib/tz";
 import { AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, HISTORY_YEARS, OPEN_CUSTOMER_STATUSES, PROPOSAL_STATUS_LABELS, SA_AGREEMENTS, fmtDate, fmtMoney, type SaAgreement, type SaCustomerStatus, type SaSoftware } from "@/lib/agreements/constants";
-import { addOneYear, proposePrices, type PricingRules } from "@/lib/agreements/pricing";
+import {
+  PRORATE_MAX_MONTHS, PRORATE_MIN_MONTHS, addOneYear, comparablePrice, proposePrices, prorateMonths, prorateNote, proratePrice, termStart,
+  type PricingRules,
+} from "@/lib/agreements/pricing";
+import { staleProposalYear } from "@/lib/agreements/stale-proposal";
+import { endedServers, shouldOfferHardware, type EndedServer } from "@/lib/agreements/hardware";
 import { claimedAgreements, customerRenewal, priceHistory, sortByAgreement, type LineLite, type ProposalLite } from "@/lib/agreements/renewal";
 import { undoSigningBlockers } from "@/lib/agreements/undo-signing";
 import type { FieldChange } from "@/lib/services/change-history";
@@ -49,14 +54,14 @@ function scadaPriceFor(
   rules: PricingRules,
 ): number | null {
   const scada = currentLines.find((l) => l.agreement === "SCADA_SOFTWARE");
-  if (scada && scada.year >= year) return scada.price;
+  if (scada && scada.year >= year) return comparablePrice(scada);
   for (const p of proposals) {
     if (p.year !== year || !(p.status === "DRAFT" || p.status === "SENT" || p.status === "SIGNED")) continue;
     const l = p.lines.find((x) => x.agreement === "SCADA_SOFTWARE");
-    if (l) return Number(l.price);
+    if (l) return Number(l.fullPrice ?? l.price);
   }
   if (!scada) return null;
-  return proposePrices({ SCADA_SOFTWARE: scada.price }, software, rules)[0]?.price ?? null;
+  return proposePrices({ SCADA_SOFTWARE: comparablePrice(scada) }, software, rules)[0]?.price ?? null;
 }
 
 /**
@@ -91,7 +96,8 @@ async function createFromCurrent(
   for (const year of years) {
     const group = base.filter((l) => l.year + 1 === year);
     const last: Partial<Record<SaAgreement, number>> = {};
-    for (const l of group) last[l.agreement] = l.price;
+    // A prorated signed line renews from its full-year price.
+    for (const l of group) last[l.agreement] = comparablePrice(l);
     const scadaPrice = last.SCADA_SOFTWARE === undefined ? scadaPriceFor(year, r.currentLines, c.proposals, c.software, rules) : null;
     const priced = proposePrices(last, c.software, rules, { scadaPrice });
     const endDate = plusYear(group.map((l) => l.endDate).filter((d): d is string => !!d).sort()[0] ?? null);
@@ -170,7 +176,8 @@ export async function createProposalFromLines(
         lines: {
           create: input.lines.map((l) => {
             const last = lastOf(l.agreement);
-            return { orgId: scope.ctx.orgId, agreement: l.agreement, lastPrice: last ? Number(last.price) : null, price: Math.round(l.price), rule: "manual" };
+            const lastPrice = last ? Number(last.fullPrice ?? last.price) : null; // full year of a prorated line
+            return { orgId: scope.ctx.orgId, agreement: l.agreement, lastPrice, price: Math.round(l.price), rule: "manual" };
           }),
         },
       },
@@ -283,6 +290,12 @@ export async function getProposal(scope: TenantScope, id: string, settings?: Set
   const inWindow = c.contracts.map(toLineLite).filter((l) => l.year >= years[years.length - 1]! && l.year <= years[0]!);
   const signed = priceHistory(inWindow);
   const callsByYear = new Map(c.calls.map((r) => [r.year, r]));
+  const renewal = customerRenewal(c.contracts.map(toLineLite), [], todayYmd(), 90);
+  // Each line's current signed term: the newest active line of that agreement before the proposal year.
+  const prevLine = (a: SaAgreement) =>
+    c.contracts
+      .filter((l) => l.agreement === a && l.status === "ACTIVE" && l.year < p.year)
+      .sort((x, y) => y.year - x.year)[0];
   const creator = p.createdById
     ? await prisma.user.findUnique({ where: { id: p.createdById }, select: { name: true, username: true } })
     : null;
@@ -300,11 +313,21 @@ export async function getProposal(scope: TenantScope, id: string, settings?: Set
     escalating,
     proposal: {
       id: p.id, version: p.version, year: p.year, status: p.status, endDate: ymd(p.endDate), sentDate: ymd(p.sentDate),
+      /** First day of the proposal's term (the day after its end date a year earlier). */
+      startDate: p.endDate ? termStart(ymd(p.endDate)!) : null,
+      /** Live proposal whose year is already signed for its agreements: that newest signed year (else null). */
+      staleYear: staleProposalYear({ year: p.year, status: p.status, agreements: p.lines.map((l) => l.agreement) }, c.contracts),
       signedDate: ymd(p.signedDate), closedDate: ymd(p.closedDate), declineReason: p.declineReason, notes: p.notes,
       createdAt: p.createdAt.toISOString(), createdBy: creator?.name ?? creator?.username ?? null,
       lines: sortByAgreement(p.lines).map((l) => ({
         id: l.id, version: l.version, agreement: l.agreement, lastPrice: l.lastPrice === null ? null : Number(l.lastPrice),
         price: Number(l.price), rule: l.rule,
+        /** Prorated line: the full-year price, the months charged and the day the part-year starts. */
+        fullPrice: l.fullPrice === null ? null : Number(l.fullPrice),
+        prorateMonths: l.prorateMonths,
+        prorateStart: ymd(l.prorateStart),
+        /** End date of the signed term this line renews (default proration start = the day after). */
+        prevEndDate: ymd(prevLine(l.agreement)?.endDate ?? null),
       })),
       /** The signed agreement lines this proposal's signing created (still on the customer's record). */
       signedLines: sortByAgreement(c.contracts.filter((l) => l.proposalId === p.id)).map((l) => ({
@@ -315,7 +338,9 @@ export async function getProposal(scope: TenantScope, id: string, settings?: Set
       id: c.id, name: c.name, soNumber: c.soNumber, soConfirmed: c.soConfirmed, status: c.status, state: c.state,
       software: c.software, softwareVersion: c.softwareVersion, wvPeVersion: c.wvPeVersion, server: c.server,
       lastServerSo: c.lastServerSo, qwebLicenses: c.qwebLicenses, notes: c.notes,
-      nextEndDate: customerRenewal(c.contracts.map(toLineLite), [], todayYmd(), 90).nextEndDate,
+      nextEndDate: renewal.nextEndDate,
+      /** An active signed Server Hardware line is in force (hardware cue). */
+      serverHardwareInForce: renewal.currentLines.some((l) => l.agreement === "SERVER_HARDWARE"),
     },
     history: {
       ...signed,
@@ -327,6 +352,32 @@ export async function getProposal(scope: TenantScope, id: string, settings?: Set
   };
 }
 export type ProposalDetail = NonNullable<Awaited<ReturnType<typeof getProposal>>>;
+
+/**
+ * Proposal page hardware cue: the customer's servers whose manufacturer warranty has ended, when
+ * neither the proposal nor an agreement in force covers Server Hardware (hardware.ts). Null = no cue.
+ * Reads only tags + warranty dates (never QWEB license keys or notes).
+ */
+export async function getHardwareCue(scope: TenantScope, d: ProposalDetail): Promise<{ servers: EndedServer[] } | null> {
+  const systems = await prisma.saSystem.findMany({
+    where: { orgId: scope.ctx.orgId, customerId: d.customer.id },
+    select: {
+      soNumber: true, serverA: true, serverAExp: true, serverB: true, serverBExp: true, serverC: true, serverCExp: true,
+      serverD: true, serverDExp: true, serverHist: true, serverHistExp: true, serverQweb: true, serverQwebExp: true,
+    },
+  });
+  const ended = endedServers(
+    systems.map((s) => ({
+      soNumber: s.soNumber,
+      serverA: s.serverA, serverAExp: ymd(s.serverAExp), serverB: s.serverB, serverBExp: ymd(s.serverBExp),
+      serverC: s.serverC, serverCExp: ymd(s.serverCExp), serverD: s.serverD, serverDExp: ymd(s.serverDExp),
+      serverHist: s.serverHist, serverHistExp: ymd(s.serverHistExp), serverQweb: s.serverQweb, serverQwebExp: ymd(s.serverQwebExp),
+    })),
+    todayYmd(),
+  );
+  const covered = d.customer.serverHardwareInForce || d.proposal.lines.some((l) => l.agreement === "SERVER_HARDWARE");
+  return shouldOfferHardware(ended, covered) ? { servers: ended } : null;
+}
 
 // ─── edit ───
 
@@ -398,23 +449,94 @@ export async function setLinePrice(scope: TenantScope, lineId: string, price: nu
   if (!l) throw new ForbiddenError("Line not found.");
   const p = await loadEditable(prisma, scope, l.proposalId);
   const rounded = Math.round(price);
+  const wasProrated = l.prorateMonths !== null;
+  const proposalVersion = await prisma.$transaction(async (tx) => {
+    const pv = await bumpProposal(tx, scope, p.id);
+    // A typed price is a manual price: it replaces any proration (the workbook import comes through here too).
+    const res = await tx.saProposalLine.updateMany({
+      where: { id: lineId, ...versionGuard(expectedVersion) },
+      data: { price: rounded, rule: "manual", fullPrice: null, prorateMonths: null, prorateStart: null, version: { increment: 1 } },
+    });
+    assertFreshWrite(res.count, "proposal line");
+    const changes: FieldChange[] = [];
+    if (Number(l.price) !== rounded) {
+      changes.push({ field: `${p.year} proposal ${AGREEMENT_LABELS[l.agreement]}`, oldValue: String(Number(l.price)), newValue: String(rounded) });
+    }
+    if (wasProrated) changes.push({ field: `${p.year} proposal ${AGREEMENT_LABELS[l.agreement]} proration`, oldValue: prorationText(l), newValue: "removed (price typed)" });
+    await history(tx, scope, p.customerId, changes);
+    return pv;
+  });
+  if (Number(l.price) !== rounded || wasProrated) {
+    await audit(scope, p.customerId, "proposal_price",
+      `${p.customer.name} ${p.year} proposal: ${AGREEMENT_LABELS[l.agreement]} ${fmtMoney(Number(l.price))} → ${fmtMoney(rounded)}` +
+        (wasProrated ? " (proration removed)" : ""));
+  }
+  return { proposalVersion, lineVersion: expectedVersion + 1 };
+}
+
+/** "Prorated 10 months from Apr 1, 2027; full year $2,841" — history / audit wording. */
+function prorationText(l: { prorateMonths: number | null; prorateStart: Date | null; fullPrice: unknown }): string | null {
+  if (l.prorateMonths === null) return null;
+  const from = l.prorateStart ? ` from ${fmtDate(ymd(l.prorateStart))}` : "";
+  return `${l.prorateMonths} month${l.prorateMonths === 1 ? "" : "s"}${from}; full year ${fmtMoney(Number(l.fullPrice ?? 0))}`;
+}
+
+/**
+ * Prorate a line (a part-year price that lines its agreement up with the proposal's end date):
+ * price = full × months / 12, months = whole months from `start` to the proposal end date (1–12).
+ * `null` removes the proration (price back to the full-year price). Same version rules, history
+ * and audit as a typed price.
+ */
+export async function setLineProration(
+  scope: TenantScope,
+  lineId: string,
+  input: { start: string; fullPrice: number } | null,
+  expectedVersion: number,
+): Promise<ProposalEditVersions & { price: number }> {
+  await assertCanEdit(scope);
+  const l = await prisma.saProposalLine.findFirst({ where: { id: lineId, orgId: scope.ctx.orgId } });
+  if (!l) throw new ForbiddenError("Line not found.");
+  const p = await loadEditable(prisma, scope, l.proposalId);
+  const label = AGREEMENT_LABELS[l.agreement];
+  let data: { price: number; fullPrice: number | null; prorateMonths: number | null; prorateStart: Date | null; rule: string };
+  let after: string | null;
+  if (input) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.start) || !dateOf(input.start)) throw new ForbiddenError("Pick the date the part-year starts.");
+    if (!Number.isFinite(input.fullPrice) || input.fullPrice <= 0) throw new ForbiddenError("The full-year price must be more than zero.");
+    const end = ymd(p.endDate);
+    if (!end) throw new ForbiddenError("Set the proposal's end date first — the months run up to it.");
+    const months = prorateMonths(input.start, end);
+    if (months === null || months < PRORATE_MIN_MONTHS || months > PRORATE_MAX_MONTHS) {
+      throw new ForbiddenError(
+        `From ${fmtDate(input.start)} to the end date ${fmtDate(end)} is ${months ?? 0} month${months === 1 ? "" : "s"} — a proration covers ${PRORATE_MIN_MONTHS} to ${PRORATE_MAX_MONTHS}.`,
+      );
+    }
+    const full = Math.round(input.fullPrice);
+    data = { price: proratePrice(full, months), fullPrice: full, prorateMonths: months, prorateStart: dateOf(input.start), rule: "prorated" };
+    after = prorationText(data);
+  } else {
+    if (l.prorateMonths === null) throw new ForbiddenError(`${label} is not prorated.`);
+    data = { price: Math.round(Number(l.fullPrice ?? l.price)), fullPrice: null, prorateMonths: null, prorateStart: null, rule: "manual" };
+    after = null;
+  }
+  const before = prorationText(l);
   const proposalVersion = await prisma.$transaction(async (tx) => {
     const pv = await bumpProposal(tx, scope, p.id);
     const res = await tx.saProposalLine.updateMany({
-      where: { id: lineId, ...versionGuard(expectedVersion) },
-      data: { price: rounded, rule: "manual", version: { increment: 1 } },
+      where: { id: lineId, orgId: scope.ctx.orgId, ...versionGuard(expectedVersion) },
+      data: { ...data, version: { increment: 1 } },
     });
     assertFreshWrite(res.count, "proposal line");
-    if (Number(l.price) !== rounded) {
-      await history(tx, scope, p.customerId, [{ field: `${p.year} proposal ${AGREEMENT_LABELS[l.agreement]}`, oldValue: String(Number(l.price)), newValue: String(rounded) }]);
-    }
+    const changes: FieldChange[] = [];
+    if (Number(l.price) !== data.price) changes.push({ field: `${p.year} proposal ${label}`, oldValue: String(Number(l.price)), newValue: String(data.price) });
+    if (before !== after) changes.push({ field: `${p.year} proposal ${label} proration`, oldValue: before, newValue: after ?? "removed" });
+    await history(tx, scope, p.customerId, changes);
     return pv;
   });
-  if (Number(l.price) !== rounded) {
-    await audit(scope, p.customerId, "proposal_price",
-      `${p.customer.name} ${p.year} proposal: ${AGREEMENT_LABELS[l.agreement]} ${fmtMoney(Number(l.price))} → ${fmtMoney(rounded)}`);
-  }
-  return { proposalVersion, lineVersion: expectedVersion + 1 };
+  await audit(scope, p.customerId, "proposal_price",
+    `${p.customer.name} ${p.year} proposal: ${label} ${fmtMoney(Number(l.price))} → ${fmtMoney(data.price)} ` +
+      (after ? `(prorated ${after})` : "(proration removed)"));
+  return { proposalVersion, lineVersion: expectedVersion + 1, price: data.price };
 }
 
 /** Add an agreement the customer didn't have last year (e.g. a new Backup & DR). */
@@ -485,6 +607,38 @@ export async function deleteDraftProposal(scope: TenantScope, id: string, expect
   });
   await audit(scope, p.customerId, "proposal_deleted", `Deleted the ${p.year} draft proposal for ${p.customer.name}`);
   return p.customerId;
+}
+
+/**
+ * Out-of-date draft (its year is already signed): delete it and create the next-year proposal(s)
+ * from the signed lines, in ONE transaction — if nothing can be created the draft stays.
+ * Returns the new proposal's id.
+ */
+export async function replaceStaleDraft(scope: TenantScope, id: string, expectedVersion: number): Promise<string> {
+  await assertCanEdit(scope);
+  const p = await prisma.saProposal.findFirst({ where: { id, orgId: scope.ctx.orgId }, include: { lines: true, customer: { select: { name: true } } } });
+  if (!p) throw new ForbiddenError("Proposal not found.");
+  if (p.status !== "DRAFT") throw new ForbiddenError("Only a draft proposal can be replaced. Withdraw a sent one instead.");
+  const total = p.lines.reduce((a, l) => a + Number(l.price), 0);
+  const res = await prisma.$transaction(async (tx) => {
+    await lockCustomer(tx, scope, p.customerId); // same lock order as Start proposal
+    const contracts = await tx.saContractLine.findMany({ where: { orgId: scope.ctx.orgId, customerId: p.customerId } });
+    if (staleProposalYear({ year: p.year, status: p.status, agreements: p.lines.map((l) => l.agreement) }, contracts) === null) {
+      throw new ForbiddenError(`The ${p.year} prices aren't signed yet, so this draft is not out of date.`);
+    }
+    const del = await tx.saProposal.deleteMany({ where: { id, orgId: scope.ctx.orgId, status: "DRAFT", ...versionGuard(expectedVersion) } });
+    assertFreshWrite(del.count, "proposal");
+    await history(tx, scope, p.customerId, [{ field: `${p.year} proposal`, oldValue: `Draft (${fmtMoney(total)})`, newValue: "deleted (out of date — replaced)" }]);
+    const made = await createFromCurrent(tx, scope, p.customerId);
+    if (!made.created.length) {
+      throw new ForbiddenError("Every signed agreement is already in a proposal for its next year — open that one instead. The draft was kept.");
+    }
+    return made.created;
+  });
+  await audit(scope, p.customerId, "proposal_replaced",
+    `Replaced the out-of-date ${p.year} draft proposal for ${p.customer.name} with ${res.map((x) => x.year).join(" + ")} (${res.map((x) => fmtMoney(x.total)).join(" + ")})`);
+  // The proposal right after the signed year when there is one (else the first made).
+  return (res.find((x) => x.year > p.year) ?? res[0]!).id;
 }
 
 export async function transitionProposal(
@@ -584,6 +738,9 @@ export async function transitionProposal(
           orgId: scope.ctx.orgId, customerId: c.id, year: p.year, agreement: l.agreement, price: l.price,
           status: "ACTIVE" as const, endDate: p.endDate ?? dateOf(plusYear(prevEnd.get(l.agreement) ?? null)),
           signedDate: dateOf(when), proposalId: p.id,
+          // A prorated line keeps its full-year price (next year's renewal base) and says so in its notes.
+          fullPrice: l.prorateMonths !== null ? l.fullPrice : null,
+          notes: l.prorateMonths !== null && l.fullPrice !== null ? prorateNote(l.prorateMonths, Number(l.fullPrice)) : null,
         })),
       });
     }
@@ -656,7 +813,13 @@ export async function undoSigning(scope: TenantScope, id: string, expectedVersio
       tx.saContractLine.findMany({ where: { orgId: scope.ctx.orgId, customerId: c.id }, select: { year: true, agreement: true, proposalId: true } }),
     ]);
     const blockers = undoSigningBlockers({
-      proposal: { id, year: p.year, signedDate: ymd(p.signedDate), lines: p.lines.map((l) => ({ agreement: l.agreement, price: Number(l.price) })) },
+      proposal: {
+        id, year: p.year, signedDate: ymd(p.signedDate),
+        lines: p.lines.map((l) => ({
+          agreement: l.agreement, price: Number(l.price),
+          autoNote: l.prorateMonths !== null && l.fullPrice !== null ? prorateNote(l.prorateMonths, Number(l.fullPrice)) : null,
+        })),
+      },
       signedLines: mine.map((l) => ({
         year: l.year, agreement: l.agreement, price: Number(l.price), status: l.status, signedDate: ymd(l.signedDate),
         version: l.version, checked: l.checked, invoicedDate: ymd(l.invoicedDate), notes: l.notes,

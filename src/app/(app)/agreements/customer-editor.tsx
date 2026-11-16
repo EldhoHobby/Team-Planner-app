@@ -30,6 +30,7 @@ function initialForm(customer: CustomerDetail["customer"] | null) {
     lastServerSo: customer?.lastServerSo ?? "",
     qwebLicenses: customer?.qwebLicenses?.toString() ?? "",
     notes: customer?.notes ?? "",
+    aliases: customer?.aliases ?? "",
   };
 }
 
@@ -57,6 +58,7 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
           software: f.software || null, softwareVersion: f.softwareVersion || null, wvPeVersion: f.wvPeVersion || null,
           server: f.server || null, serverInstall: f.serverInstall || null, lastServerSo: f.lastServerSo || null,
           qwebLicenses: q ? Number(q) : null, notes: f.notes || null,
+          aliases: f.aliases,
         },
       });
       if (r.error) {
@@ -90,6 +92,11 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
     >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {text("name", "Customer name", "sm:col-span-2")}
+        <label className={cn(field, "sm:col-span-2")}>
+          <span className={lbl}>Also known as</span>
+          <Input value={f.aliases} onChange={set("aliases")} placeholder="Duquesne Light; DLC" />
+          <span className="block text-muted-foreground">Other names, separated by ; — searched with the name.</span>
+        </label>
         <div className="space-y-1">
           {text("soNumber", "SO # (first system's sales order)")}
           <label className="flex items-center gap-2 text-xs">
@@ -118,8 +125,9 @@ export function CustomerEditor({ customer, onClose }: { customer: CustomerDetail
         {text("serverInstall", "Server install date")}
         {text("lastServerSo", "Last server SO #")}
         <label className={cn(field, "sm:col-span-2")}>
-          <span className={lbl}>Notes</span>
+          <span className={lbl}>Internal notes (never printed)</span>
           <textarea value={f.notes} onChange={set("notes")} rows={3} className="w-full rounded-md border bg-background p-2 text-sm" />
+          <span className="block text-muted-foreground">For the team only — not on proposals, printouts or emails.</span>
         </label>
       </div>
       <FormMessage tone="error" className="mt-3">{error}</FormMessage>

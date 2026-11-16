@@ -22,6 +22,8 @@ export interface WbCustomer {
   lastServerSo: string | null;
   qwebLicenses: number | null;
   notes: string | null;
+  /** "Also known as" names ("; "-joined). Optional so older test data still type-checks. */
+  aliases?: string | null;
   version: number;
 }
 

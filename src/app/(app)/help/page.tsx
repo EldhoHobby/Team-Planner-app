@@ -23,6 +23,7 @@ const SECTIONS: { id: string; title: string; for: Audience }[] = [
   { id: "dashboard", title: "Your dashboard and tasks", for: "everyone" },
   { id: "schedule", title: "The schedule", for: "everyone" },
   { id: "fs-status", title: "Field service status", for: "everyone" },
+  { id: "tracker", title: "Bug and request tracker", for: "everyone" },
   { id: "timesheet", title: "Timesheet", for: "admin" },
   { id: "agreements", title: "Service agreements", for: "agreements" },
   { id: "open-pos", title: "Open POs", for: "agreements" },
@@ -133,6 +134,7 @@ export default async function HelpPage() {
             <li><UI>Dashboard</UI> — your open tasks{managesPeople ? " and your people's" : ""}, plus the jobs you&apos;re booked on.</li>
             <li><UI>Schedule</UI> — the field-service board: who is on which job, on which days.</li>
             <li><UI>Field Service Status</UI> — field service hours on each sales order: quoted, used and left.</li>
+            <li><UI>Bug &amp; Request Tracker</UI> — bugs and requests: who has each one, where it stands, and its history.</li>
             {isAdmin && <li><UI>Tasks</UI> — tasks organised under projects (admins only).</li>}
             {isAdmin && <li><UI>Timesheet</UI> — enter your hours for the week and produce the timesheet Excel file (admins only).</li>}
             {isAdmin && <li><UI>Projects</UI> — the projects that group the tasks on the Tasks page (admins only).</li>}
@@ -427,6 +429,54 @@ export default async function HelpPage() {
                 </p>
               </HowTo>
             </>
+          )}
+        </Section>
+
+        {/* ─────────────── Bug and request tracker ─────────────── */}
+        <Section id="tracker" title="Bug and request tracker">
+          <p className={P}>
+            <UI>Bug &amp; Request Tracker</UI> is the list of SCADA / QSCADA bugs and requests, one row per item, laid
+            out like the tracker workbook: number, priority, site or customer, category, the issue, who it is
+            assigned to, status, <UI>Eldho notes</UI>, <UI>Programmer comments</UI> and the three dates. It scrolls both ways; the header row and the #
+            column stay in place. <UI>Open</UI>, <UI>Done</UI> and <UI>All</UI> pick what is shown, the status
+            list narrows it further, and the search box looks through everything (type a number to find that
+            item). <UI>Group by</UI> puts the rows under a bar per status, priority, site, category or person; a bar
+            opens and closes with a click, and <UI>Open all</UI> opens every bar. On an item that is not done, the
+            target date turns amber with <UI>Due soon</UI> from a week before it, and red with{" "}
+            <UI>Past target</UI> once it has passed.
+          </p>
+          <p className={P}>
+            Click a cell and type, as in Excel: <UI>Enter</UI> or clicking elsewhere saves it, <UI>Esc</UI> puts
+            back what was there, <UI>Alt+Enter</UI> starts a new line. <UI>Status</UI> and <UI>Priority</UI> are
+            lists to pick from; the dates open a date picker. To add an item, type on the empty line at the bottom
+            of the sheet and press <UI>Enter</UI>: it gets the next number, status <UI>New</UI> and today as its
+            date opened. Site, category and assigned to fill themselves in as you type, from the values already on
+            the list (the most used one first): keep typing to change it, or press <UI>Tab</UI> to keep it. The dates look after themselves: setting an item to <UI>Done</UI> fills in today as its
+            date resolved, and reopening it clears that date. You can still type a date to correct it.
+          </p>
+          <p className={P}>
+            <span className="font-medium">Every change is kept.</span> Click the <UI>#</UI> of an item to see all of
+            its fields and its history: who changed what, when, from what to what. Removing an item takes it off
+            the list but keeps its history, and its number is not used again.
+          </p>
+          <HowTo summary="Work on the list in Excel and bring it back">
+            <p>
+              <UI>Export</UI> gives a workbook with three sheets. <UI>Tracker</UI> is the list, with pick lists
+              for Status and Priority and colours that follow them. <UI>Change History</UI> lists every recorded
+              change, newest first, for reading. <UI>README</UI> explains the file. Change the Tracker sheet, or
+              type a new item on the next empty row and leave its # empty, then <UI>Import</UI> the file: you see
+              what would change before it is saved. Rows are matched by #. Nothing is deleted by an import. The
+              original QEI_Bug_and_Request_Tracker workbook also imports as it is.
+            </p>
+          </HowTo>
+          {isAdmin && (
+            <HowTo summary="Choose who can see and change this page (admins)">
+              <p>
+                <UI>Access</UI> (top right) sets who can see the page (everyone, or only the people ticked) and
+                who can change it (everyone who can see it, or only the people ticked). To begin with, everyone
+                can see it and change it.
+              </p>
+            </HowTo>
           )}
         </Section>
 

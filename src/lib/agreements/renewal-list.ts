@@ -2,6 +2,8 @@
 // One row per renewal that needs following up, in plain words, with one next step.
 // Dates are "YYYY-MM-DD" strings.
 import { isOpenCustomer, type SaAgreement, type SaCustomerStatus } from "./constants";
+import { nameMatches } from "./aliases";
+import { followUpDue } from "./follow-up";
 import type { CustomerRenewal, ProposalLite } from "./renewal";
 
 export type RenewalKind = "DUE" | "EXPIRED" | "LAPSED" | "DRAFT" | "SENT" | "SIGNED";
@@ -34,6 +36,12 @@ export interface RenewalRow {
   followUp: FollowUp | null;
   /** A follow-up was logged and is not due again yet (see `isFollowedUp`). */
   followedUp: boolean;
+  /** The logged "follow up again" date has come ("today") or gone ("past"); null otherwise and on signed rows. */
+  followUpDue: "past" | "today" | null;
+  /** "Also known as" names ("; "-joined), searched with the name. */
+  aliases: string | null;
+  /** Servers out of manufacturer warranty while Server Hardware is not covered (0 = no cue). */
+  hardwareServers: number;
 }
 
 export interface FollowUp {
@@ -67,6 +75,9 @@ export interface PortfolioLike {
   status: SaCustomerStatus;
   notes: string | null;
   followUp?: FollowUp | null;
+  aliases?: string | null;
+  /** See RenewalRow.hardwareServers (worked out by the service from the customer's systems). */
+  hardwareServers?: number;
   renewal: Pick<CustomerRenewal, "state" | "currentYear" | "currentLines" | "annualValue" | "nextEndDate" | "daysToEnd" | "lapsedLines">;
   proposals: ProposalLite[];
 }
@@ -98,9 +109,14 @@ export function buildRenewalRows(rows: PortfolioLike[], today: string): RenewalR
       customerId: c.id, name: c.name, soNumber: c.soNumber, soConfirmed: c.soConfirmed,
       customerStatus: c.status, notes: c.notes, onHold,
       followUp: c.followUp ?? null, followedUp: isFollowedUp(c.followUp ?? null, today),
+      aliases: c.aliases ?? null, hardwareServers: c.hardwareServers ?? 0,
     };
-    const push = (row: Omit<RenewalRow, keyof typeof base | "needsAction">) =>
-      out.push({ ...base, ...row, needsAction: needsActionFor(row.kind, onHold, row.sentDaysAgo) });
+    const due = followUpDue(c.followUp?.next, today);
+    const push = (row: Omit<RenewalRow, keyof typeof base | "needsAction" | "followUpDue">) =>
+      out.push({
+        ...base, ...row, followUpDue: row.kind === "SIGNED" ? null : due,
+        needsAction: needsActionFor(row.kind, onHold, row.sentDaysAgo),
+      });
 
     for (const p of c.proposals) {
       if (p.status === "DRAFT" || p.status === "SENT") {
@@ -128,7 +144,7 @@ export function buildRenewalRows(rows: PortfolioLike[], today: string): RenewalR
       out.push({
         ...base, key: `due-${c.id}`, kind: "DUE", proposalId: null, year: r.currentYear === null ? null : r.currentYear + 1,
         termEnd: r.nextEndDate, daysToEnd: r.daysToEnd, value: r.annualValue, agreements: r.currentLines.length,
-        sentDaysAgo: null, signedDate: null, lapsed: [], needsAction: false,
+        sentDaysAgo: null, signedDate: null, lapsed: [], needsAction: false, followUpDue: due,
       });
     }
 
@@ -250,6 +266,7 @@ export function groupByExpiry(rows: RenewalRow[]): { key: ExpiryGroupKey; label:
 export const RENEWAL_FILTERS = [
   { key: "expiring", label: "Expiring", test: (r: RenewalRow) => expiryGroup(r) !== null },
   { key: "action", label: "Needs action", test: (r: RenewalRow) => r.needsAction },
+  { key: "followups", label: "Follow-ups due", test: (r: RenewalRow) => r.followUpDue !== null },
   { key: "due", label: "No proposal yet", test: (r: RenewalRow) => NO_PROPOSAL.includes(r.kind) && !r.onHold },
   { key: "draft", label: "Drafts", test: (r: RenewalRow) => r.kind === "DRAFT" && !r.onHold },
   { key: "sent", label: "Waiting on customer", test: (r: RenewalRow) => r.kind === "SENT" && !r.onHold },
@@ -265,9 +282,9 @@ export function isRenewalFilterKey(v: unknown): v is RenewalFilterKey {
   return typeof v === "string" && RENEWAL_FILTERS.some((f) => f.key === v);
 }
 
-/** Case-insensitive match on customer name or SO #; a blank query matches everything. */
+/** Case-insensitive match on customer name, its "also known as" names or SO #; a blank query matches everything. */
 export function matchesQuery(row: RenewalRow, q: string): boolean {
   const n = q.trim().toLowerCase();
   if (!n) return true;
-  return row.name.toLowerCase().includes(n) || row.soNumber.toLowerCase().includes(n);
+  return nameMatches(row.name, row.aliases, n) || row.soNumber.toLowerCase().includes(n);
 }

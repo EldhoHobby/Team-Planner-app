@@ -8,6 +8,8 @@ export interface LineLite {
   year: number;
   agreement: SaAgreement;
   price: number;
+  /** Full-year price when `price` is a prorated part-year; the base of the next renewal (fullPrice ?? price). */
+  fullPrice?: number | null;
   status: SaLineStatus;
   endDate: string | null;
   signedDate: string | null;

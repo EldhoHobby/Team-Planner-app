@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { POLICY_DEFAULTS, tierPct, proposePrices, pctBetween, applyPct, addOneYear } from "./pricing";
+import {
+  POLICY_DEFAULTS, tierPct, proposePrices, pctBetween, applyPct, addOneYear, comparablePrice, nextDay, prorateMonths, prorateNote, proratePrice, termStart,
+} from "./pricing";
 
 const r = POLICY_DEFAULTS;
 
@@ -118,5 +120,43 @@ describe("helpers", () => {
   it("addOneYear keeps month/day and handles Feb 29", () => {
     expect(addOneYear(new Date("2026-03-31T00:00:00Z")).toISOString().slice(0, 10)).toBe("2027-03-31");
     expect(addOneYear(new Date("2028-02-29T00:00:00Z")).toISOString().slice(0, 10)).toBe("2029-02-28");
+  });
+});
+
+describe("proration", () => {
+  it("counts whole months from the start to the end date, rounded to the nearest", () => {
+    expect(prorateMonths("2027-04-01", "2028-01-31")).toBe(10); // EASLEY ConfigWiz
+    expect(prorateMonths("2027-02-01", "2028-01-31")).toBe(12);
+    expect(prorateMonths("2027-01-01", "2027-01-31")).toBe(1);
+    expect(prorateMonths("2027-04-15", "2028-01-31")).toBe(10); // 9.5 months → 10
+    expect(prorateMonths("2027-04-20", "2028-01-31")).toBe(9);
+    expect(prorateMonths("2027-03-31", "2028-01-31")).toBe(10);
+    expect(prorateMonths("2026-11-01", "2028-01-31")).toBe(15); // out of range is the caller's call
+  });
+  it("termStart / nextDay", () => {
+    expect(termStart("2028-01-31")).toBe("2027-02-01");
+    expect(termStart("2028-02-29")).toBe("2027-03-01");
+    expect(termStart("2027-12-31")).toBe("2027-01-01");
+    expect(termStart("x")).toBeNull();
+    expect(nextDay("2027-03-31")).toBe("2027-04-01");
+    expect(nextDay("2027-12-31")).toBe("2028-01-01");
+    expect(nextDay(null)).toBeNull();
+  });
+  it("is null for missing dates or an end before the start", () => {
+    expect(prorateMonths(null, "2028-01-31")).toBeNull();
+    expect(prorateMonths("2027-04-01", null)).toBeNull();
+    expect(prorateMonths("2028-02-01", "2028-01-31")).toBeNull();
+    expect(prorateMonths("bad", "2028-01-31")).toBeNull();
+  });
+  it("prices full × months / 12 in whole dollars and words the note", () => {
+    expect(proratePrice(2841, 10)).toBe(2368);
+    expect(proratePrice(2841, 12)).toBe(2841);
+    expect(prorateNote(10, 2841)).toBe("Prorated 10 months; full year $2,841");
+    expect(prorateNote(1, 1200)).toBe("Prorated 1 month; full year $1,200");
+  });
+  it("compares a prorated line on its full-year price", () => {
+    expect(pctBetween(2706, comparablePrice({ price: 2368, fullPrice: 2841 }))).toBe(5);
+    expect(comparablePrice({ price: 2368, fullPrice: null })).toBe(2368);
+    expect(comparablePrice({ price: 2368 })).toBe(2368);
   });
 });

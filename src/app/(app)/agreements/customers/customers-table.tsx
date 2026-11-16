@@ -13,12 +13,15 @@ import {
   type SaAgreement, type SaCustomerStatus, type SaSoftware,
 } from "@/lib/agreements/constants";
 import { RENEWAL_STATE_LABELS, type RenewalState } from "@/lib/agreements/renewal";
+import { nameMatches } from "@/lib/agreements/aliases";
 import { CustomerStatusBadge, LapsedBadge, RenewalBadge, UnconfirmedSo } from "../badges";
 import { CustomerEditor } from "../customer-editor";
 
 export interface CustomerListRow {
   id: string;
   name: string;
+  /** "Also known as" names ("; "-joined), searched with the name. */
+  aliases: string | null;
   soNumber: string;
   soConfirmed: boolean;
   status: SaCustomerStatus;
@@ -103,7 +106,7 @@ export function CustomersTable({
         (!software || r.software === software) &&
         (!unconfirmed || !r.soConfirmed) &&
         (!ends || r.endMonths.includes(ends)) &&
-        (!n || r.name.toLowerCase().includes(n) || r.soNumber.toLowerCase().includes(n) || (r.state ?? "").toLowerCase() === n),
+        (!n || nameMatches(r.name, r.aliases, n) || r.soNumber.toLowerCase().includes(n) || (r.state ?? "").toLowerCase() === n),
     );
     const val = (r: CustomerListRow): string | number =>
       sort.key === "annualValue" ? r.annualValue : sort.key === "nextEndDate" ? r.nextEndDate ?? "9999" : sort.key === "renewal" ? RENEWAL_STATE_LABELS[r.renewal] : r.name.toLowerCase();
@@ -129,7 +132,7 @@ export function CustomersTable({
         actions={canEdit ? <Button onClick={() => setAdding(true)}>Add customer</Button> : undefined}
       />
       <div className="flex flex-wrap items-center gap-2">
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, SO # or state" className="w-full sm:w-60" aria-label="Search customers" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, other name, SO # or state" className="w-full sm:w-60" aria-label="Search customers" />
         <select value={status} onChange={(e) => setStatus(e.target.value)} className={SELECT} aria-label="Customer status">
           <option value="OPEN">Open (active, pending, expired – waiting)</option>
           <option value="">All statuses (incl. not renewed / inactive)</option>
@@ -185,6 +188,7 @@ export function CustomersTable({
                     {r.state && <span>· {r.state}</span>}
                     {!r.soConfirmed && <UnconfirmedSo />}
                   </div>
+                  {r.aliases && <div className="text-xs text-muted-foreground">aka {r.aliases}</div>}
                   {r.lapsed.length > 0 && <LapsedBadge lines={r.lapsed} className="mt-1" />}
                 </td>
                 <td className="px-3 py-2"><CustomerStatusBadge status={r.status} /></td>
