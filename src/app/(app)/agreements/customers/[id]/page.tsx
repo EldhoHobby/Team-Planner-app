@@ -5,12 +5,13 @@ import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
 import { getCustomerDetail } from "@/lib/services/agreements/customers";
 import { canEditAgreements } from "@/lib/services/agreements/common";
+import { prisma } from "@/lib/db/client";
 import { CustomerView, type CustomerTab } from "./customer-view";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Customer" };
 
-const TABS: CustomerTab[] = ["agreements", "history", "proposals", "calls", "activity"];
+const TABS: CustomerTab[] = ["agreements", "history", "proposals", "followups", "calls", "activity"];
 
 /** Filter params of the Customers list that `?back=` may carry (see customers-table.tsx). */
 const LIST_PARAMS = ["q", "status", "renewal", "software", "unconfirmed", "ends", "sort"] as const;
@@ -42,9 +43,15 @@ export default async function CustomerPage({
   const { scope } = await requireScope();
   await requireAgreementsAccess(scope);
   const [{ id }, sp] = await Promise.all([params, searchParams]);
-  const [data, canEdit] = await Promise.all([getCustomerDetail(scope, id), canEditAgreements(scope)]);
+  const [data, canEdit, me] = await Promise.all([
+    getCustomerDetail(scope, id),
+    canEditAgreements(scope),
+    // The hardware offer email is signed by the person actually signed in (not a "View as" person).
+    prisma.user.findUnique({ where: { id: scope.ctx.realUserId ?? scope.ctx.userId }, select: { name: true, username: true } }),
+  ]);
   if (!data) notFound();
   await recordPageView(scope, "Service agreement customer");
   const tab = TABS.includes(sp.tab as CustomerTab) ? (sp.tab as CustomerTab) : "agreements";
-  return <CustomerView data={data} canEdit={canEdit} tab={tab} backQs={cleanBack(sp.back)} />;
+  const senderName = me?.name?.trim() || me?.username || null;
+  return <CustomerView data={data} canEdit={canEdit} tab={tab} backQs={cleanBack(sp.back)} senderName={senderName} />;
 }

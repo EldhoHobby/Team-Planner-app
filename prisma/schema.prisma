@@ -47,6 +47,7 @@ model Organization {
   saSettings       SaSettings?
   openPos          OpenPo[]
   fsOrders         FsOrder[]
+  trackerItems     TrackerItem[]
   saSystems        SaSystem[]
 }
 
@@ -857,7 +858,8 @@ model SaCustomer {
   serverInstall   String? // free text in the source data
   lastServerSo    String?
   qwebLicenses    Int?
-  notes           String?
+  notes           String? // INTERNAL notes - never printed for the customer
+  aliases         String? // "also known as" names, ";"-separated; searched with the name
   // Renewals work list: the last logged follow-up (each one is also kept in ChangeHistory).
   followUpAt      DateTime?
   followUpBy      String? // display name of who logged it
@@ -891,6 +893,7 @@ model SaContractLine {
   checked      Boolean      @default(false) // Maintenance report "Checked"
   invoicedDate DateTime?    @db.Date // Maintenance report "DATE INV'D"
   notes        String?
+  fullPrice    Decimal?     @db.Decimal(12, 2) // full-year price when `price` is a prorated part-year (next renewal raises from this)
   proposalId   String? // the proposal it was signed from (null for imported history)
   version      Int          @default(1)
   createdAt    DateTime     @default(now())
@@ -941,6 +944,10 @@ model SaProposalLine {
   lastPrice  Decimal?    @db.Decimal(12, 2) // the signed price it renews (null = new agreement)
   price      Decimal     @db.Decimal(12, 2)
   rule       String // how the price was set: tier | tdms | fixed | keep | waived | manual
+  // Prorated part-year: `price` = fullPrice x prorateMonths / 12 for a term starting prorateStart.
+  fullPrice     Decimal?  @db.Decimal(12, 2)
+  prorateMonths Int?
+  prorateStart  DateTime? @db.Date
   version    Int         @default(1)
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
@@ -1116,5 +1123,50 @@ model FsOrder {
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, soNumber])
+  @@index([orgId, status])
+}
+
+// Bug & Request Tracker (sidebar -> Bug & Request Tracker): one row per bug or request, kept
+// by engineering and customer service. Replaces the "QEI_Bug_and_Request_Tracker" workbook.
+// `number` is the "#" people quote (unique per org, never reused); assignedTo is free text
+// (the names are not always people of this app). Every change goes to ChangeHistory.
+enum TrackerStatus {
+  NEW
+  UPDATE
+  NOT_STARTED
+  IN_PROGRESS
+  TESTING
+  HOLD
+  DONE
+}
+
+enum TrackerPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model TrackerItem {
+  id           String           @id @default(cuid())
+  orgId        String
+  number       Int // "#" - unique per org
+  priority     TrackerPriority?
+  site         String? // "Site / Customer"
+  category     String?
+  issue        String // "Issue / Description"
+  assignedTo   String?
+  status       TrackerStatus    @default(NEW)
+  dateOpened   DateTime?        @db.Date
+  targetDate   DateTime?        @db.Date
+  dateResolved DateTime?        @db.Date
+  notes              String? // "Eldho Notes" on the page and in the sheet (the workbook's Notes column)
+  programmerComments String? // "Programmer Comments"
+  version      Int              @default(1)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, number])
   @@index([orgId, status])
 }

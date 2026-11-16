@@ -150,3 +150,69 @@ export function addOneYear(d: Date): Date {
   const day = Math.min(d.getUTCDate(), new Date(Date.UTC(y, m + 1, 0)).getUTCDate());
   return new Date(Date.UTC(y, m, day));
 }
+
+// ─── proration (a part-year price that lines an agreement up with the others) ───
+
+const ymdParts = (s: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  return m ? { y: Number(m[1]), m: Number(m[2]) - 1, d: Number(m[3]) } : null;
+};
+
+/** Months a proration may cover. */
+export const PRORATE_MIN_MONTHS = 1;
+export const PRORATE_MAX_MONTHS = 12;
+
+/**
+ * Whole months from `start` up to and including `end` (both "YYYY-MM-DD"), rounded to the
+ * nearest month: Apr 1 2027 → Jan 31 2028 = 10. Null when a date is missing / invalid or
+ * `end` is before `start`.
+ */
+export function prorateMonths(start: string | null, end: string | null): number | null {
+  const a = start ? ymdParts(start) : null;
+  const b = end ? ymdParts(end) : null;
+  if (!a || !b) return null;
+  // Count to the day after `end`, so a term ending on a month's last day counts that month in full.
+  const after = new Date(Date.UTC(b.y, b.m, b.d + 1));
+  if (after.getTime() <= Date.UTC(a.y, a.m, a.d)) return null;
+  const whole = (after.getUTCFullYear() - a.y) * 12 + (after.getUTCMonth() - a.m);
+  const days = after.getUTCDate() - a.d;
+  return Math.max(0, Math.round(whole + days / 30.4375));
+}
+
+/** First day of a one-year term ending `endYmd`: the day after the same date a year earlier (Jan 31 2028 → Feb 1 2027). */
+export function termStart(endYmd: string): string | null {
+  const b = ymdParts(endYmd);
+  if (!b) return null;
+  const day = Math.min(b.d, new Date(Date.UTC(b.y - 1, b.m + 1, 0)).getUTCDate());
+  return dayAfter(new Date(Date.UTC(b.y - 1, b.m, day)));
+}
+
+/** "YYYY-MM-DD" of the day after `d` (UTC). */
+export function dayAfter(d: Date): string {
+  return new Date(d.getTime() + 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The day after a "YYYY-MM-DD" (null stays null). */
+export function nextDay(ymd: string | null): string | null {
+  const p = ymd ? ymdParts(ymd) : null;
+  return p ? dayAfter(new Date(Date.UTC(p.y, p.m, p.d))) : null;
+}
+
+/** The part-year price: full × months / 12, whole dollars ($2,841 × 10/12 = $2,368). */
+export function proratePrice(fullPrice: number, months: number): number {
+  return roundPrice((fullPrice * months) / 12);
+}
+
+/** The note a signed prorated line carries: "Prorated 10 months; full year $2,841". */
+export function prorateNote(months: number, fullPrice: number): string {
+  return `Prorated ${months} month${months === 1 ? "" : "s"}; full year $${roundPrice(fullPrice).toLocaleString("en-US")}`;
+}
+
+/**
+ * The price a line's increase % is worked out on: a prorated line's full-year price (a 10-month
+ * ConfigWiz at $2,368 against last year's $2,706 reads +5%, not −12.5%), else its price. Also the
+ * base of next year's renewal (a signed contract line's fullPrice ?? price).
+ */
+export function comparablePrice(l: { price: number; fullPrice?: number | null }): number {
+  return l.fullPrice ?? l.price;
+}

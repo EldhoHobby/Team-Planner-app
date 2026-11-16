@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { recordPageView } from "@/lib/services/audit";
-import { getProposal } from "@/lib/services/agreements/proposals";
+import { getHardwareCue, getProposal } from "@/lib/services/agreements/proposals";
 import { canEditAgreements } from "@/lib/services/agreements/common";
 import { getNextRenewal } from "@/lib/services/agreements/renewals";
 import { todayYmd } from "@/lib/tz";
@@ -39,15 +39,17 @@ export default async function ProposalPage({
   searchParams: Promise<{ back?: string | string[]; from?: string | string[] }>;
 }) {
   await requireAuth();
-  const { scope } = await requireScope();
+  const { scope, user } = await requireScope();
   await requireAgreementsAccess(scope);
   const [{ id }, sp] = await Promise.all([params, searchParams]);
   const [data, canEdit] = await Promise.all([getProposal(scope, id), canEditAgreements(scope)]);
   if (!data) notFound();
   // "Next renewal" is only offered once this proposal is finished (signed / declined / withdrawn).
   const finished = ["SIGNED", "DECLINED", "WITHDRAWN"].includes(data.proposal.status);
-  const [next] = await Promise.all([
+  const live = data.proposal.status === "DRAFT" || data.proposal.status === "SENT";
+  const [next, hardware] = await Promise.all([
     finished ? getNextRenewal(scope, data.customer.id) : Promise.resolve(null),
+    live ? getHardwareCue(scope, data) : Promise.resolve(null),
     recordPageView(scope, "Service agreement proposal"),
   ]);
   // Opened from the Proposals list (`?from=proposals`, plus `?back=` when it had filters) → back to that
@@ -61,6 +63,8 @@ export default async function ProposalPage({
       backHref={fromList ? listHref(sp.back) : "/agreements"}
       backLabel={fromList ? "Proposals" : "Renewals"}
       next={next}
+      hardware={hardware}
+      senderName={user.name ?? null}
     />
   );
 }

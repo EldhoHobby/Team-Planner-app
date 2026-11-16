@@ -21,6 +21,7 @@ import {
   num, strictBool, strictDate, strictInt, strictNum, text, type Cell, type Strict,
 } from "@/lib/agreements/import-parse";
 import { FIXED_PRICE_AGREEMENTS } from "@/lib/agreements/pricing";
+import { cleanAliases } from "@/lib/agreements/aliases";
 import type { SettingsRow } from "../common";
 import type { CustomerInput } from "../customers";
 import type { ProposalAction } from "../proposals";
@@ -103,6 +104,8 @@ export interface Row {
   /** Sheet row number. */
   line: number;
   get: (header: string) => Cell;
+  /** The sheet has this column (an older export may not). */
+  has: (header: string) => boolean;
   /** The fingerprint stored at export (null = none: a new row, or a file from before fingerprints). */
   check: string | null;
   /** True when the row still gives its stored fingerprint: not edited in Excel. */
@@ -142,7 +145,7 @@ export function readSheet(wb: ExcelJS.Workbook, name: string): Row[] | null {
     };
     const check = checkCol === undefined ? null : text(vals[checkCol]);
     const untouched = !!check && !!fields && check === fingerprintOf(fields, get);
-    rows.push({ line: n, get, check, untouched });
+    rows.push({ line: n, get, has: (h) => idx.has(h.toLowerCase()), check, untouched });
   });
   return rows;
 }
@@ -354,6 +357,8 @@ export function planWorkbookImport(wb: ExcelJS.Workbook, snap: AgreementsSnapsho
       softwareVersion: rd.text("Software version"), wvPeVersion: rd.text("WV / PE version"),
       server: rd.text("Server"), serverInstall: rd.text("Server install"), lastServerSo: rd.text("Last server SO #"),
       qwebLicenses: qweb, notes: rd.text("Notes"),
+      // A file from before the column existed leaves the aliases alone.
+      ...(row.has("Also known as") ? { aliases: cleanAliases(rd.text("Also known as")) } : {}),
     };
     if (!id) {
       if (soKnown(input.soNumber)) { skip(S.customers, row, `SO # ${input.soNumber} already exists — edit that customer's row instead`); continue; }
@@ -370,6 +375,7 @@ export function planWorkbookImport(wb: ExcelJS.Workbook, snap: AgreementsSnapsho
       p("Server", "text", db.server, input.server), p("Server install", "text", db.serverInstall, input.serverInstall),
       p("Last server SO #", "text", db.lastServerSo, input.lastServerSo), p("QWEB licenses", "count", db.qwebLicenses, input.qwebLicenses),
       p("Notes", "text", db.notes, input.notes),
+      ...(input.aliases !== undefined ? [p("Also known as", "text", db.aliases ?? null, input.aliases)] : []),
     ];
     if (!pairs.some(differs)) { counts(S.customers).unchanged++; continue; }
     if (num(row.get("Version")) !== db.version) { conflict(S.customers, row, db.name, pairs); continue; }

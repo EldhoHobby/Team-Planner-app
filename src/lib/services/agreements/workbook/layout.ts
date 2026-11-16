@@ -136,7 +136,9 @@ export const colN = (letter: string) => [...letter].reduce((n, ch) => n * 26 + c
 // `check` = the hidden per-row fingerprint ("Row check"): the last column of each master sheet,
 // inside the sheet's filter range (so sorting in Excel keeps it with its row) and past every
 // column the macros read or write (Pricing 1..openProp, Proposals 1..id, Customers name + so).
-export const CU = { name: "A", so: "B", status: "C", state: "D", software: "E", swVer: "F", wvpe: "G", server: "H", serverInstall: "I", lastServerSo: "J", qweb: "K", notes: "L", soConfirmed: "M", id: "N", version: "O", check: "P" };
+// Customers `aliases` ("Also known as") was added later and sits AFTER `check`, so no column that
+// formulas, other sheets or the macros use moved; the import finds every column by its header.
+export const CU = { name: "A", so: "B", status: "C", state: "D", software: "E", swVer: "F", wvpe: "G", server: "H", serverInstall: "I", lastServerSo: "J", qweb: "K", notes: "L", soConfirmed: "M", id: "N", version: "O", check: "P", aliases: "Q" };
 export const PC = { cust: "A", year: "B", agreement: "C", price: "D", status: "E", end: "F", so: "G", signed: "H", notes: "I", created: "J", invoiced: "K", checked: "L", pstatus: "M", pid: "N", last: "O", del: "P", id: "Q", version: "R", cstatus: "S", openProp: "T", force: "U", check: "V" };
 export const XC = { cust: "A", so: "B", year: "C", status: "D", end: "E", sent: "F", signed: "G", closed: "H", reason: "I", notes: "J", total: "K", agreements: "L", waiting: "M", id: "N", version: "O", key: "P", seq: "Q", check: "R" };
 export const KC = { cust: "A", year: "B", calls: "C", repairs: "D", so: "E", id: "F", version: "G", check: "H" };
@@ -150,7 +152,7 @@ export const CHECK_HEADER = "Row check (helper)";
  * matches — that row just falls back to the Version check.
  */
 export const CHECK_FIELDS: Record<"customers" | "pricing" | "proposals" | "calls", readonly string[]> = {
-  customers: ["Customer", "SO #", "Status", "State", "Software", "Software version", "WV / PE version", "Server", "Server install", "Last server SO #", "QWEB licenses", "Notes", "SO confirmed", "ID"],
+  customers: ["Customer", "SO #", "Status", "State", "Software", "Software version", "WV / PE version", "Server", "Server install", "Last server SO #", "QWEB licenses", "Notes", "SO confirmed", "ID", "Also known as"],
   pricing: ["Year", "Agreement", "Price", "Status", "End date", "SO #", "Signed date", "Notes", "Invoiced date", "Checked", "Proposal ID", "Delete", "ID"],
   proposals: ["SO #", "Year", "Status", "End date", "Sent date", "Signed date", "Closed date", "Decline reason", "Notes", "ID"],
   calls: ["Year", "Calls", "Repairs", "SO #", "ID"],

@@ -24,6 +24,16 @@ describe("undoSigningBlockers", () => {
     expect(undoSigningBlockers(base())).toEqual([]);
   });
 
+  it("allows the note signing wrote on a prorated line, but not other notes", () => {
+    const i = base();
+    const note = "Prorated 10 months; full year $8,400";
+    i.proposal.lines[0] = { agreement: "SCADA_SOFTWARE", price: 8400, autoNote: note };
+    i.signedLines[0] = signed({ agreement: "SCADA_SOFTWARE", price: 8400, notes: note });
+    expect(undoSigningBlockers(i)).toEqual([]);
+    i.signedLines[0] = signed({ agreement: "SCADA_SOFTWARE", price: 8400, notes: "Invoiced in two parts" });
+    expect(undoSigningBlockers(i)[0]).toMatch(/has notes/);
+  });
+
   it("allows a signing whose lines were deleted by hand (nothing left to remove)", () => {
     const i = base();
     i.signedLines = [];

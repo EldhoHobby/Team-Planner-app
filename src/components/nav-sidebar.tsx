@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, CalendarX, ClipboardCheck, Clock, Database, Handshake, FolderOpen, History, LayoutDashboard, LifeBuoy, ListChecks, Mail, ScrollText, UserRound, Users } from "lucide-react";
+import { CalendarDays, CalendarX, ClipboardCheck, Clock, Database, Handshake, FolderOpen, History, LayoutDashboard, LifeBuoy, ListChecks, Mail, ScrollText, UserRound, Users, Bug } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -21,6 +21,8 @@ type NavItem = {
   agreements?: boolean;
   /** Shown only to people allowed to see Field Service Status. */
   fsStatus?: boolean;
+  /** Shown only to people allowed to see the Bug & Request Tracker. */
+  tracker?: boolean;
   /** Other path prefixes that also light this item up (pages reached from it). */
   also?: string[];
 };
@@ -34,6 +36,7 @@ const WORK_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/fs-status", label: "Field Service Status", icon: ClipboardCheck, fsStatus: true },
+  { href: "/tracker", label: "Bug & Request Tracker", icon: Bug, tracker: true },
   { href: "/tasks", label: "Tasks", icon: ListChecks, adminOnly: true },
   { href: "/timesheet", label: "Timesheet", icon: Clock, adminOnly: true },
   { href: "/projects", label: "Projects", icon: FolderOpen, adminOnly: true },
@@ -61,6 +64,8 @@ export interface NavProps {
   canSeeAgreements: boolean;
   /** Whether the effective user may see Field Service Status (its Access button). */
   canSeeFsStatus: boolean;
+  /** Whether the effective user may see the Bug & Request Tracker (its Access button). */
+  canSeeTracker: boolean;
   /** OWNER-only "view as" picker data; omitted for everyone else. */
   viewAs?: { people: ViewAsPerson[]; currentId: string; selfId: string };
 }
@@ -138,6 +143,7 @@ export function NavPanel({
   isAdmin,
   canSeeAgreements,
   canSeeFsStatus,
+  canSeeTracker,
   viewAs,
   idPrefix,
   onNavigate,
@@ -149,7 +155,7 @@ export function NavPanel({
 }) {
   const pathname = usePathname();
   const onAccount = pathname.startsWith("/settings/account");
-  const workNav = WORK_NAV.filter((i) => (!i.adminOnly || isAdmin) && (!i.agreements || canSeeAgreements) && (!i.fsStatus || canSeeFsStatus));
+  const workNav = WORK_NAV.filter((i) => (!i.adminOnly || isAdmin) && (!i.agreements || canSeeAgreements) && (!i.fsStatus || canSeeFsStatus) && (!i.tracker || canSeeTracker));
   return (
     <>
       <nav aria-label="Main" className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain p-2">

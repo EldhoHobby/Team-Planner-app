@@ -140,7 +140,8 @@ describe("buildRenewalRows", () => {
 const row = (p: Partial<RenewalRow>): RenewalRow => ({
   key: "k", kind: "DUE", customerId: "c", name: "Acme Water", soNumber: "SO-123", soConfirmed: true, customerStatus: "ACTIVE",
   proposalId: null, year: 2027, termEnd: null, daysToEnd: null, value: 0, agreements: 0, sentDaysAgo: null,
-  signedDate: null, lapsed: [], onHold: false, needsAction: false, notes: null, followUp: null, followedUp: false, ...p,
+  signedDate: null, lapsed: [], onHold: false, needsAction: false, notes: null, followUp: null, followedUp: false,
+  followUpDue: null, aliases: null, hardwareServers: 0, ...p,
 });
 
 describe("standing", () => {
@@ -171,7 +172,7 @@ describe("standing", () => {
 describe("filters and search", () => {
   const f = (key: string) => RENEWAL_FILTERS.find((x) => x.key === key)!.test;
   it("are in the agreed order", () => {
-    expect(RENEWAL_FILTERS.map((x) => x.key)).toEqual(["expiring", "action", "due", "draft", "sent", "hold", "signed", "all"]);
+    expect(RENEWAL_FILTERS.map((x) => x.key)).toEqual(["expiring", "action", "followups", "due", "draft", "sent", "hold", "signed", "all"]);
   });
   it("match the right rows", () => {
     expect(f("action")(row({ needsAction: true }))).toBe(true);
@@ -201,6 +202,17 @@ describe("filters and search", () => {
     expect(matchesQuery(row({}), "  acme ")).toBe(true);
     expect(matchesQuery(row({}), "so-12")).toBe(true);
     expect(matchesQuery(row({}), "water co")).toBe(false);
+  });
+  it("searches the also-known-as names too", () => {
+    const r = row({ name: "DUQUESNE POWER", aliases: "Duquesne Light; DLC" });
+    expect(matchesQuery(r, "duquesne light")).toBe(true);
+    expect(matchesQuery(r, "DLC")).toBe(true);
+    expect(matchesQuery(r, "penn")).toBe(false);
+  });
+  it("Follow-ups due = the follow-up date has come", () => {
+    expect(f("followups")(row({ followUpDue: "past" }))).toBe(true);
+    expect(f("followups")(row({ followUpDue: "today" }))).toBe(true);
+    expect(f("followups")(row({ followUpDue: null }))).toBe(false);
   });
 });
 
@@ -256,6 +268,26 @@ describe("follow-ups", () => {
   it("with a next date it stands until that day", () => {
     expect(isFollowedUp(f({ at: "2026-10-01", next: "2026-11-13" }), TODAY)).toBe(true);
     expect(isFollowedUp(f({ at: "2026-11-11", next: "2026-11-12" }), TODAY)).toBe(false);
+  });
+  it("marks a follow-up date that has come, but never on signed rows", () => {
+    const rows = buildRenewalRows([customer({
+      followUp: { at: "2026-11-01", by: "Mary", note: "Called", next: "2026-11-12" },
+      renewal: { state: "EXPIRED", nextEndDate: "2026-11-01", daysToEnd: -11 },
+      proposals: [prop({ year: 2027, status: "SIGNED", signedDate: "2026-11-01" })],
+    })], TODAY);
+    expect(rows.find((r) => r.kind === "EXPIRED")?.followUpDue).toBe("today");
+    expect(rows.find((r) => r.kind === "SIGNED")?.followUpDue).toBeNull();
+    const [late] = buildRenewalRows([customer({
+      followUp: { at: "2026-11-01", by: "Mary", note: "Called", next: "2026-11-10" },
+      renewal: { state: "EXPIRED", nextEndDate: "2026-11-01", daysToEnd: -11 },
+    })], TODAY);
+    expect(late?.followUpDue).toBe("past");
+  });
+  it("carries aliases and the hardware cue from the portfolio", () => {
+    const [r] = buildRenewalRows([customer({
+      aliases: "DLC", hardwareServers: 2, renewal: { state: "EXPIRED", nextEndDate: "2026-11-01", daysToEnd: -11 },
+    })], TODAY);
+    expect(r).toMatchObject({ aliases: "DLC", hardwareServers: 2 });
   });
   it("rows carry the customer's follow-up", () => {
     const [r] = buildRenewalRows([customer({

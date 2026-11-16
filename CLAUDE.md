@@ -263,6 +263,7 @@ src/app/(app)/schedule/            # FIELD-SERVICE DASHBOARD — timeline + cale
 src/app/(app)/tasks/               # generic task list + field-service job actions
 src/app/(app)/timesheet/           # per-user weekly QEI timesheet (grid + Excel gen)
 src/app/(app)/fs-status/           # Field Service Status: hours per sales order + its Schedule trips
+src/app/(app)/tracker/             # Bug & Request Tracker: bugs / requests with a permanent change history
 src/app/(app)/projects/            # project list + create/archive
 src/app/(app)/settings/account/    # profile + secure password change
 src/app/(app)/settings/people/     # UNIFIED people + departments admin: person CRUD
@@ -684,6 +685,56 @@ host normally has no npm — Docker is the supported path).
   remaining - `readHighlights` / `isHighlighted`); rows matched by SO #, written through the services. Jobs on
   the Schedule are never changed from this page. Included in the full backup (`fsOrders` key; a file without the
   key keeps the current orders and their history); NOT part of Settings -> Data -> Reset.
+- **Bug & Request Tracker (v0.1.5):** `/tracker`, its own sidebar item under Work (replaces the
+  "QEI_Bug_and_Request_Tracker" workbook). Model `TrackerItem` (unique `orgId + number` - the "#" people quote,
+  next free number on create, never reused; `priority` HIGH / MEDIUM / LOW or none; `site`, `category`, `issue`,
+  `assignedTo` - FREE TEXT, the names are not always app people; `status` NEW / UPDATE / NOT_STARTED /
+  IN_PROGRESS / TESTING / HOLD / DONE (the workbook's own words); `dateOpened` / `targetDate` / `dateResolved`
+  as `@db.Date`; `notes` - shown as **"Eldho Notes"** everywhere (the workbook's "Notes" header still imports
+  into it) - and `programmerComments` ("Programmer Comments"); `version`), migrations
+  `20261116090000_tracker_item` + `20261116120000_tracker_programmer_comments`. Pure rules + sheet columns in
+  `src/lib/tracker/rules.ts` (tested), service `src/lib/services/tracker.ts` (`listTrackerItems`,
+  `createTrackerItem`, `updateTrackerItem`, `deleteTrackerItem`, `listTrackerHistory`, `buildTrackerWorkbook`,
+  `runTrackerImport`), page + dialog in `src/app/(app)/tracker/`, export `GET /api/tracker/export`. Same
+  spreadsheet-like grid as Field Service Status (the in-cell editor is now shared:
+  `src/components/ui/edit-cell.tsx`, kinds text / required / hours / date), serial save queue + version map.
+  Columns: the workbook's, with the three dates moved to the END (after Notes) on the page and in the export.
+  **Group by** (status / priority / site / category / assigned to; `groupTracker` in the rules, choice kept in
+  localStorage `tracker.groupBy`): one collapsible bar per group inside the grid, closed by default.
+  **History is the point of the page:** every field change goes to ChangeHistory entity `tracker_item` in the
+  same transaction; REMOVING an item KEEPS its history (plus a "removed" entry) - unlike `FsOrder`. The dates
+  look after themselves: a new item gets today as Date Opened; moving to Done stamps today as Date Resolved
+  when empty and REOPENING clears it (an import with those cells empty keeps them empty; a date typed in the
+  same save wins). Target date cue (`trackerDue`): red "Past target" once passed, amber "Due soon" from
+  `TRACKER_SOON_DAYS` (7) before it, never on Done items - same rule as conditional formatting in the export.
+  There is NO "Add item" button (the user's request): items are added on the empty NEW LINE at the bottom of
+  the grid (`NewRow`: type the issue, Enter or leaving the line adds it; the line clears at once; Site /
+  Category / Assigned to complete themselves Excel-style from the values already used, most used first -
+  `usedValues` + `autoFill` in the rules). Access = page-access page `tracker` ("Bug Tracker Viewers" / "Bug Tracker
+  Editors"), with `openEdit`: while the editors list is off (group missing / archived) EVERYONE who can see the
+  page can change it - the Access dialog shows a second "Who can change it" choice for such pages. Excel
+  export: sheets `Tracker` (title lines, navy header in row 4, pick lists, status / priority colours and red
+  overdue target date as conditional formatting, real date cells, one standard row height, grey "Last Updated"
+  ignored on import), `Change History` (every change, newest first, removed items included; NOT "History" -
+  Excel reserves that name) and README. Import: rows matched by #, blank # = new item, stops at the first
+  non-numeric # (the original workbook's second table and notes), written through the services. Included in
+  the full backup (`trackerItems` key; a file without the key keeps the current items and their history); NOT
+  part of Settings -> Data -> Reset.
+- **Renewal UX (v0.1.5, with the tracker):** migration `20261116150000_renewal_ux`. (1) `SaCustomer.notes` are
+  INTERNAL - labelled so and never printed (proposal sheet + customer page); the proposal's own notes are "for the
+  customer - printed". (2) `DatePicker` accepts typed dates (`parseDateText` in date-utils) and has a year / month
+  jump. (3) **Prorate** a proposal line (`setLineProration` in proposals.ts, `prorate-dialog.tsx`): price =
+  full x months / 12 (`prorateMonths` / `proratePrice` in pricing.ts); stores `SaProposalLine.fullPrice /
+  prorateMonths / prorateStart`, % shown on the full-year price; a typed price clears it; signing copies
+  `SaContractLine.fullPrice` and the next renewal raises from `fullPrice ?? price` (`comparablePrice`). The monthly
+  workbook does NOT know about proration. (4) Out-of-date live proposal (`stale-proposal.ts`: year <= newest signed
+  year of ITS OWN agreements) -> banner with Replace (`replaceStaleDraft`, one transaction) / Delete / Withdraw.
+  (5) "Add signed year" (`addSignedYear` in customers.ts, rows from `signed-year.ts`). (6) Follow-ups stay in
+  ChangeHistory (no table): next date required (or "No further follow-up needed"), quick picks, Follow-ups tab,
+  Renewals filter `followups` (`follow-up.ts`). (7) `SaCustomer.aliases` ("Also known as", `aliases.ts`) searched
+  on Customers / Renewals / Servers & QWEB; workbook Customers column Q (after the Row check, nothing moved).
+  (8) Server-warranty cue + "Copy email" (`hardware.ts`) on Renewals rows, customer page and proposal page.
+  (9) Print option "Show price history increase row" (localStorage `proposal.printIncrease`, `print-options.ts`).
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog,
   daily agenda email, AI scheduling suggestions, reports page, customers
   directory.

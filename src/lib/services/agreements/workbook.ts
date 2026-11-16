@@ -43,7 +43,7 @@ async function loadSnapshot(scope: TenantScope): Promise<AgreementsSnapshot> {
     customers: customers.map((c) => ({
       id: c.id, name: c.name, soNumber: c.soNumber, soConfirmed: c.soConfirmed, status: c.status, state: c.state, software: c.software,
       softwareVersion: c.softwareVersion, wvPeVersion: c.wvPeVersion, server: c.server, serverInstall: c.serverInstall,
-      lastServerSo: c.lastServerSo, qwebLicenses: c.qwebLicenses, notes: c.notes, version: c.version,
+      lastServerSo: c.lastServerSo, qwebLicenses: c.qwebLicenses, notes: c.notes, aliases: c.aliases, version: c.version,
     })),
     lines: lines.map((l) => ({
       id: l.id, customerId: l.customerId, year: l.year, agreement: l.agreement, price: Number(l.price), status: l.status,

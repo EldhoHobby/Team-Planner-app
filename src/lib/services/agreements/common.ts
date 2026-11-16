@@ -28,6 +28,7 @@ export function dateOf(s: string | null | undefined): Date | null {
 export function toLineLite(l: SaContractLine): LineLite {
   return {
     id: l.id, year: l.year, agreement: l.agreement, price: Number(l.price), status: l.status,
+    fullPrice: l.fullPrice === null ? null : Number(l.fullPrice),
     endDate: ymd(l.endDate), signedDate: ymd(l.signedDate),
   };
 }

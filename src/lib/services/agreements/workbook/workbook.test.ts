@@ -157,6 +157,31 @@ describe("monthly workbook round trip", () => {
     expect(summary.rowErrors.some((e) => e.startsWith("Calls row") && e.includes('Calls "lots" is not a whole number'))).toBe(true);
   });
 
+  it("the Customers 'Also known as' column round-trips without moving the other columns", async () => {
+    const data = dataset();
+    data.customers[0]!.aliases = "Acme Power; AP";
+    const wb = await roundTrip(data);
+    const ws = wb.getWorksheet(S.customers)!;
+    // Appended after the hidden Row check: ID / Version / Row check keep their letters (N / O / P).
+    expect([ws.getCell("N1").value, ws.getCell("O1").value, ws.getCell("Q1").value]).toEqual(["ID", "Version", "Also known as"]);
+    expect(String(ws.getCell("P1").value)).toMatch(/^Row check/);
+    expect(planWorkbookImport(wb, data, exportedAt.toISOString()).ops).toEqual([]);
+
+    setCell(wb, S.customers, "c1", "Also known as", " acme power ;  Acme Utility Co ");
+    const { summary, ops } = planWorkbookImport(wb, data, exportedAt.toISOString());
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.op).toMatchObject({ kind: "customer.update", input: { aliases: "acme power; Acme Utility Co" } });
+    expect(summary.changes[0]!.fields.map((f) => f.field)).toEqual(["Also known as"]);
+
+    // A file without the column (older export) leaves the aliases alone.
+    const old = await roundTrip(data);
+    old.getWorksheet(S.customers)!.spliceColumns(17, 1);
+    setCell(old, S.customers, "c1", "Notes", "new note");
+    const plan = planWorkbookImport(old, data, exportedAt.toISOString());
+    const upd = plan.ops.find((o) => o.op.kind === "customer.update")!.op as { input: { aliases?: string | null } };
+    expect(upd.input.aliases).toBeUndefined();
+  });
+
   it("files exported before fingerprints fall back to the Version check", async () => {
     const data = dataset();
     const wb = await roundTrip(data);

@@ -131,3 +131,47 @@ export function formatYmdLong(ymd: string): string {
 export function formatMonthLabel(y: number, m: number): string {
   return `${MONTH_NAMES[m]} ${y}`;
 }
+
+const MONTH_PREFIXES = MONTH_NAMES.map((n) => n.slice(0, 3).toLowerCase());
+
+/** 2-digit years are 20xx; 4-digit years pass through; anything else is invalid (-1). */
+function fullYear(s: string): number {
+  if (/^\d{2}$/.test(s)) return 2000 + Number(s);
+  if (/^\d{4}$/.test(s)) return Number(s);
+  return -1;
+}
+
+function build(y: number, m: number, d: number): string | null {
+  if (y < 1000 || y > 9999 || m < 0 || m > 11 || d < 1 || d > daysInMonth(y, m)) return null;
+  return toYmd(y, m, d);
+}
+
+/**
+ * A date typed by hand → "YYYY-MM-DD". "" (blank) → "" (no date); null = not a date.
+ * Accepts MM/DD/YY, MM/DD/YYYY, M/D/YY (also with - or .), YYYY-MM-DD (or YYYY/MM/DD),
+ * "Jan 31 2026", "Jan 31, 2026", "January 31, 2026" and "31 Jan 2026". Two-digit years are 20xx.
+ *
+ * @example
+ *   parseDateText("1/31/27");       // "2027-01-31"
+ *   parseDateText("Jan 31, 2026");  // "2026-01-31"
+ *   parseDateText("2/30/2026");     // null
+ */
+export function parseDateText(text: string): string | null {
+  const s = text.trim().replace(/\s+/g, " ");
+  if (!s) return "";
+  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(s);
+  if (m) return build(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})$/.exec(s);
+  if (m) return build(fullYear(m[3]!), Number(m[1]) - 1, Number(m[2]));
+  const month = (name: string) => {
+    const n = name.toLowerCase().replace(/\.$/, "");
+    if (n.length < 3) return -1;
+    const i = MONTH_PREFIXES.indexOf(n.slice(0, 3));
+    return i >= 0 && MONTH_NAMES[i]!.toLowerCase().startsWith(n === "sept" ? "sep" : n) ? i : -1;
+  };
+  m = /^([a-z]+\.?) (\d{1,2})(?:st|nd|rd|th)?,? (\d{2}|\d{4})$/i.exec(s);
+  if (m) return build(fullYear(m[3]!), month(m[1]!), Number(m[2]));
+  m = /^(\d{1,2}) ([a-z]+\.?),? (\d{2}|\d{4})$/i.exec(s);
+  if (m) return build(fullYear(m[3]!), month(m[2]!), Number(m[1]));
+  return null;
+}

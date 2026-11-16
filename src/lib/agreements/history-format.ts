@@ -21,7 +21,8 @@ export const FIELD_LABELS: Record<string, string> = {
   serverInstall: "Server install",
   lastServerSo: "Last server SO #",
   qwebLicenses: "QWEB licenses",
-  notes: "Notes",
+  notes: "Internal notes",
+  aliases: "Also known as",
   customer: "Customer",
   // settings
   tierLowMax: "First tier limit",

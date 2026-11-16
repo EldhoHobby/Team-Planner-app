@@ -22,7 +22,7 @@ export default async function SystemsPage({ searchParams }: { searchParams: Prom
   const [systems, canEdit, customers] = await Promise.all([
     listSystems(scope),
     canEditAgreements(scope),
-    prisma.saCustomer.findMany({ where: { orgId: scope.ctx.orgId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.saCustomer.findMany({ where: { orgId: scope.ctx.orgId }, select: { id: true, name: true, aliases: true }, orderBy: { name: "asc" } }),
   ]);
   return (
     <div className="mx-auto max-w-5xl space-y-4">

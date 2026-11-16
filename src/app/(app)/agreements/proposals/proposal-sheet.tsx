@@ -7,7 +7,7 @@ import { useDraft } from "../use-draft";
 import {
   AGREEMENT_LABELS, CUSTOMER_STATUS_LABELS, SA_AGREEMENTS, SOFTWARE_LABELS, fmtMoney, fmtYmd, type SaAgreement,
 } from "@/lib/agreements/constants";
-import { applyPct, pctBetween } from "@/lib/agreements/pricing";
+import { applyPct, comparablePrice, pctBetween, prorateMonths } from "@/lib/agreements/pricing";
 import type { ProposalDetail } from "@/lib/services/agreements/proposals";
 
 // The renewal proposal drawn cell for cell like the monthly workbook's customer sheet (which
@@ -117,10 +117,10 @@ function ScreenPrint({ screen, print }: { screen: string; print: string }) {
   );
 }
 
-function Row({ cells, h }: { cells: Cell[]; h?: number }) {
+function Row({ cells, h, className }: { cells: Cell[]; h?: number; className?: string }) {
   const used = cells.reduce((a, c) => a + (c.span ?? 1), 0);
   return (
-    <tr style={{ height: `${(h ?? 15) / 10}em` }}>
+    <tr style={{ height: `${(h ?? 15) / 10}em` }} className={className}>
       {cells.map((c, i) => <Td key={i} c={c} />)}
       {used < COLS && <td colSpan={COLS - used} />}
     </tr>
@@ -132,6 +132,22 @@ function Row({ cells, h }: { cells: Cell[]; h?: number }) {
  * Inputs are never disabled while a save runs, so Tab moves on and typing keeps going.
  */
 type Commit<T> = (v: T) => Promise<boolean> | void;
+type Line = ProposalDetail["proposal"]["lines"][number];
+
+/** "Apr 1, 2027" style for the proration notes (fixed en-US, same on server and browser). */
+function longDate(ymd: string | null): string {
+  if (!ymd) return "";
+  const [y, m, d] = ymd.split("-").map(Number);
+  return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m! - 1]} ${d}, ${y}`;
+}
+
+/** Printed under the proposal for each prorated line, so the customer understands the part-year price. */
+export function prorationLine(l: Line, endDate: string | null): string | null {
+  if (l.prorateMonths === null || l.fullPrice === null) return null;
+  const span = l.prorateStart && endDate ? ` (${longDate(l.prorateStart)} – ${longDate(endDate)})` : "";
+  return `${AGREEMENT_LABELS[l.agreement]}: prorated ${l.prorateMonths} month${l.prorateMonths === 1 ? "" : "s"}${span} — ` +
+    `${fmtMoney(l.fullPrice)} full year × ${l.prorateMonths}/12 = ${fmtMoney(l.price)}.`;
+}
 
 export function ProposalSheet({
   d,
@@ -142,10 +158,19 @@ export function ProposalSheet({
   onAdd,
   onRemove,
   onNotes,
+  onProrate,
+  onFullPrice,
+  printIncrease = true,
 }: {
   d: ProposalDetail;
   printDate: string;
   editable?: boolean;
+  /** Opens the parent's "Prorate…" dialog for a line (editors only). */
+  onProrate?: (line: Line) => void;
+  /** A prorated line's Increase % was typed: the new FULL-year price (the parent re-prorates it). */
+  onFullPrice?: (line: Line, fullPrice: number) => Promise<boolean> | void;
+  /** False = the printed sheet leaves out the price history's increase row (the screen keeps it). */
+  printIncrease?: boolean;
   onPrice?: (line: ProposalDetail["proposal"]["lines"][number], price: number) => Promise<boolean> | void;
   onEndDate?: Commit<string | null>;
   /** Add an agreement (an empty yellow price cell's "+"); the parent asks for the price. `suggested` = its latest signed price. */
@@ -170,6 +195,8 @@ export function ProposalSheet({
   const spanYears = h.signedYears.length;
   const increaseLabel = spanYears >= 2 ? `${spanYears}-year increase` : "Increase";
   const fraction = (percent: number | null | undefined) => (percent === null || percent === undefined ? null : percent / 100);
+  const prorated = p.lines.filter((l) => l.prorateMonths !== null);
+  const showProrateRow = prorated.length > 0 || (editable && !!onProrate);
 
   const label = (v: string, extra: Partial<Cell> = {}): Cell => ({ v, b: true, fill: LABEL, edge: true, ...extra });
   const value = (v: ReactNode, span: number, extra: Partial<Cell> = {}): Cell => ({ v, span, edge: true, ...extra });
@@ -210,7 +237,8 @@ export function ProposalSheet({
               label("QWEB licenses"), value(c.qwebLicenses?.toString() ?? "", 4),
             ]} />
             <Row cells={[label("Next end date"), value(mmddyy(c.nextEndDate), 3, { align: "left" })]} />
-            <Row cells={[label("Notes"), value(<span className="whitespace-pre-wrap">{c.notes}</span>, 14, { wrap: true, align: "left" })]} />
+            {/* The customer's notes are INTERNAL: shown on screen, never printed. */}
+            <Row className="print:hidden" cells={[label("Internal notes"), value(<span className="whitespace-pre-wrap">{c.notes}</span>, 14, { wrap: true, align: "left" })]} />
             <Row cells={[]} />
 
             {/* PRICE HISTORY */}
@@ -227,7 +255,7 @@ export function ProposalSheet({
                 window (blank when the oldest window year has no signed price). On SCREEN the row shows the
                 increase over the signed years actually there, oldest → newest — the same figures as the
                 customer page — labelled honestly ("3-year increase"). */}
-            <Row cells={[
+            <Row className={printIncrease ? undefined : "print:hidden"} cells={[
               { v: <ScreenPrint screen={increaseLabel} print="5-year increase" />, b: true, i: true, fill: LABEL, align: "center", edge: true },
               ...SA_AGREEMENTS.map((a): Cell => ({
                 v: <ScreenPrint screen={pct(fraction(h.increase[a]))} print={pct(growth(first?.prices[a], last?.prices[a]))} />,
@@ -272,11 +300,20 @@ export function ProposalSheet({
                 // the rest are plain blank cells, like the cells to the right of the table.
                 if (!l || !escalates.has(a)) return {};
                 const base = l.lastPrice ?? first?.prices[a];
-                const change = base ? pctBetween(base, l.price) : null; // percent, one decimal
-                const canEdit = editable && !!base && !!onPrice;
+                // A prorated line compares its FULL-year price (+5%, not the part-year's −12.5%).
+                const change = base ? pctBetween(base, comparablePrice(l)) : null; // percent, one decimal
+                const isProrated = l.prorateMonths !== null;
+                const canEdit = editable && !!base && (isProrated ? !!onFullPrice : !!onPrice);
                 return {
                   v: canEdit
-                    ? <EditCell value={change} suffix="%" ariaLabel={`${AGREEMENT_LABELS[a]} increase %`} onCommit={(v) => onPrice!(l, applyPct(base!, v))} />
+                    ? (
+                      <EditCell
+                        value={change}
+                        suffix="%"
+                        ariaLabel={`${AGREEMENT_LABELS[a]} increase %${isProrated ? " (full-year price)" : ""}`}
+                        onCommit={(v) => (isProrated ? onFullPrice!(l, applyPct(base!, v)) : onPrice!(l, applyPct(base!, v)))}
+                      />
+                    )
                     : change === null ? "" : `${change.toFixed(1)}%`,
                   fill: INPUT, align: "center", edge: true, pad0: canEdit,
                 };
@@ -329,8 +366,50 @@ export function ProposalSheet({
               }),
               { v: money(total), b: true, fill: LABEL, align: "right", edge: true },
             ]} />
+            {showProrateRow && (
+              <Row className="print:hidden" cells={[
+                { v: prorated.length ? "Prorated" : "", i: true, size: 8, color: MUTED, align: "center" },
+                ...SA_AGREEMENTS.map((a): Cell => {
+                  const l = byAgreement.get(a);
+                  if (!l) return {};
+                  const isProrated = l.prorateMonths !== null;
+                  // The end date moved since the proration was saved: the months no longer match.
+                  const drift = isProrated && l.prorateStart && p.endDate && prorateMonths(l.prorateStart, p.endDate) !== l.prorateMonths;
+                  return {
+                    v: (
+                      <span className="block leading-tight">
+                        {isProrated && (
+                          <span className="block" title={`Full-year price ${fmtMoney(l.fullPrice)}, charged for ${l.prorateMonths} of 12 months`}>
+                            {l.prorateMonths} mo · full yr {fmtMoney(l.fullPrice)}
+                          </span>
+                        )}
+                        {drift && <span className="block font-semibold text-amber-700">End date changed — re-check</span>}
+                        {editable && onProrate && (
+                          <button
+                            type="button"
+                            onClick={() => onProrate(l)}
+                            aria-label={`${isProrated ? "Change the proration of" : "Prorate"} ${AGREEMENT_LABELS[a]}`}
+                            className="text-blue-700 underline-offset-2 hover:underline"
+                          >
+                            {isProrated ? "Change…" : "Prorate…"}
+                          </button>
+                        )}
+                      </span>
+                    ),
+                    i: true, size: 8, color: MUTED, align: "center", wrap: true,
+                  };
+                }),
+              ]} />
+            )}
           </tbody>
         </table>
+
+        {/* Each prorated line explained in words — on screen and in print. */}
+        {prorated.length > 0 && (
+          <div className="mt-1" style={{ fontSize: "0.9em" }}>
+            {prorated.map((l) => <p key={l.id}><i>{prorationLine(l, p.endDate)}</i></p>)}
+          </div>
+        )}
 
         {editable && onNotes ? (
           <>
@@ -338,7 +417,13 @@ export function ProposalSheet({
             {p.notes && <p className="mt-2 hidden whitespace-pre-wrap print:block"><b>Notes: </b>{p.notes}</p>}
           </>
         ) : (
-          p.notes && <p className="mt-2 whitespace-pre-wrap"><b>Notes: </b>{p.notes}</p>
+          p.notes && (
+            <p className="mt-2 whitespace-pre-wrap">
+              <b>Notes: </b>
+              <span className="text-[9pt] italic print:hidden" style={{ color: MUTED }}>(for the customer — printed) </span>
+              {p.notes}
+            </p>
+          )
         )}
 
         <footer className="sa-footer hidden pt-2 text-center print:block" style={{ fontSize: "0.9em" }}>
@@ -409,8 +494,8 @@ function NotesBox({ value, onCommit }: { value: string | null; onCommit: Commit<
   return (
     <label className="mt-3 block text-[10pt] print:hidden" style={{ fontFamily: "Arial, Helvetica, sans-serif" }}>
       <span className="flex items-baseline justify-between gap-2">
-        <b>Notes</b>
-        <span className="text-[9pt] italic" style={{ color: MUTED }}>{dirty ? "Unsaved — click outside the box to save" : "Printed under the proposal"}</span>
+        <b>Notes for the customer — printed</b>
+        <span className="text-[9pt] italic" style={{ color: MUTED }}>{dirty ? "Unsaved — click outside the box to save" : "Printed under the proposal; keep internal notes on the customer"}</span>
       </span>
       <textarea
         value={draft}
@@ -446,7 +531,7 @@ function EndDateCell({ value, onCommit }: { value: string | null; onCommit: Comm
             setDraft(v);
             if ((v || null) !== value) settle(onCommit(v || null));
           }}
-          className="h-auto justify-center gap-1.5 rounded-none border-0 px-1 py-0 text-[length:inherit] font-bold text-black shadow-none"
+          className="h-auto justify-center gap-1.5 rounded-none border-0 px-1 py-0 text-center text-[length:inherit] font-bold text-black shadow-none"
         />
       </div>
       <span className="hidden print:inline">{mmddyy(value)}</span>

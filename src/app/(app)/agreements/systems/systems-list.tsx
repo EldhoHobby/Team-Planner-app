@@ -262,8 +262,8 @@ export function SystemsList({
   systems, customers, canEdit, today, initialQ = "",
 }: {
   systems: SystemRow[];
-  /** Agreement customers a new system can be added to. */
-  customers: { id: string; name: string }[];
+  /** Agreement customers a new system can be added to (aliases = "also known as" names, searched too). */
+  customers: { id: string; name: string; aliases?: string | null }[];
   canEdit: boolean;
   /** Eastern "today" (YYYY-MM-DD) from the server. */
   today: string;
@@ -279,8 +279,11 @@ export function SystemsList({
 
   const shown = useMemo(() => {
     const test = SYSTEM_FILTERS.find((f) => f.key === show)!.test;
-    return systems.filter((s) => matchesSystemQuery(s, q) && test(systemFlags(s, today)));
-  }, [systems, q, show, today]);
+    const aka = new Map(customers.map((c) => [c.id, c.aliases ?? ""]));
+    // The customer's "also known as" names are searched along with its name.
+    const searchable = (s: SystemRow) => (aka.get(s.customerId) ? { ...s, customerName: `${s.customerName} ${aka.get(s.customerId)}` } : s);
+    return systems.filter((s) => matchesSystemQuery(searchable(s), q) && test(systemFlags(s, today)));
+  }, [systems, customers, q, show, today]);
   const open = openId ? systems.find((s) => s.id === openId) ?? null : null;
 
   const exportXlsx = async () => {

@@ -30,6 +30,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const canSeeFsStatus = effMembership
     ? await pageVisibleTo("fsStatus", { orgId: effMembership.orgId, userId: user.id, isOrgAdmin: isAdmin })
     : false;
+  const canSeeTracker = effMembership
+    ? await pageVisibleTo("tracker", { orgId: effMembership.orgId, userId: user.id, isOrgAdmin: isAdmin })
+    : false;
 
   // "View as" is an OWNER-only testing tool (checked against the REAL user).
   let viewAs: { people: { id: string; label: string }[]; currentId: string; selfId: string } | undefined;
@@ -70,11 +73,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </a>
       <ThemeSync theme={user.theme ?? null} />
       {/* md and up: fixed sidebar column. Below md: MobileNav's top bar + drawer. */}
-      <NavSidebar user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} canSeeFsStatus={canSeeFsStatus} viewAs={viewAs} />
+      <NavSidebar user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} canSeeFsStatus={canSeeFsStatus} canSeeTracker={canSeeTracker} viewAs={viewAs} />
       {/* min-w-0 lets this column shrink below its content's width, so wide
           tables scroll inside their own container instead of stretching the shell. */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden print:block print:overflow-visible">
-        <MobileNav user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} canSeeFsStatus={canSeeFsStatus} viewAs={viewAs} />
+        <MobileNav user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} canSeeFsStatus={canSeeFsStatus} canSeeTracker={canSeeTracker} viewAs={viewAs} />
         {actor.impersonating ? <ViewAsBanner targetLabel={displayHandle(user)} /> : null}
         <main
           id="main-content"
