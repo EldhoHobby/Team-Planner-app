@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/client";
 import { getSessionActor } from "@/lib/auth/session";
 import { displayHandle } from "@/lib/users";
 import { agreementsVisibleTo } from "@/lib/services/agreements/common";
+import { pageVisibleTo } from "@/lib/services/page-access";
 import { NavSidebar } from "@/components/nav-sidebar";
 import { MobileNav } from "@/components/mobile-nav";
 import { ViewAsBanner } from "@/components/view-as";
@@ -24,6 +25,10 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   // Agreements can be limited to chosen people (Agreements → Settings).
   const canSeeAgreements = effMembership
     ? await agreementsVisibleTo({ orgId: effMembership.orgId, userId: user.id, isOrgAdmin: isAdmin })
+    : false;
+  // So can Field Service Status (its Access button).
+  const canSeeFsStatus = effMembership
+    ? await pageVisibleTo("fsStatus", { orgId: effMembership.orgId, userId: user.id, isOrgAdmin: isAdmin })
     : false;
 
   // "View as" is an OWNER-only testing tool (checked against the REAL user).
@@ -65,11 +70,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </a>
       <ThemeSync theme={user.theme ?? null} />
       {/* md and up: fixed sidebar column. Below md: MobileNav's top bar + drawer. */}
-      <NavSidebar user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} viewAs={viewAs} />
+      <NavSidebar user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} canSeeFsStatus={canSeeFsStatus} viewAs={viewAs} />
       {/* min-w-0 lets this column shrink below its content's width, so wide
           tables scroll inside their own container instead of stretching the shell. */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden print:block print:overflow-visible">
-        <MobileNav user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} viewAs={viewAs} />
+        <MobileNav user={navUser} isAdmin={isAdmin} canSeeAgreements={canSeeAgreements} canSeeFsStatus={canSeeFsStatus} viewAs={viewAs} />
         {actor.impersonating ? <ViewAsBanner targetLabel={displayHandle(user)} /> : null}
         <main
           id="main-content"

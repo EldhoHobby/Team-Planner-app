@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, CalendarX, Clock, Database, Handshake, FolderOpen, History, LayoutDashboard, LifeBuoy, ListChecks, Mail, ScrollText, UserRound, Users } from "lucide-react";
+import { CalendarDays, CalendarX, ClipboardCheck, Clock, Database, Handshake, FolderOpen, History, LayoutDashboard, LifeBuoy, ListChecks, Mail, ScrollText, UserRound, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -19,6 +19,8 @@ type NavItem = {
   adminOnly?: boolean;
   /** Shown only to people allowed to see the service agreements. */
   agreements?: boolean;
+  /** Shown only to people allowed to see Field Service Status. */
+  fsStatus?: boolean;
   /** Other path prefixes that also light this item up (pages reached from it). */
   also?: string[];
 };
@@ -31,6 +33,7 @@ function isActive(item: NavItem, pathname: string): boolean {
 const WORK_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
+  { href: "/fs-status", label: "Field Service Status", icon: ClipboardCheck, fsStatus: true },
   { href: "/tasks", label: "Tasks", icon: ListChecks, adminOnly: true },
   { href: "/timesheet", label: "Timesheet", icon: Clock, adminOnly: true },
   { href: "/projects", label: "Projects", icon: FolderOpen, adminOnly: true },
@@ -56,6 +59,8 @@ export interface NavProps {
   isAdmin: boolean;
   /** Whether the effective user may see the service agreements (Agreements → Settings → Who can see). */
   canSeeAgreements: boolean;
+  /** Whether the effective user may see Field Service Status (its Access button). */
+  canSeeFsStatus: boolean;
   /** OWNER-only "view as" picker data; omitted for everyone else. */
   viewAs?: { people: ViewAsPerson[]; currentId: string; selfId: string };
 }
@@ -132,6 +137,7 @@ export function NavPanel({
   user,
   isAdmin,
   canSeeAgreements,
+  canSeeFsStatus,
   viewAs,
   idPrefix,
   onNavigate,
@@ -143,7 +149,7 @@ export function NavPanel({
 }) {
   const pathname = usePathname();
   const onAccount = pathname.startsWith("/settings/account");
-  const workNav = WORK_NAV.filter((i) => (!i.adminOnly || isAdmin) && (!i.agreements || canSeeAgreements));
+  const workNav = WORK_NAV.filter((i) => (!i.adminOnly || isAdmin) && (!i.agreements || canSeeAgreements) && (!i.fsStatus || canSeeFsStatus));
   return (
     <>
       <nav aria-label="Main" className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain p-2">

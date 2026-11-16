@@ -3,6 +3,7 @@ import { ChevronRight, ClipboardList, Handshake } from "lucide-react";
 import { requireAgreementsAccess } from "@/app/(app)/agreements/access";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
+import { PageAccessButton } from "@/components/page-access-button";
 import { PageHeader } from "@/components/ui/page-header";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +31,11 @@ export default async function CustomerServicePage() {
   await requireAgreementsAccess(scope);
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-4 md:p-6">
-      <PageHeader title="Customer Service" description="Choose where to go." />
+      <PageHeader
+        title="Customer Service"
+        description="Choose where to go."
+        actions={scope.ctx.isOrgAdmin ? <PageAccessButton page="customerService" covers="Covers Agreements and Open POs: who can see them and who can change them." /> : undefined}
+      />
       <div className="grid gap-4 sm:grid-cols-2">
         {ITEMS.map(({ href, label, text, icon: Icon }) => (
           <Link

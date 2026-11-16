@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db/client";
 import { requireAuth } from "@/lib/auth/guard";
 import { requireScope } from "@/lib/auth/current-user";
 import { canEditAgreements, canViewAgreements } from "@/lib/services/agreements/common";
+import { canEditFsStatus } from "@/lib/services/fs-status";
 
 // End-user guide. Every button / heading named here is the label the screen actually shows —
 // when a screen's wording changes, update it here too. The page shows only what applies to the
@@ -21,6 +22,7 @@ const SECTIONS: { id: string; title: string; for: Audience }[] = [
   { id: "getting-around", title: "Getting around", for: "everyone" },
   { id: "dashboard", title: "Your dashboard and tasks", for: "everyone" },
   { id: "schedule", title: "The schedule", for: "everyone" },
+  { id: "fs-status", title: "Field service status", for: "everyone" },
   { id: "timesheet", title: "Timesheet", for: "admin" },
   { id: "agreements", title: "Service agreements", for: "agreements" },
   { id: "open-pos", title: "Open POs", for: "agreements" },
@@ -85,9 +87,10 @@ export default async function HelpPage() {
   await requireAuth();
   const { scope } = await requireScope();
   const isAdmin = scope.ctx.isOrgAdmin;
-  const [seesAgreements, editsAgreements, managerOf, managerLinks] = await Promise.all([
+  const [seesAgreements, editsAgreements, editsFs, managerOf, managerLinks] = await Promise.all([
     canViewAgreements(scope),
     canEditAgreements(scope),
+    canEditFsStatus(scope),
     prisma.teamMembership.count({ where: { userId: scope.ctx.userId, role: "MANAGER", team: { orgId: scope.ctx.orgId } } }),
     prisma.managerLink.count({ where: { orgId: scope.ctx.orgId, managerId: scope.ctx.userId } }),
   ]);
@@ -129,6 +132,7 @@ export default async function HelpPage() {
           <ul className={UL}>
             <li><UI>Dashboard</UI> — your open tasks{managesPeople ? " and your people's" : ""}, plus the jobs you&apos;re booked on.</li>
             <li><UI>Schedule</UI> — the field-service board: who is on which job, on which days.</li>
+            <li><UI>Field Service Status</UI> — field service hours on each sales order: quoted, used and left.</li>
             {isAdmin && <li><UI>Tasks</UI> — tasks organised under projects (admins only).</li>}
             {isAdmin && <li><UI>Timesheet</UI> — enter your hours for the week and produce the timesheet Excel file (admins only).</li>}
             {isAdmin && <li><UI>Projects</UI> — the projects that group the tasks on the Tasks page (admins only).</li>}
@@ -331,6 +335,99 @@ export default async function HelpPage() {
               <li>The end date is worked out from the start date and the number of days.</li>
             </ol>
           </HowTo>
+        </Section>
+
+        {/* ─────────────── Field service status ─────────────── */}
+        <Section id="fs-status" title="Field service status">
+          <p className={P}>
+            <UI>Field Service Status</UI> is a sheet of the sales orders that have field service, one row per SO #,
+            laid out like the FS Status workbook. It scrolls both ways; the header row and the SYS# and Customer
+            columns stay in place. A row shows the job details, comments, the hours sold on the
+            quote, the hours used so far and what is left (in red when the order has gone over), and what the{" "}
+            <UI>Schedule</UI> holds for the same SO #: trips done, the next trip, and any trip whose dates have
+            passed without being marked completed. The buttons above the sheet pick what is shown: <UI>Open</UI>,{" "}
+            <UI>On weekly report</UI>, <UI>Not on weekly report</UI>, <UI>Closed, field work remaining</UI>,{" "}
+            <UI>Closed</UI> or <UI>All</UI>. As in the workbook, a yellow Customer cell means not on the weekly
+            status report, and yellow Customer and Job details cells mean closed.{" "}
+            {editsFs
+              ? "You can make changes here."
+              : "You can look but not change anything; admins and the people they chose keep the list."}
+          </p>
+          <p className={P}>
+            <UI>Print</UI> (top right) prints what is on screen, laid out like the Excel export: landscape, the
+            same columns (without Status and Label) and yellow cells, every row the same height. Pick a <UI>Show</UI> button or search
+            first to print only those orders; in the print window you can also choose <UI>Save as PDF</UI>.
+          </p>
+          <p className={P}>
+            Clicking {editsFs ? "the SYS# of a row" : "a row"} shows the full quote breakdown and comments, every
+            trip on the Schedule and the full history of the order. The hours used are typed, not worked out; the
+            completed Schedule days are shown beside them (at 8 hours a day) so you can check one against the other.
+          </p>
+          {isAdmin && (
+            <HowTo summary="Choose who can see and change this page (admins)">
+              <p>
+                <UI>Access</UI> (top right) lists everyone. Pick <UI>Everyone in the organization</UI> or{" "}
+                <UI>Only the people ticked</UI>, tick <UI>Can see</UI> and <UI>Can change</UI> per person, then{" "}
+                <UI>Save</UI>. Admins always can do both, and someone who can change the page can also see it.
+                People who can&apos;t see it don&apos;t get it in the sidebar. The same button is on the{" "}
+                <UI>Customer Service</UI> page, where it covers Agreements and Open POs.
+              </p>
+            </HowTo>
+          )}
+          {editsFs && (
+            <>
+              <HowTo summary="Type into the sheet">
+                <p>
+                  Click a cell and type, as in Excel: <UI>Customer</UI>, <UI>Job details</UI>, <UI>Comments</UI>,
+                  the three hours columns and <UI>Quote F/S breakdown</UI>. <UI>Enter</UI> or clicking elsewhere
+                  saves the cell, <UI>Esc</UI> puts back what was there, and <UI>Alt+Enter</UI> starts a new line
+                  inside the cell. <UI>Tab</UI> moves to the next cell and <UI>Enter</UI> opens it. <UI>Status</UI>{" "}
+                  is a list to pick from: <UI>Open, on weekly report</UI>, <UI>Open, not on weekly report</UI>,{" "}
+                  <UI>Closed, field work remaining</UI> or <UI>Closed</UI>. Each cell is saved on its
+                  own, and <UI>Saved</UI> shows at the top right. The quote breakdown and the Schedule share one column: the
+                  breakdown on top is yours to type, the <UI>On the Schedule</UI> line under it comes from the
+                  Schedule. <UI>Remaining field service</UI> is worked out. Write the latest news in{" "}
+                  <UI>Comments</UI>. Every change is kept in the
+                  order&apos;s history.
+                </p>
+              </HowTo>
+              <HowTo summary="Copy the SYS# line of an order">
+                <p>
+                  The <UI>Label</UI> column holds the line used for folders and email subjects, for example{" "}
+                  <UI>QEI SYS#24004 - JQM/MNR</UI>. Click it and it is copied, ready to paste. It follows the SO #
+                  and the customer name, so it changes when you change either.
+                </p>
+              </HowTo>
+              <HowTo summary="Add an order, or change its details">
+                <p>
+                  <UI>Add order</UI> (top right) adds a new SO #. <UI>Details</UI> on a row changes the customer, job
+                  details, status, the hours, the quote breakdown and
+                  the comments. An SO # that has jobs on the Schedule but is not on the list is shown in an amber
+                  box at the bottom, with an <UI>Add</UI> button.
+                </p>
+              </HowTo>
+              <HowTo summary="Bring in the CS FS STATUS workbook">
+                <p>
+                  Click <UI>Import</UI> and choose the workbook. You see what would be added and changed before
+                  anything is saved. Rows are matched by SO #; nothing is deleted. The yellow cells are read:
+                  Customer highlighted means not on the weekly status report, Customer and Job Details highlighted
+                  means closed, and everything on the Keep sheet is closed with field work remaining.{" "}
+                </p>
+              </HowTo>
+              <HowTo summary="Work on the list in Excel and bring it back">
+                <p>
+                  <UI>Export</UI> gives every order on one sheet, laid out like the FS Status workbook: the same
+                  columns, the yellow cells, the hours left in red when an order has gone over, and an{" "}
+                  <UI>On the Schedule</UI> column with the trips. Change what you need, pick the <UI>Status</UI>{" "}
+                  from its list (the yellow cells follow it), or type a new SO # on the next empty row. Then{" "}
+                  <UI>Import</UI> the file: you see what would change before it is saved. The grey cells (
+                  <UI>Remaining field service</UI>, <UI>On the Schedule</UI>, <UI>Label</UI>) are filled in by the
+                  app and are not read back. Every row has the same height; a cell with more text than fits
+                  still holds all of it. Nothing is deleted, and the Schedule is never changed.
+                </p>
+              </HowTo>
+            </>
+          )}
         </Section>
 
         {/* ─────────────── Timesheet ─────────────── */}
