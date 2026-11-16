@@ -262,6 +262,7 @@ src/app/(app)/schedule/            # FIELD-SERVICE DASHBOARD — timeline + cale
                                    #   backlog, drag-drop, dialogs (the main feature)
 src/app/(app)/tasks/               # generic task list + field-service job actions
 src/app/(app)/timesheet/           # per-user weekly QEI timesheet (grid + Excel gen)
+src/app/(app)/fs-status/           # Field Service Status: hours per sales order + its Schedule trips
 src/app/(app)/projects/            # project list + create/archive
 src/app/(app)/settings/account/    # profile + secure password change
 src/app/(app)/settings/people/     # UNIFIED people + departments admin: person CRUD
@@ -637,6 +638,52 @@ host normally has no npm — Docker is the supported path).
   Last server SO # / SO #, else name (reported as a warning); a "QVISION" heading row switches the product.
   Backups: `saSystems` key in the full backup; "Restore agreements only" replaces them with the customers
   (a file without the key keeps the current systems of customers that come back).
+- **Field Service Status (v0.1.4):** `/fs-status`, its own sidebar item under Work. **Access is set by an admin with
+  the page's "Access" button** (`src/components/page-access-button.tsx`, actions `src/app/(app)/page-access-actions.ts`,
+  service `src/lib/services/page-access.ts`): per page two work groups - viewers (missing / archived = everyone
+  sees it) and editors. Field Service Status = "Field Service Status Viewers" / "Field Service Status Editors"
+  (until first saved, its editors are the "Customer Service" group); the same button on `/customer-service`
+  manages "Agreements Viewers" / "Customer Service" (Agreements + Open POs; rules unchanged in
+  `agreements/common.ts`). `canViewFsStatus` / `canEditFsStatus` gate the page, print view, services and the
+  sidebar item (`canSeeFsStatus`). One row per sales order
+  (SO # = SYS# = `Task.soNumber` of the Schedule's jobs): model `FsOrder` (unique `orgId + soNumber`; status
+  OPEN / CLOSED_WORK_LEFT ("Closed, field work remaining" - the workbook's Keep sheet) / CLOSED; `onWeeklyReport`
+  tick; `quoteHrs`, `etcHrs`, `hrsToDate` - **typed, not computed**; `breakdown`, `comments`; last update columns;
+  `version`), migration `20261114090000_fs_order`. Remaining = quote - hours to date (negative = over, shown red).
+  Pure rules + sheet columns in `src/lib/fs-status/rules.ts` (tested), service `src/lib/services/fs-status.ts`
+  (`listFsOrders` also reads the Schedule's jobs per SO # - trips done / next / not dated / past but not marked
+  completed, working days Mon-Fri - and returns `scheduleOnly`, the SO numbers the Schedule uses that are not on
+  the list; `createFsOrder`, `updateFsOrder` - field changes AND logged updates go to ChangeHistory entity
+  `fs_order` in the same transaction, optimistic `version` - `deleteFsOrder`, `listFsHistory`,
+  `buildFsStatusWorkbook`, `runFsStatusImport`), page + dialogs in `src/app/(app)/fs-status/`, export
+  `GET /api/fs-status/export`. The page is ONE spreadsheet-like grid (the user's request): scrolls both ways,
+  header row + SYS# / Customer columns frozen (`border-separate` table, sticky cells), the workbook's columns and
+  its yellow cells (Customer = not on the weekly report, Customer + Job details = closed), "Show" buttons (Open /
+  On weekly report / Not on weekly report / Closed, field work remaining / Closed / All). **Editors type straight
+  into the cells** (`EditCell`: click / Enter / F2 edits, Enter or blur saves, Esc cancels, Alt+Enter = new line;
+  Status is ONE select of four choices - Open, on weekly report / Open, not on weekly report / Closed, field
+  work remaining / Closed - that sets `status` + `onWeeklyReport` together (`fieldsOfGroup` / `groupKeyOf` /
+  `parseFsChoice`; there is no separate weekly-report column on the page or in the Excel sheet, whose Status
+  column holds the same four labels); Remaining is worked out; the quote breakdown and the
+  Schedule line share ONE column; there is NO "latest update" on the page or the sheet - the user keeps the
+  news in Comments (the `lastUpdate*` DB columns are unused); a **Label** column shows `fsLabel()` =
+  "QEI SYS#24004 - JQM/MNR" and copies it on click):
+  `saveFsCellAction` saves ONE field and returns the order's new `version`; the client keeps a serial save queue
+  + a per-order version map + an optimistic overlay (`edits`), refreshes when the queue drains, and shows
+  `SaveStatus`. Frozen cells need OPAQUE backgrounds (no `/30` tints) or scrolled columns show through. The SYS#
+  opens the Update dialog (for non-editors the whole row does). The Excel export (`buildFsStatusWorkbook`) is laid
+  out like the CS FS STATUS workbook: title in row 1, header in row 2, all orders on ONE sheet, frozen SYS# /
+  Customer, filters, the yellow cells and red "over" as CONDITIONAL FORMATTING off the Status column (a list
+  validation fed from the README sheet), Remaining + Label as formulas, an "On the Schedule" column
+  (`scheduleLine`); grey = `FS_EXPORT_ONLY`, ignored on import; every data row has ONE standard height
+  (`FS_ROW_LINES` = 5 lines; the user's request - longer text is cut off in view, not lost). **Print** button ->
+  `/fs-status/print?show=&q=` (`print/page.tsx`, printed in place via `printInFrame`): the same sheet as an
+  HTML table, Letter landscape, same columns minus Status and Label (the user's request) / yellow cells / row height. Excel import takes the app's own export OR the **CS FS STATUS** workbook as it is (every
+  sheet with a SYS# header row; no Status column -> the yellow cells are read: Customer highlighted = not on the
+  weekly report, Customer + Job Details highlighted = closed, the "Keep" sheet = closed with field work
+  remaining - `readHighlights` / `isHighlighted`); rows matched by SO #, written through the services. Jobs on
+  the Schedule are never changed from this page. Included in the full backup (`fsOrders` key; a file without the
+  key keeps the current orders and their history); NOT part of Settings -> Data -> Reset.
 - **Next ideas:** recurring jobs, project-linking in the New Job dialog,
   daily agenda email, AI scheduling suggestions, reports page, customers
   directory.

@@ -7,6 +7,7 @@ import { verifyPassword } from "@/lib/auth/password";
 import { clearRateLimit, isRateLimited, registerFailure, WINDOW_MS } from "@/lib/auth/rate-limit";
 import { writeAudit } from "@/lib/services/audit";
 import { OPEN_PO_HISTORY_ENTITY } from "@/lib/open-po/rules";
+import { FS_HISTORY_ENTITY } from "@/lib/fs-status/rules";
 import {
   AGREEMENT_HISTORY_ENTITIES,
   BACKUP_FORMAT,
@@ -147,7 +148,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     workGroups, workGroupMemberships, projects, boards, boardColumns,
     tasks, taskAssignments, attachments, calendarEvents, timeOffs, technicianTimeOffs,
     holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
-    changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings, openPos, saSystems,
+    changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings, openPos, saSystems, fsOrders,
   ] = await Promise.all([
     prisma.user.findMany({ where: { memberships: { some: { orgId } } } }),
     prisma.membership.findMany({ where: { orgId } }),
@@ -182,6 +183,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
     prisma.saSettings.findMany({ where: { orgId } }),
     prisma.openPo.findMany({ where: { orgId } }),
     prisma.saSystem.findMany({ where: { orgId } }),
+    prisma.fsOrder.findMany({ where: { orgId } }),
   ]);
 
   // The file carries password hashes — every download is in the audit trail.
@@ -202,7 +204,7 @@ export async function buildFullBackup(scope: TenantScope): Promise<FullBackup> {
       workGroups, workGroupMemberships, projects, boards, boardColumns,
       tasks, taskAssignments, attachments, calendarEvents, timeOffs, technicianTimeOffs,
       holidays, timesheets, timesheetEntries, techTasks, techTaskNotes, jobNotes,
-      changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings, openPos, saSystems,
+      changeHistory, saCustomers, saProposals, saProposalLines, saContractLines, saCalls, saSettings, openPos, saSystems, fsOrders,
     },
   };
 }
@@ -445,11 +447,18 @@ export async function restoreFullBackup(
         await tx.openPo.deleteMany({ where: { orgId } });
         await tx.openPo.createMany({ data: reOrg(rows(backup, "openPos"), orgId) });
       }
+      // Field service status. Same rule again: replaced only when the file carries it.
+      const fileHasFsOrders = Array.isArray(backup.data?.fsOrders);
+      if (fileHasFsOrders) {
+        await tx.fsOrder.deleteMany({ where: { orgId } });
+        await tx.fsOrder.createMany({ data: reOrg(rows(backup, "fsOrders"), orgId) });
+      }
       if (fileHasHistory) {
         // History of whatever was KEPT above (not in the file) is kept with it.
         const keptEntities: string[] = [
           ...(fileHasAgreements ? [] : AGREEMENT_HISTORY_ENTITIES),
           ...(fileHasOpenPos ? [] : [OPEN_PO_HISTORY_ENTITY]),
+          ...(fileHasFsOrders ? [] : [FS_HISTORY_ENTITY]),
         ];
         await tx.changeHistory.deleteMany({
           where: keptEntities.length ? { orgId, entity: { notIn: keptEntities } } : { orgId },

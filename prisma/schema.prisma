@@ -46,6 +46,7 @@ model Organization {
   saCalls          SaCallsRepairs[]
   saSettings       SaSettings?
   openPos          OpenPo[]
+  fsOrders         FsOrder[]
   saSystems        SaSystem[]
 }
 
@@ -1078,4 +1079,42 @@ model SaSystem {
 
   @@unique([orgId, soNumber])
   @@index([orgId, customerId])
+}
+
+// Field service status: one row per sales order (SYS#) - the field-service hours sold on the
+// quote, the hours used so far and what is still to do. Replaces the "FS Status" sheet of the
+// CS FS STATUS workbook. soNumber equals Task.soNumber of the jobs on the Schedule (no FK:
+// jobs are free text), which is how the page shows each order's trips beside its hours.
+enum FsOrderStatus {
+  OPEN
+  CLOSED_WORK_LEFT // project closed, field work still owed (the "Keep" sheet)
+  CLOSED
+}
+
+model FsOrder {
+  id             String        @id @default(cuid())
+  orgId          String
+  soNumber       String // SYS# - unique per org
+  customer       String
+  jobDetails     String?
+  status         FsOrderStatus @default(OPEN)
+  onWeeklyReport Boolean       @default(true) // shown on the weekly status report
+  quoteHrs       Float? // "Estimate From Quote"
+  etcHrs         Float? // "Current Estimate (ETC)"
+  hrsToDate      Float? // typed, not computed
+  breakdown      String? // "Quote F/S Breakdown"
+  comments       String?
+  // The latest logged update (each one is also kept in ChangeHistory, field "update").
+  lastUpdateAt   DateTime?
+  lastUpdateBy   String?
+  lastUpdateNote String?
+  closedAt       DateTime?
+  version        Int           @default(1)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, soNumber])
+  @@index([orgId, status])
 }
