@@ -1,87 +1,46 @@
 ---
 name: project-phase-status
-description: "Team Planner status — production moved 2026-11-06 to PC 10.210.6.233 (v0.0.10, git clone, docker-compose.offline.yml); SCADA retired; dev at v0.0.43; WIP branches wip/sales-orders + wip/excel-live-data"
+description: "Team Planner status — v0.1.5 on main, dev and production (10.210.6.233:8443) since 2026-11-17; user calls production 'the SCADA PC'; paused WIP branches; ideas list"
 metadata:
   node_type: memory
   type: project
-  originSessionId: e7ebfd06-a5d0-4cb7-8fa5-07220b6c1342
-  modified: 2026-08-20T13:39:49.162Z
+  originSessionId: a5347163-62d5-49b3-bb68-8ac5a5097820
+  modified: 2026-11-16T00:22:35.027Z
 ---
 
-**Update 2026-11-10 (supersedes the SCADA notes below):** production runs on
-the PC `10.210.6.233` since 2026-11-06 — a git clone of `main` (v0.0.10) in
-`C:\TeamPlanner`, `docker-compose.offline.yml`, `https://10.210.6.233:8443`,
-has internet. The old SCADA PC is retired (stopped, kept as a fallback). Dev is
-at v0.0.43 on `improve/ux-review`. Current status lives in
-`docs/PROJECT-HISTORY.md`; deployment in `DEPLOY.md`.
+**Status 2026-11-12:** `improve/ux-review` (v0.0.11 – v0.0.54) was merged into `main` as **v0.1.0** (tag `v0.1.0`). The user deployed v0.1.0 to production themselves and reported it working. Dev PC also runs v0.1.0. Release history lives in `docs/PROJECT-HISTORY.md`; the deploy procedure in `DEPLOY.md` 1.1.
 
-**Update 2026-11-05:** v0.0.9 (Eastern-time helpers in `src/lib/tz.ts`, fixes hydration #418) and v0.0.10 (Tasks page overdue colour by Eastern date) are committed; SCADA has NOT been updated past v0.0.8. Dev DB was replaced with the live full backup on 2026-10-30. Sales Orders + Excel-live-data work was pulled out of main and kept as branches `wip/sales-orders` and `wip/excel-live-data` (Excel feature dropped by the user). User is moving to a new PC — see `MOVING-TO-NEW-PC.md` and `docs/PROJECT-HISTORY.md` in the repo.
+**Update 2026-11-12 (later):** v0.1.1 (Renewals work list as the Agreements landing page + guided proposal page; old dashboard at `/agreements/overview`) is merged to `main`, tagged, and deployed to production by the user ("deployed and working"). The user chose the number v0.1.1 over my 0.2.0 — ask before picking a minor-version jump. `scripts/update-production.ps1` now does the production update in one step. Dev's agreement data was updated from the Nov 12 Maintenance / Terminations / After Hours reports, so the dev copy is newer than `backups/dev-with-agreements-20261112-full-backup.json` — a fresh dev full backup is the file to restore on production.
 
-Team Planner status as of 2026-09-27 — **v0.0.8 is live on the SCADA host**
-(offline deploy, USB stick). v0.0.6 carried migration
-`20260926120000_job_notes` (applied cleanly); v0.0.7 was code-only so `migrate`
-no-op'd. All releases v0.0.2–v0.0.8 are **git-tagged and pushed** to
-github.com/EldhoHobby/Team-Planner-app. v0.0.4 → v0.0.8 since the v0.0.3 baseline:
+**Update 2026-11-12 (end of day):** the user ran "Restore agreements only" on production with a fresh dev full backup ("its done"). **Production now holds the real agreement data** — do NOT repeat the dev → production restore (it would overwrite what people enter there); agreement changes belong on production from here on, and dev's agreement data is only a test copy.
 
-**v0.0.8** — panel grouping bug: the side panel tested the `tentative` flag
-before the date, so an undated tentative job was claimed by the Tentative group
-AND excluded from Unscheduled (`!startDate && !tentative`) — it vanished from
-the backlog (hit SO 24027). Tentative now requires a date; Unscheduled takes
-every undated job. The four groups are mutually exclusive + exhaustive and match
-the printout's counts.
+**Update 2026-11-13:** v0.1.2 is merged to `main`, tagged, and deployed to production by the user with `scripts/update-production.ps1` ("deployed and working"). It adds: Help by role, remembered Schedule people filter, holiday export/import, Renewals as five collapsed expiry bars (30 / 60 / 90 / 120 days / already ended) with logged follow-ups + history, browser + device code in sign-in audit entries (Docker Desktop hides client IPs), Pipeline tab hidden, and one migration (`SaCustomer` follow-up columns).
 
-**v0.0.7** — the reason note saved when closing the job form now appends the
-session's server-recorded change summaries (`Changed: …`), so the note and the
-audit/activity line it writes explain themselves; audit/activity job reference
-is now `SO · Customer · Title`; comment composer sits at the top of the
-(collapsed) Notes & change history section, newest entries first.
+**Update 2026-11-13 (later):** v0.1.3 is merged to `main`, tagged, pushed and deployed to production by the user ("its deployed and working"). It adds: one "Customer Service" sidebar item → page with two buttons (Agreements, Open POs); the Open POs tracker (`/open-pos`); Agreements → Servers & QWEB (`/agreements/systems`, server tags + QWEB license keys in one place; the agreement still shows only the hand-typed license quantity — the user's choice); a sixth Renewals bar "Already ended, followed up"; two migrations (`OpenPo`, `SaSystem`). The Open PO and Servers & QWEB rows were loaded on dev; they reach production by Excel Export → Import of each list (not confirmed done — ask). The Servers & QWEB export holds license keys: treat it like a password file.
 
-**v0.0.6** — scheduler UX pack (undo toast on every board change, right-click
-context menu incl. reassign submenu, clickable conflict ⚠ popover, drag-to-
-resize duration on both views, jump-to-date, quick search w/ board highlight);
-new **/activity** page (each user's own 30-day history, all users); **job
-comment thread** (`JobNote` model + optional "why did you change this?" window
-on closing the job form, and "Add reason" on the undo toast); audit/activity
-entries now name the job (`SO · title`) and spell out field-level before→after.
-New pure module `src/lib/scheduling/job-conflicts.ts` (conflict reasons +
-resize maths) with 17 unit tests — 75 tests total now gate the build.
-- **Timesheet export rewritten** — patches the QEI `.xlsm` zip in place (fflate)
-  instead of ExcelJS rebuild, so VBA macros + logo + formulas survive and
-  T.Hours/totals recompute via `fullCalcOnLoad`; decimals allowed; "Personal"
-  label. Output is `.xlsm`, not `.xlsx`.
-- **Schedule print redesign** — job-summary rows (dot / dates / (x days) /
-  title / person / tent), header tally (X scheduled, Y tentative, Z
-  nonscheduled), [PAST] flag, multi-page fix; completed jobs EXCLUDED from print.
-- **Job duration 0 = "days TBD"** placeholder (renders 1-day, labeled TBD);
-  in print summary only an explicit 0 → "(days TBD)", null → "(1 day)".
-- **Conflict indicator** — flashing red ⚠ only (board + editor titleBadge with
-  reason tooltip), static red ⚠ on print. Removed the old red-text styling.
-- **Completed jobs** — own collapsed "Completed" panel section (Scheduled
-  expanded, Completed collapsed by default); IN_PROGRESS stays in Scheduled.
-- **Email @-matching** extracted to unit-tested `match-assignees.ts`
-  (@username + @Full Name, both require "@"); title = subject, Details = just a
-  creation stamp (body not stored); AI only for date/priority.
+**Update 2026-11-15:** v0.1.4 is committed, merged to `main` and tagged `v0.1.4` on dev (pushed and deployed to production by the user the same day — "i updated the SCADA PC"; whether the three lists were imported there is not confirmed). It adds the Field Service Status page (`/fs-status`), its Excel export / import / print view, and an admin "Access" button (who can see / change) on Field Service Status and Customer Service; one migration (`FsOrder`). The 44 Field Service Status orders exist only on dev; they reach production by Export on dev → Import on production. The production full backup of 2026-11-15 showed Open POs and Servers & QWEB still EMPTY on production. Dev was restored from that backup the same day (dev's FS Status / Open POs / systems kept), so dev's sign-in passwords are production's.
+**Update 2026-11-17:** v0.1.5 is merged to `main`, tagged `v0.1.5`, pushed by the user and deployed to production. It adds the Bug & Request Tracker (`/tracker`, starts empty on production — import the workbook) and nine renewal improvements (internal customer notes, typed dates, prorate a line, stale-draft banner, Add signed year, required follow-up next date + Follow-ups tab/filter, "Also known as" aliases, server-warranty cue + Copy email, print increase-row option); three migrations. Production data edits made through the browser with the user's OK on 2026-11-16: EASLEY 2027 proposal got ConfigWiz $2,368 (10 months of $2,841, both agreements end Jan 31, 2028) + a note; DUQUESNE POWER (S01140) got its missing 2026 signed lines, 2025/2026 end dates moved to Jan 31, old 2026 draft deleted, 2027 proposal started.
+**Hosts:**
+- Production = **10.210.6.233**, `C:\TeamPlanner` (git clone of `main`, images built there, `docker-compose.offline.yml`, port 8443). The user still says **"SCADA PC"** for production — confirmed 2026-11-12 that they mean 10.210.6.233.
+- The old SCADA PC (10.210.4.65) is stopped and kept as a fallback (was v0.0.8 / v0.0.10 era).
+- Dev = this PC, `https://planner.localhost`, `LAN_IP=10.210.4.130` in `.env` (not reachable when the PC is off the office network).
 
-**Why:** tracks what's shipped so suggestions aren't repeated, and the deploy
-path that works.
+**Deploy path that works:** the user pushes (see [[git-push-user-only]]), then on production: stop proxy → in-container `pg_dump` → `git pull` → `docker pull` pinned base images → build `runner` + `migrator` images → `up -d`. Bump the version every release ([[release-version-habit]]).
 
-**How to apply:**
-- Deploy = commit+push v0.0.X first (build stamps `git rev-parse --short HEAD`
-  + package.json version), then `docker build --provenance=false --target
-  runner|migrator`, `docker save` the two app images to a `.tar`, carry over,
-  `docker load` + `docker compose -f docker-compose.offline.yml up -d`. USB
-  worked fine on 2026-08-20 (the earlier RDP-clipboard truncation was a one-off;
-  either transfer is OK — just verify the sidebar shows the new version+hash).
-- **Always bump package.json version every release** (see [[release-version-habit]]).
-- Email ingest is still "IMAP not connecting" on SCADA (no outbound internet →
-  `imap.gmail.com:993` unreachable). The connection code is unchanged from
-  working v0.0.3; when internet arrives set EMAIL_INGEST_ENABLED=true +
-  EMAIL_AI_ENABLED=true in SCADA `.env`, then EMAIL_INGEST_ENABLED=false on dev
-  (one poller per inbox). "Check mail now" on Settings→Email returns the real error.
-- **Do NOT suggest de-scheduling / archiving "unused" people.** Accounts with
-  zero jobs+tasks (several named team members) are real team members who WILL be assigned
-  work; empty board lanes are intended available capacity, not clutter. The user
-  declined this on 2026-09-27.
-- Remaining ideas not yet picked: recurring jobs, daily agenda email, AI
-  scheduling suggestions, reports page, customers directory, project-linking
-  in New Job dialog.
+**Done on production 2026-11-12 (user reported "done and working"):** old v0.0.10 images / ollama container / build cache removed (no quick rollback to v0.0.10 any more); nightly off-PC backup task "TeamPlanner off-PC backup" (3 AM, runs as SYSTEM) copying to a USB drive that stays plugged into the production PC, script copy in `C:\TeamPlanner-local\`. "Who can see Agreements" has been set on production. Docs (DEPLOY.md, PROJECT-HISTORY) describe production as v0.1.0 and are pushed. Dev PC: merged local branches deleted (only `main` left), old `pre-*.dump` files and Docker leftovers removed.
+
+**Dev data 2026-11-12:** the user restored a production backup onto dev (dev = production's people/jobs/tasks), which wiped dev's agreement data; it was put back from the pre-restore dump at the database level. The agreement data source files are in the repo's `backups/` folder (not in git): `dev-with-agreements-20261112.dump` and `dev-with-agreements-20261112-full-backup.json` (the file to use for "Restore agreements only" on production; holds password hashes).
+
+**Still open on 2026-11-12 (ask before assuming done):** agreement data on production — the user said they will bring it over later ("Restore agreements only" with the `.json` above); create the "Customer Service" work group on production (agreement editors); switch the CSP from report-only to enforcing; the USB backup drive is not off-site (suggested rotating two drives or a network share later).
+
+**Paused / parked:**
+- Branches `wip/sales-orders` and `wip/excel-live-data` (Excel live data dropped by the user). See [[sales-order-domain]].
+- User decisions deferred: agreement prices "keep it accessible to all"; Web Training price rule ("will update later"); timesheet edit window ("will review later").
+- Email ingest is off on production.
+
+**Do NOT suggest de-scheduling / archiving "unused" people.** Accounts with zero jobs or tasks are real team members who will be assigned work; empty board lanes are intended capacity. The user declined this on 2026-09-27.
+
+**Ideas not yet picked:** recurring jobs, daily agenda email, AI scheduling suggestions, reports page, customers directory, project-linking in the New Job dialog.
+
+**Why:** tracks what is shipped and where, so suggestions aren't repeated and the right host is targeted.
+**How to apply:** verify against `docs/PROJECT-HISTORY.md` and `git log` before relying on version numbers here.

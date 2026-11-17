@@ -22,7 +22,7 @@ from `C:\TeamPlanner` unless a step says otherwise.
 | **PC** | `10.210.6.233` — Windows + Docker Desktop, **has internet** |
 | **In production since** | 2026-11-06 (moved from the old SCADA PC, see section 6) |
 | **URL** | `https://10.210.6.233:8443` (self-signed `tls internal` cert — click through the warning) |
-| **Folder** | `C:\TeamPlanner` = a **git clone of `main`** (running **v0.1.4** since 2026-11-15) |
+| **Folder** | `C:\TeamPlanner` = a **git clone of `main`** (running **v0.1.5** since 2026-11-17) |
 | **Compose file** | `docker-compose.offline.yml` (uses locally built / pulled images, `pull_policy: never`) |
 | **Images** | `team-planner-app:latest` + `team-planner-app-migrator:latest`, **built on this PC** from the clone; Caddy / Postgres (and Ollama, only for AI) pulled with `docker pull` |
 | **`.env`** | `DB_PASSWORD`, `APP_URL=https://10.210.6.233:8443`, `HTTPS_PORT=8443`, `LAN_IP=10.210.6.233`, `BACKUP_KEEP_DAYS=14` — not in git; keep a copy somewhere safe (it holds the DB password). An old `MAX_UPLOAD_MB` / `SESSION_SECRET` line is ignored |
